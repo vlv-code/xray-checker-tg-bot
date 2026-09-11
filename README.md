@@ -1,158 +1,179 @@
 # Xray Checker
 
-<div align="center">
-
-[![GitHub Release](https://img.shields.io/github/v/release/kutovoys/xray-checker?color=blue)](https://github.com/kutovoys/xray-checker/releases/latest)
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/kutovoys/xray-checker/build-publish.yml)](https://github.com/kutovoys/xray-checker/actions/workflows/build-publish.yml)
-[![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/kutovoys/xray-checker/total?logo=github&color=blue)](https://github.com/kutovoys/xray-checker/releases/latest)
-[![Docker Pulls](https://img.shields.io/docker/pulls/kutovoys/xray-checker?logo=docker&label=pulls)](https://hub.docker.com/r/kutovoys/xray-checker/)
-[![GitHub License](https://img.shields.io/github/license/kutovoys/xray-checker?color=greeen)](https://github.com/kutovoys/xray-checker/blob/main/LICENSE)
-[![ru](https://img.shields.io/badge/lang-ru-blue)](https://github.com/kutovoys/xray-checker/blob/main/README_RU.md)
-[![en](https://img.shields.io/badge/lang-en-red)](https://github.com/kutovoys/xray-checker/blob/main/README.md)
-
-</div>
-<div align="center">
-
-[![Documentation](https://img.shields.io/badge/Docs-xray--checker.kutovoy.dev-blue)](https://xray-checker.kutovoy.dev/)
-[![DockerHub](https://img.shields.io/badge/DockerHub-kutovoys%2Fxray--checker-blue)](https://hub.docker.com/r/kutovoys/xray-checker/)
-[![Live Demo](https://img.shields.io/badge/Demo-live-green)](https://demo-xray-checker.kutovoy.dev/)
-[![Telegram Chat](https://img.shields.io/badge/Telegram-Chat-blue?logo=telegram&)](https://t.me/+uZCGx_FRY0tiOGIy)
-
-</div>
+[![GitHub Release](https://img.shields.io/github/v/release/vlv-code/xray-checker-tg-bot?style=flat&color=blue)](https://github.com/vlv-code/xray-checker-tg-bot/releases/latest)
+[![DockerHub](https://img.shields.io/badge/Docker-ready-blue)](https://github.com/vlv-code/xray-checker-tg-bot)
+[![License](https://img.shields.io/badge/License-GPL%20v3-green)](https://github.com/vlv-code/xray-checker-tg-bot/blob/main/LICENSE)
+[![ru](https://img.shields.io/badge/lang-ru-blue)](README_RU.md)
+[![en](https://img.shields.io/badge/lang-en-red)](README.md)
 
 > [!NOTE]
-> **This repository is a fork of the original [kutovoys/xray-checker](https://github.com/kutovoys/xray-checker)** with added Telegram Bot support (real-time outage & recovery alerts, interactive `/status`, `/help`, dynamic subscription management via `/subs`, `/addsub`, `/delsub`), headless mode (`WEB_ENABLED`), and `.env` configuration.
+> **This repository is a fork of the original [kutovoys/xray-checker](https://github.com/kutovoys/xray-checker)** featuring a fully integrated Telegram Bot built on the official `mymmrac/telego` library:
+> - ⚡ **Multi-Stage Connection Diagnostics**: Isolated analysis of DNS resolution, TCP ping (RTT), TLS handshake, Xray SOCKS tunnel, and target endpoints.
+> - 🌐 **Check-Host.net External Verification**: Automated external reachability checks from Russia (Moscow, St. Petersburg) and worldwide nodes upon outage, plus targeted `/checkhost` auditing.
+> - ⏱️ **Dynamic Runtime Check Interval**: Change check frequency on the fly (`/interval` or menu) without container restarts.
+> - 🔔 **Smart Alert Lifecycle**: Live Mode (updates original outage message with total downtime) and Clean Mode (auto-deletes alerts).
+> - 🌙 **Quiet Night Hours & Digests**: Suppress alert sounds overnight, automatic morning digest, and periodic daytime summaries.
+> - 📈 **Persistent Uptime Statistics**: Sliding incident log and reliability rankings (`/stats`).
+> - 📋 **Dynamic Subscription Management**: Add and remove subscriptions in chat (`/subs`, `/addsub`, `/delsub`).
+> - 📦 **Headless Mode**: Run without web dashboard (`WEB_ENABLED=false`).
 
-Xray Checker is a tool for monitoring proxy server availability with support for VLESS, VMess, Trojan, and Shadowsocks protocols. It automatically tests connections through Xray Core and provides metrics for Prometheus, as well as API endpoints for integration with monitoring systems.
-
-<div align="center">
-  <img src=".github/screen/xray-checker.webp" alt="Dashboard Screenshot">
-</div>
-
-> [!TIP]
-> **Try the Live Demo:** See Xray Checker in action at [demo-xray-checker.kutovoy.dev](https://demo-xray-checker.kutovoy.dev/)
+---
 
 ## 🚀 Key Features
 
-- 🔍 Monitoring of Xray proxy servers (VLESS, VMess, Trojan, Shadowsocks)
-- 🤖 Integrated Telegram Bot: real-time outage & recovery alerts, /status and dynamic subscription management (/subs, /addsub, /delsub)
-- 🔄 Automatic configuration updates from subscription (multiple subscriptions supported)
-- 📊 Prometheus metrics export with Pushgateway support
-- 🌐 REST API with OpenAPI/Swagger documentation
-- 🌓 Web interface with dark/light theme
-- 🎨 Full web customization (custom logo, styles, or entire template)
-- 📄 Public status page for VPN services (no authentication required)
-- 📥 Endpoints for monitoring system integration (Uptime Kuma, etc.)
-- 🔒 Basic Auth protection for metrics and web interface
-- 🐳 Docker and Docker Compose support
-- 🌍 Automatic geo files management (geoip.dat, geosite.dat)
-- 📝 Flexible configuration loading:
-  - URL subscriptions (base64, JSON)
-  - Share links (vless://, vmess://, trojan://, ss://)
-  - JSON configuration files
-  - Folders with configurations
+* 🔍 **Xray Proxy Monitoring**: Supports VLESS (including Reality & Vision), VMess, Trojan, Shadowsocks, WireGuard, and Hysteria2.
+* 🤖 **Telegram Bot on `mymmrac/telego`**: Interactive inline keyboard menu, instant outage and recovery alerts.
+* ⚡ **Multi-Stage Diagnostics (`/diag`)**: Pinpoints exact point of failure (DNS, TCP, TLS, Xray session reset, CDN blocking).
+* 🌐 **Check-Host.net Integration**: Automatic multi-node reachability checks from Russia and worldwide locations during outages.
+* ⏱️ **Runtime Interval Tuning**: `/interval <seconds>` command and interactive menu presets.
+* 🔄 **Auto-Reloading Subscriptions**: Multiple subscription URLs (Base64, JSON, share links) with automated periodic sync.
+* 📊 **Prometheus Metrics**: Exports `/metrics` for Grafana scraping and supports Prometheus Pushgateway.
+* 🌐 **Web Dashboard**: Monitoring UI with light/dark themes and public status page.
+* 🔒 **Security**: Protect metrics and dashboard with HTTP Basic Auth.
+* 🐳 **Docker & Docker Compose**: Instant single-command deployment with minimal resource footprint.
 
-Full list of features available in the [documentation](https://xray-checker.kutovoy.dev/intro/features).
+---
 
-## 🤖 Telegram Bot
+## 🤖 Telegram Bot Commands
 
-Xray Checker includes a built-in Telegram bot for alerts and live subscription management:
+All features are accessible via the interactive **`/menu`** or direct chat commands:
 
-### Features
-* **Interactive Menu & Buttons**: Full-featured `/menu` with inline buttons for status, diagnostics, stats, subscriptions, quiet hours, and settings.
-* **Alerting & Lifecycle**:
-  * **Live Mode** (default): Edits the original outage alert message upon recovery to show total downtime duration.
-  * **Clean Mode**: Deletes the outage alert immediately upon recovery, and auto-cleans recovery confirmations after 2 minutes to keep chat clean.
-* **Live Diagnostics (`/diag`)**: Fast concurrent testing of all proxies against multiple target endpoints (Cloudflare, Google, custom URLs) with a detailed per-target matrix report.
-* **Outage Statistics (`/stats`)**: Persistent tracking of uptime %, drop counts, total downtime, and a sliding log of recent incidents.
-* **Quiet Hours & Scheduled Digests**: Suppresses sound notifications during configured sleeping hours (e.g. 23:00–08:00) with a morning digest and periodic daytime health summaries.
-* **Dynamic Subscriptions**: `/subs`, `/addsub <URL>`, `/delsub <URL>`.
+| Command | Description |
+|---|---|
+| `/menu` or `/start` | Open main interactive menu with inline navigation buttons |
+| `/status` | Real-time status summary of all configured proxies (online/offline, latency) |
+| `/diag` | Detailed multi-stage diagnostics (DNS, TCP RTT, TLS, Targets + Check-Host) |
+| `/checkhost <host[:port]>` | Global reachability audit of any host/IP across worldwide Check-Host nodes |
+| `/interval [seconds]` | View or change proxy check interval dynamically (e.g. `/interval 60`) |
+| `/stats` | Uptime statistics (%), top problematic proxies, and recent outage history |
+| `/quiet` | Configure quiet hours schedule and snooze intervals (1h, 4h, morning) |
+| `/targets` | View and manage fallback target check URLs |
+| `/subs` | List active subscriptions (configured + added via bot) |
+| `/addsub <URL>` | Dynamically add a new subscription URL without restarting |
+| `/delsub <URL>` | Remove a previously added dynamic subscription |
+| `/digest` | Trigger an immediate status digest in chat |
+| `/help` | Display quick help summary |
 
-### Configuration
+---
 
-| Environment Variable | CLI Flag | Default | Description |
-|---|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | `--telegram-bot-token` | `""` | Telegram bot token from [@BotFather](https://t.me/BotFather) (enables the bot when set) |
-| `TELEGRAM_CHAT_IDS` | `--telegram-chat-id` | `""` | Chat ID(s) allowed to use the bot and receive alerts |
-| `TELEGRAM_ALERT_MODE` | `--telegram-alert-mode` | `live` | Alert mode: `live` (edits outage message with downtime) or `clean` (auto-deletes) |
-| `TELEGRAM_QUIET_HOURS_ENABLED` | `--telegram-quiet-hours` | `true` | Suppress alert sounds during night hours |
-| `TELEGRAM_QUIET_HOURS_START` | `--telegram-quiet-hours-start` | `23:00` | Start of quiet hours (HH:MM) |
-| `TELEGRAM_QUIET_HOURS_END` | `--telegram-quiet-hours-end` | `08:00` | End of quiet hours (HH:MM), triggers morning digest |
-| `TELEGRAM_DAY_DIGEST_ENABLED` | `--telegram-day-digest` | `true` | Send periodic daytime status digests |
-| `TELEGRAM_DAY_DIGEST_INTERVAL_HOURS` | `--telegram-day-digest-interval` | `6` | Interval in hours between daytime digests |
-| `STATS_STORE_PATH` | `--telegram-stats-store-path` | `stats.json` | Path to JSON file storing persistent outage statistics |
-| `BOT_CONFIG_STORE_PATH` | `--telegram-config-store-path` | `bot_config.json` | Path to JSON file storing runtime bot configuration overrides |
-| `PROXY_TARGET_URLS` | `--proxy-target-url` | Cloudflare/Google 204 | Custom fallback endpoints for checking proxy availability |
-| `TELEGRAM_NOTIFY_ON_RECOVERY` | `--telegram-notify-on-recovery` | `true` | Send notification when a proxy comes back online |
-| `TELEGRAM_COMMANDS_ENABLED` | `--telegram-commands` | `true` | Enable interactive commands (`/menu`, `/status`, `/diag`, `/stats`, etc.) |
-| `TELEGRAM_MANAGE_SUBSCRIPTIONS` | `--telegram-manage-subscriptions` | `true` | Allow managing subscriptions via `/addsub`, `/delsub`, `/subs` |
-| `SUBSCRIPTION_STORE_PATH` | `--subscription-store-path` | `subscriptions.json` | Path to JSON file where bot-added subscriptions are persisted across restarts |
-| `WEB_ENABLED` | `--web-enabled` | `true` | Enable web dashboard panel. Set to `false` to run without web UI |
+## ⚡ Connection Diagnostics
 
-### Running Without Web Panel (Headless Mode)
+### 1. Multi-Stage Diagnostics (`/diag`)
+Tests all nodes across 5 independent stages and formulates an objective fact-based verdict:
+* **DNS Lookup**: Domain resolution and DNS query latency.
+* **TCP Ping (RTT)**: Direct connection to node `IP:Port` (differentiates timeout from closed port).
+* **TLS Handshake Probe**: Tests TLS/SNI handshake (detects domain/SNI filtering).
+* **Xray Tunnel & Targets**: Verifies traffic forwarding through proxy to targets (Cloudflare, Google, etc.).
+* **Check-Host Fallback**: If a node fails locally, the bot automatically verifies port reachability from Russian and international probe nodes.
 
-If you only need Prometheus metrics or Telegram bot alerts without the web dashboard:
-* Set `WEB_ENABLED=false` in `.env` or pass `--web-enabled=false`. Prometheus `/metrics` and `/health` remain active.
-* To completely disable the HTTP server (bot and periodic checks only), set `METRICS_PORT=0`.
-* To build a Docker image with web UI disabled by default:
-  ```bash
-  docker build --build-arg WEB_ENABLED=false -t xray-checker:headless .
-  ```
+```text
+⚡ Detailed diagnostics report (2 proxies):
 
-## 🚀 Quick Start
+🟢 NL-Amsterdam (VLESS)
+  • DNS: ✅ 185.120.45.10 (18 ms)
+  • TCP (443): ✅ 42 ms
+  • TLS: ✅ 58 ms
+  • Cloudflare 204: ✅ 65 ms
+  • Google 204: ✅ 71 ms
+  💡 Verdict: Fully operational
 
-### 1. Clone repository
+🔴 DE-Frankfurt (VLESS)
+  • DNS: ✅ 45.132.18.2 (20 ms)
+  • TCP (443): ❌ TCP connection timeout (unreachable from checker host)
+  • Check-Host (TCP): RU ❌ unreachable, World ✅ reachable
+    🔗 report
+  💡 Verdict: Node TCP timeout | Check-Host: unreachable from RU nodes, but responds from foreign networks
+```
+
+### 2. Targeted Global Audit (`/checkhost`)
+Command `/checkhost <host[:port]>` or the `[ 🌐 Check-Host ]` button in `/menu` runs a full worldwide check:
+```text
+🌐 Check-Host results for 185.120.45.10:443 (TCP):
+
+🇷🇺 Russia:
+  • Moscow (RU): ❌ Connection timed out
+  • Saint Petersburg (RU): ❌ Connection timed out
+
+🇪🇺 Europe:
+  • Nuremberg (DE): ✅ 18 ms
+  • Amsterdam (NL): ✅ 22 ms
+  • Helsinki (FI): ✅ 26 ms
+
+🇺🇸 Americas:
+  • Los Angeles (US): ✅ 115 ms
+  • New York (US): ✅ 95 ms
+
+💡 Conclusion: Host is unreachable from RU nodes, but responds from foreign networks
+🔗 Permanent report link
+```
+
+---
+
+## 🛠️ Quick Start
+
+### 1. Clone the repository
 ```bash
 git clone https://github.com/vlv-code/xray-checker-tg-bot.git
 cd xray-checker-tg-bot
 ```
 
-### 2. Configure via `.env`
-Copy the template configuration file:
+### 2. Configure environment
 ```bash
 cp .env.example .env
-```
-Open `.env` in your editor and fill in your settings:
-```bash
 nano .env
 ```
-Key settings to configure:
-* `SUBSCRIPTION_URL`: Your proxy subscription URL
-* `TELEGRAM_BOT_TOKEN`: Token from [@BotFather](https://t.me/BotFather)
-* `TELEGRAM_CHAT_IDS`: Your Telegram user ID or group ID
-* `SUBSCRIPTION_STORE_PATH`: Path to persist bot-added subscriptions (default `/app/data/subscriptions.json` inside container)
-* `WEB_ENABLED`: `true` (default) or `false` to run without web dashboard
+Fill in the essential variables:
+* `SUBSCRIPTION_URL` — your proxy subscription link.
+* `TELEGRAM_BOT_TOKEN` — bot token from [@BotFather](https://t.me/BotFather).
+* `TELEGRAM_CHAT_IDS` — your Telegram user ID or group ID.
 
-### 3. Launch with Docker Compose
+### 3. Start with Docker Compose
 ```bash
 cp docker-compose.example.yml docker-compose.yml
 docker compose up -d --build
 ```
-The dashboard and metrics will be accessible at `http://localhost:2112` (or `/metrics` if `WEB_ENABLED=false`).
+The web dashboard and Prometheus metrics will be available at: `http://<server_ip>:2112`.
 
-## 🤝 Contributing
+---
 
-We welcome any contributions to Xray Checker! If you want to help:
+## 🔄 Updating on Server
 
-1. Fork the repository
-2. Create a branch for your changes
-3. Make and test your changes
-4. Create a Pull Request
+To pull latest improvements and restart the container:
+```bash
+cd /opt/remnawave-bedolaga-telegram-bot   # or your deployment directory
+git pull origin main
+docker compose up -d --build
+```
 
-For more details on how to contribute, read the [contributor's guide](https://xray-checker.kutovoy.dev/contributing/development-guide).
+---
 
-<p align="center">
-Thanks to the all contributors who have helped improve Xray Checker:
-</p>
-<p align="center">
-<a href="https://github.com/kutovoys/xray-checker/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=kutovoys/xray-checker" />
-</a>
-</p>
-<p align="center">
-  Made with <a rel="noopener noreferrer" target="_blank" href="https://contrib.rocks">contrib.rocks</a>
-</p>
+## ⚙️ Configuration Reference (`.env`)
 
-## VPN Recommendation
+| Variable | Default | Description |
+|---|---|---|
+| `SUBSCRIPTION_URL` | `""` | Proxy subscription link(s) (Base64/JSON URLs, share links) |
+| `SUBSCRIPTION_STORE_PATH` | `/app/data/subscriptions.json` | Persistent storage path for `/addsub` subscriptions |
+| `TELEGRAM_BOT_TOKEN` | `""` | Telegram bot token from @BotFather (enables the bot) |
+| `TELEGRAM_CHAT_IDS` | `""` | Comma-separated list of authorized Telegram chat IDs |
+| `TELEGRAM_ALERT_MODE` | `live` | Alert mode: `live` (edits outage alert) or `clean` (auto-deletes) |
+| `TELEGRAM_QUIET_HOURS_ENABLED`| `true` | Suppress alert sound pings overnight |
+| `TELEGRAM_QUIET_HOURS_START`  | `23:00` | Start of quiet hours (HH:MM) |
+| `TELEGRAM_QUIET_HOURS_END`    | `08:00` | End of quiet hours (HH:MM) and morning digest trigger |
+| `TELEGRAM_DAY_DIGEST_ENABLED` | `true` | Send periodic daytime health summaries |
+| `STATS_STORE_PATH` | `/app/data/stats.json` | Persistent storage path for outage history and stats |
+| `BOT_CONFIG_STORE_PATH` | `/app/data/bot_config.json` | Persistent storage path for runtime bot settings |
+| `PROXY_CHECK_INTERVAL` | `300` | Check interval in seconds (also tunable via `/interval`) |
+| `PROXY_TARGET_URLS` | Cloudflare/Google 204 | Custom fallback endpoints for checking proxy availability |
+| `WEB_ENABLED` | `true` | Enable web dashboard panel (`false` for headless mode) |
+| `METRICS_PORT` | `2112` | Web dashboard and Prometheus metrics port |
+| `METRICS_PROTECTED` | `true` | Enable Basic Auth protection for web dashboard |
+| `METRICS_USERNAME` | `admin` | Web UI login username |
+| `METRICS_PASSWORD` | — | Web UI login password |
 
-For secure and reliable internet access, we recommend [bye-bye-home](https://cabinet.bbhome.xyz/). Use promo code `PIPISKA1337` for 14 days free.
+### Headless Mode (No Web Dashboard)
+If you only need the Telegram Bot and Prometheus metrics without the web panel:
+Set in `.env`:
+```env
+WEB_ENABLED=false
+```
+`/metrics` remains active while saving RAM and CPU.
