@@ -35,8 +35,8 @@ type subscriptionResult struct {
 	Error   error
 }
 
-func InitializeConfiguration(configFile string, version string) (*[]*models.ProxyConfig, error) {
-	configs, err := ReadFromMultipleSources(config.CLIConfig.Subscription.URLs)
+func InitializeConfiguration(configFile string, version string, urls []string) (*[]*models.ProxyConfig, error) {
+	configs, err := ReadFromMultipleSources(urls)
 	if err != nil {
 		return nil, err
 	}

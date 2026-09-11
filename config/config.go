@@ -29,6 +29,7 @@ type CLI struct {
 		JSONFormat     bool     `name:"subscription-json-format" help:"Request full JSON configs from the panel (sends app-like headers so grouped/balancer nodes are returned individually instead of collapsed share links)" default:"false" env:"SUBSCRIPTION_JSON_FORMAT"`
 		UserAgent      string   `name:"subscription-user-agent" help:"Custom User-Agent for subscription requests (overrides the default and the --subscription-json-format preset)" default:"" env:"SUBSCRIPTION_USER_AGENT"`
 		Headers        []string `name:"subscription-header" help:"Extra HTTP header for subscription requests in 'Key: Value' form (repeatable; env: comma-separated)" env:"SUBSCRIPTION_HEADERS"`
+		StorePath      string   `name:"subscription-store-path" help:"File to persist subscriptions added via the Telegram bot's /addsub (empty disables persistence, added subscriptions won't survive a restart)" default:"subscriptions.json" env:"SUBSCRIPTION_STORE_PATH"`
 	} `embed:"" prefix:""`
 
 	Proxy struct {
@@ -70,10 +71,11 @@ type CLI struct {
 	} `embed:"" prefix:""`
 
 	Telegram struct {
-		BotToken         string  `name:"telegram-bot-token" help:"Telegram bot token (from @BotFather); enables the bot when set" default:"" env:"TELEGRAM_BOT_TOKEN"`
-		ChatIDs          []int64 `name:"telegram-chat-id" help:"Chat ID(s) allowed to use the bot and receive alerts (can be specified multiple times)" env:"TELEGRAM_CHAT_IDS"`
-		NotifyOnRecovery bool    `name:"telegram-notify-on-recovery" help:"Send a message when a proxy comes back online, not just when it goes down" default:"true" env:"TELEGRAM_NOTIFY_ON_RECOVERY"`
-		Commands         bool    `name:"telegram-commands" help:"Enable interactive bot commands (/status, /help)" default:"true" env:"TELEGRAM_COMMANDS_ENABLED"`
+		BotToken            string  `name:"telegram-bot-token" help:"Telegram bot token (from @BotFather); enables the bot when set" default:"" env:"TELEGRAM_BOT_TOKEN"`
+		ChatIDs             []int64 `name:"telegram-chat-id" help:"Chat ID(s) allowed to use the bot and receive alerts (can be specified multiple times)" env:"TELEGRAM_CHAT_IDS"`
+		NotifyOnRecovery    bool    `name:"telegram-notify-on-recovery" help:"Send a message when a proxy comes back online, not just when it goes down" default:"true" env:"TELEGRAM_NOTIFY_ON_RECOVERY"`
+		Commands            bool    `name:"telegram-commands" help:"Enable interactive bot commands (/status, /help)" default:"true" env:"TELEGRAM_COMMANDS_ENABLED"`
+		ManageSubscriptions bool    `name:"telegram-manage-subscriptions" help:"Allow /addsub, /delsub and /subs so allowed chats can add or remove subscriptions at runtime" default:"true" env:"TELEGRAM_MANAGE_SUBSCRIPTIONS"`
 	} `embed:"" prefix:""`
 
 	Version  VersionFlag `name:"version" help:"Print version information and quit"`

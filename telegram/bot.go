@@ -26,6 +26,7 @@ type Bot struct {
 	chatIDs        []int64
 	allowedChatIDs map[int64]bool
 	source         metrics.MetricsSource
+	subs           SubscriptionManager
 
 	notifyOnRecovery bool
 	commandsEnabled  bool
@@ -37,8 +38,11 @@ type Bot struct {
 
 // New creates a Bot and verifies the token against the Telegram API. source
 // supplies the live proxy snapshot for /status and for transition detection —
-// checker.ProxyChecker satisfies metrics.MetricsSource.
-func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRecovery, commandsEnabled bool) (*Bot, error) {
+// checker.ProxyChecker satisfies metrics.MetricsSource. subs enables /addsub,
+// /delsub and /subs; pass nil to disable those commands (they're the only
+// ones that let an allowed chat change what the checker fetches from, so
+// callers may want to gate them separately from notifyOnRecovery/commandsEnabled).
+func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRecovery, commandsEnabled bool, subs SubscriptionManager) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, fmt.Errorf("telegram: %w", err)
@@ -56,6 +60,7 @@ func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRe
 		chatIDs:          chatIDs,
 		allowedChatIDs:   allowed,
 		source:           source,
+		subs:             subs,
 		notifyOnRecovery: notifyOnRecovery,
 		commandsEnabled:  commandsEnabled,
 		lastSeen:         make(map[string]bool),
@@ -98,6 +103,15 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 	switch {
 	case strings.HasPrefix(msg.Text, "/status"):
 		b.replyStatus(msg.Chat.ID)
+	case strings.HasPrefix(msg.Text, "/subs"):
+		b.replySubs(msg.Chat.ID)
+	case strings.HasPrefix(msg.Text, "/addsub"):
+		// Fetching the subscription and reloading Xray can take a few
+		// seconds, so this runs off the update-processing loop to keep the
+		// bot responsive to other chats/commands in the meantime.
+		go b.handleAddSub(msg)
+	case strings.HasPrefix(msg.Text, "/delsub"), strings.HasPrefix(msg.Text, "/removesub"):
+		go b.handleDelSub(msg)
 	case strings.HasPrefix(msg.Text, "/start"), strings.HasPrefix(msg.Text, "/help"):
 		b.replyHelp(msg.Chat.ID)
 	}
@@ -129,8 +143,13 @@ func (b *Bot) replyStatus(chatID int64) {
 
 func (b *Bot) replyHelp(chatID int64) {
 	text := "<b>Xray Checker</b>\n\n" +
-		"/status — текущий статус всех прокси\n" +
-		"/help — это сообщение\n\n" +
+		"/status — текущий статус всех прокси\n"
+	if b.subs != nil {
+		text += "/subs — список подписок\n" +
+			"/addsub &lt;URL&gt; — добавить подписку\n" +
+			"/delsub &lt;URL&gt; — удалить добавленную подписку\n"
+	}
+	text += "/help — это сообщение\n\n" +
 		"Уведомления о недоступности и восстановлении приходят сюда автоматически."
 	b.send(chatID, text)
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"xray-checker/checker"
 	"xray-checker/config"
@@ -44,13 +45,26 @@ func main() {
 		logger.Fatal("Failed to ensure geo files: %v", err)
 	}
 
+	// subURLStore holds every subscription URL the checker fetches from: the
+	// static ones from --subscription-url/env, plus any added at runtime via
+	// the Telegram bot's /addsub (persisted to disk so they survive a
+	// restart). It's consulted instead of config.CLIConfig.Subscription.URLs
+	// everywhere subscriptions are (re)loaded.
+	subURLStore, err := subscription.NewURLStore(config.CLIConfig.Subscription.URLs, config.CLIConfig.Subscription.StorePath)
+	if err != nil {
+		logger.Fatal("Error loading subscription store: %v", err)
+	}
+
 	configFile := "xray_config.json"
-	proxyConfigs, err := subscription.InitializeConfiguration(configFile, version)
+	proxyConfigs, err := subscription.InitializeConfiguration(configFile, version, subURLStore.All())
 	if err != nil {
 		logger.Fatal("Error initializing configuration: %v", err)
 	}
 
 	logger.Info("Loaded %d proxy configurations", len(*proxyConfigs))
+	if dynamicURLs := subURLStore.Dynamic(); len(dynamicURLs) > 0 {
+		logger.Info("%d subscription(s) previously added via the Telegram bot", len(dynamicURLs))
+	}
 
 	if config.CLIConfig.Web.Public {
 		if name := subscription.GetSubscriptionName(); name != "" {
@@ -100,27 +114,11 @@ func main() {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(metrics.NewCollector(config.CLIConfig.Metrics.Instance, proxyChecker))
 
-	// The Telegram bot is only started for a long-running instance: --run-once
-	// exits right after one check, so there's no continuous state to notify
-	// about and no point long-polling for commands.
+	// tgBot, runCheckIteration and reloadSubscriptions are declared/defined
+	// before the Telegram bot is created below, since the bot's /addsub and
+	// /delsub handlers (wired in via telegramSubscriptionManager) need
+	// reloadSubscriptions, which itself calls runCheckIteration.
 	var tgBot *telegram.Bot
-	if config.CLIConfig.Telegram.BotToken != "" {
-		if config.CLIConfig.RunOnce {
-			logger.Info("Telegram bot is not started in --run-once mode")
-		} else if bot, err := telegram.New(
-			config.CLIConfig.Telegram.BotToken,
-			config.CLIConfig.Telegram.ChatIDs,
-			proxyChecker,
-			config.CLIConfig.Telegram.NotifyOnRecovery,
-			config.CLIConfig.Telegram.Commands,
-		); err != nil {
-			logger.Error("Telegram bot disabled: %v", err)
-		} else {
-			tgBot = bot
-			tgBot.StartCommands()
-			defer tgBot.Stop()
-		}
-	}
 
 	runCheckIteration := func() {
 		logger.Info("Starting proxy check iteration")
@@ -161,6 +159,80 @@ func main() {
 		}
 	}
 
+	// reloadMu serializes every subscription reload: the periodic updater
+	// below and any /addsub or /delsub from the Telegram bot must never
+	// rebuild the Xray config and restart the runner at the same time.
+	var reloadMu sync.Mutex
+
+	// reloadSubscriptions re-fetches every subscription in subURLStore and,
+	// if the resulting proxy set differs from the current one, applies it
+	// (rebuilds the Xray config, restarts Xray, and updates the checker).
+	// changed reports whether anything was applied; proxyCount is always the
+	// resulting total regardless. It's used both by the periodic subscription
+	// updater and by the Telegram bot's /addsub and /delsub.
+	reloadSubscriptions := func() (changed bool, proxyCount int, err error) {
+		reloadMu.Lock()
+		defer reloadMu.Unlock()
+
+		newConfigs, err := subscription.ReadFromMultipleSources(subURLStore.All())
+		if err != nil {
+			return false, len(*proxyConfigs), err
+		}
+
+		if config.CLIConfig.Proxy.ResolveDomains {
+			resolved, rerr := subscription.ResolveDomainsForConfigs(newConfigs)
+			if rerr != nil {
+				logger.Error("Error resolving domains: %v", rerr)
+			} else {
+				newConfigs = resolved
+			}
+		}
+
+		if xray.IsConfigsEqual(*proxyConfigs, newConfigs) {
+			return false, len(*proxyConfigs), nil
+		}
+
+		if err := updateConfiguration(newConfigs, proxyConfigs, xrayRunner, proxyChecker); err != nil {
+			return false, len(*proxyConfigs), err
+		}
+
+		// Immediately re-check the new proxy set so /metrics is repopulated
+		// right away instead of staying empty until the next scheduled check
+		// (up to PROXY_CHECK_INTERVAL), then drop series for removed proxies.
+		runCheckIteration()
+		proxyChecker.PruneStaleResults()
+		return true, len(*proxyConfigs), nil
+	}
+
+	// The Telegram bot is only started for a long-running instance: --run-once
+	// exits right after one check, so there's no continuous state to notify
+	// about and no point long-polling for commands.
+	if config.CLIConfig.Telegram.BotToken != "" {
+		if config.CLIConfig.RunOnce {
+			logger.Info("Telegram bot is not started in --run-once mode")
+		} else {
+			var subManager telegram.SubscriptionManager
+			if config.CLIConfig.Telegram.ManageSubscriptions {
+				subManager = &telegramSubscriptionManager{store: subURLStore, reload: reloadSubscriptions}
+			}
+
+			if bot, err := telegram.New(
+				config.CLIConfig.Telegram.BotToken,
+				config.CLIConfig.Telegram.ChatIDs,
+				proxyChecker,
+				config.CLIConfig.Telegram.NotifyOnRecovery,
+				config.CLIConfig.Telegram.Commands,
+				subManager,
+			); err != nil {
+				logger.Error("Telegram bot disabled: %v", err)
+			} else {
+				tgBot = bot
+				tgBot.StartCommands()
+				defer tgBot.Stop()
+			}
+		}
+	}
+
 	if config.CLIConfig.RunOnce {
 		runCheckIteration()
 		logger.Info("Check completed")
@@ -182,31 +254,11 @@ func main() {
 		updateScheduler := gocron.NewScheduler(time.UTC)
 		updateScheduler.Every(config.CLIConfig.Subscription.UpdateInterval).Seconds().WaitForSchedule().Do(func() {
 			logger.Info("Checking subscriptions for updates...")
-			newConfigs, err := subscription.ReadFromMultipleSources(config.CLIConfig.Subscription.URLs)
+			changed, count, err := reloadSubscriptions()
 			if err != nil {
 				logger.Error("Error fetching subscriptions: %v", err)
-				return
-			}
-
-			if config.CLIConfig.Proxy.ResolveDomains {
-				resolved, err := subscription.ResolveDomainsForConfigs(newConfigs)
-				if err != nil {
-					logger.Error("Error resolving domains: %v", err)
-				} else {
-					newConfigs = resolved
-				}
-			}
-
-			if !xray.IsConfigsEqual(*proxyConfigs, newConfigs) {
-				if err := updateConfiguration(newConfigs, proxyConfigs, xrayRunner, proxyChecker); err != nil {
-					logger.Error("Error updating configuration: %v", err)
-				} else {
-					// Immediately re-check the new proxy set so /metrics is repopulated
-					// right away instead of staying empty until the next scheduled check
-					// (up to PROXY_CHECK_INTERVAL), then drop series for removed proxies.
-					runCheckIteration()
-					proxyChecker.PruneStaleResults()
-				}
+			} else if changed {
+				logger.Info("Configuration updated: %d proxies", count)
 			} else {
 				logger.Info("Subscriptions checked, no changes")
 			}
