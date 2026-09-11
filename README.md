@@ -169,6 +169,17 @@ docker compose up -d --build
 | `METRICS_PROTECTED` | `true` | Enable Basic Auth protection for web dashboard |
 | `METRICS_USERNAME` | `admin` | Web UI login username |
 | `METRICS_PASSWORD` | — | Web UI login password |
+| `HTTP_PROXY` / `ALL_PROXY` | `""` | Outbound proxy (`socks5://...` or `http://...`) for Telegram and external APIs |
+
+### Outbound Proxy (for restricted networks)
+If your server is in an environment where Telegram API is blocked (e.g. Russian VPS), configure SOCKS5 or HTTP outbound proxy variables in `.env`:
+```env
+HTTP_PROXY=socks5://xray-client:1080
+HTTPS_PROXY=socks5://xray-client:1080
+ALL_PROXY=socks5://xray-client:1080
+NO_PROXY=localhost,127.0.0.1
+```
+All outgoing bot requests to Telegram API and Check-Host will be routed through the proxy.
 
 ### Headless Mode (No Web Dashboard)
 If you only need the Telegram Bot and Prometheus metrics without the web panel:

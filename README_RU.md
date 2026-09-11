@@ -169,6 +169,17 @@ docker compose up -d --build
 | `METRICS_PROTECTED` | `true` | Включить Basic Auth защиту веб-панели |
 | `METRICS_USERNAME` | `admin` | Логин для веб-панели |
 | `METRICS_PASSWORD` | — | Пароль для веб-панели |
+| `HTTP_PROXY` / `ALL_PROXY` | `""` | Исходящий прокси (`socks5://...` или `http://...`) для Telegram и API |
+
+### Работа через исходящий прокси (для серверов в РФ)
+Если Telegram API заблокирован на сервере (например, на российских VPS), укажите SOCKS5/HTTP-прокси в `.env`:
+```env
+HTTP_PROXY=socks5://xray-client:1080
+HTTPS_PROXY=socks5://xray-client:1080
+ALL_PROXY=socks5://xray-client:1080
+NO_PROXY=localhost,127.0.0.1
+```
+Все исходящие запросы бота к Telegram и Check-Host будут безопасно маршрутизироваться через прокси.
 
 ### Headless-режим (без веб-панели)
 Если веб-интерфейс не нужен (нужны только Telegram-бот и метрики):
