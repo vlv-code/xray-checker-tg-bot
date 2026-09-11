@@ -59,22 +59,32 @@ Full list of features available in the [documentation](https://xray-checker.kuto
 Xray Checker includes a built-in Telegram bot for alerts and live subscription management:
 
 ### Features
-* **Alerting**: Instant notification when a proxy goes offline and when it recovers (with latency measurements). Initial state is seeded silently on startup to prevent alert spam.
-* **Interactive Commands** (restricted to allowed chat IDs):
-  * `/status` — View online/offline status and latency of all proxies
-  * `/subs` — List all active subscriptions (🔒 static from env/flags, ➕ dynamic from bot)
-  * `/addsub <URL>` — Validate a new subscription, save it, immediately reload Xray configs and re-check proxies
-  * `/delsub <URL>` — Remove a dynamically added subscription and reload
-  * `/help` — Display bot commands and help
+* **Interactive Menu & Buttons**: Full-featured `/menu` with inline buttons for status, diagnostics, stats, subscriptions, quiet hours, and settings.
+* **Alerting & Lifecycle**:
+  * **Live Mode** (default): Edits the original outage alert message upon recovery to show total downtime duration.
+  * **Clean Mode**: Deletes the outage alert immediately upon recovery, and auto-cleans recovery confirmations after 2 minutes to keep chat clean.
+* **Live Diagnostics (`/diag`)**: Fast concurrent testing of all proxies against multiple target endpoints (Cloudflare, Google, custom URLs) with a detailed per-target matrix report.
+* **Outage Statistics (`/stats`)**: Persistent tracking of uptime %, drop counts, total downtime, and a sliding log of recent incidents.
+* **Quiet Hours & Scheduled Digests**: Suppresses sound notifications during configured sleeping hours (e.g. 23:00–08:00) with a morning digest and periodic daytime health summaries.
+* **Dynamic Subscriptions**: `/subs`, `/addsub <URL>`, `/delsub <URL>`.
 
 ### Configuration
 
 | Environment Variable | CLI Flag | Default | Description |
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | `--telegram-bot-token` | `""` | Telegram bot token from [@BotFather](https://t.me/BotFather) (enables the bot when set) |
-| `TELEGRAM_CHAT_IDS` | `--telegram-chat-id` | `""` | Chat ID(s) allowed to use the bot and receive alerts (repeatable flag / comma-separated env) |
+| `TELEGRAM_CHAT_IDS` | `--telegram-chat-id` | `""` | Chat ID(s) allowed to use the bot and receive alerts |
+| `TELEGRAM_ALERT_MODE` | `--telegram-alert-mode` | `live` | Alert mode: `live` (edits outage message with downtime) or `clean` (auto-deletes) |
+| `TELEGRAM_QUIET_HOURS_ENABLED` | `--telegram-quiet-hours` | `true` | Suppress alert sounds during night hours |
+| `TELEGRAM_QUIET_HOURS_START` | `--telegram-quiet-hours-start` | `23:00` | Start of quiet hours (HH:MM) |
+| `TELEGRAM_QUIET_HOURS_END` | `--telegram-quiet-hours-end` | `08:00` | End of quiet hours (HH:MM), triggers morning digest |
+| `TELEGRAM_DAY_DIGEST_ENABLED` | `--telegram-day-digest` | `true` | Send periodic daytime status digests |
+| `TELEGRAM_DAY_DIGEST_INTERVAL_HOURS` | `--telegram-day-digest-interval` | `6` | Interval in hours between daytime digests |
+| `STATS_STORE_PATH` | `--telegram-stats-store-path` | `stats.json` | Path to JSON file storing persistent outage statistics |
+| `BOT_CONFIG_STORE_PATH` | `--telegram-config-store-path` | `bot_config.json` | Path to JSON file storing runtime bot configuration overrides |
+| `PROXY_TARGET_URLS` | `--proxy-target-url` | Cloudflare/Google 204 | Custom fallback endpoints for checking proxy availability |
 | `TELEGRAM_NOTIFY_ON_RECOVERY` | `--telegram-notify-on-recovery` | `true` | Send notification when a proxy comes back online |
-| `TELEGRAM_COMMANDS_ENABLED` | `--telegram-commands` | `true` | Enable interactive commands (`/status`, `/help`, etc.) |
+| `TELEGRAM_COMMANDS_ENABLED` | `--telegram-commands` | `true` | Enable interactive commands (`/menu`, `/status`, `/diag`, `/stats`, etc.) |
 | `TELEGRAM_MANAGE_SUBSCRIPTIONS` | `--telegram-manage-subscriptions` | `true` | Allow managing subscriptions via `/addsub`, `/delsub`, `/subs` |
 | `SUBSCRIPTION_STORE_PATH` | `--subscription-store-path` | `subscriptions.json` | Path to JSON file where bot-added subscriptions are persisted across restarts |
 | `WEB_ENABLED` | `--web-enabled` | `true` | Enable web dashboard panel. Set to `false` to run without web UI |

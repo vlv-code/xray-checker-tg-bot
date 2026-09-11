@@ -221,6 +221,37 @@ func main() {
 				subManager = &telegramSubscriptionManager{store: subURLStore, reload: reloadSubscriptions}
 			}
 
+			// Initialize TargetManager
+			targetMgr := checker.NewTargetManager(config.CLIConfig.Telegram.TargetURLs)
+			proxyChecker.SetTargetManager(targetMgr)
+
+			defaultBotCfg := telegram.BotConfig{
+				QuietHoursEnabled:      config.CLIConfig.Telegram.QuietHoursEnabled,
+				QuietHoursStart:        config.CLIConfig.Telegram.QuietHoursStart,
+				QuietHoursEnd:          config.CLIConfig.Telegram.QuietHoursEnd,
+				DayDigestEnabled:       config.CLIConfig.Telegram.DayDigestEnabled,
+				DayDigestIntervalHours: config.CLIConfig.Telegram.DayDigestIntervalHours,
+				AlertMode:              config.CLIConfig.Telegram.AlertMode,
+				TargetURLs:             targetMgr.GetTargets(),
+			}
+
+			botCfgMgr, err := telegram.NewConfigManager(config.CLIConfig.Telegram.BotConfigStorePath, defaultBotCfg)
+			if err != nil {
+				logger.Warn("Failed to initialize bot config manager: %v", err)
+			} else {
+				savedTargets := botCfgMgr.Get().TargetURLs
+				if len(savedTargets) > 0 {
+					for _, t := range savedTargets {
+						_ = targetMgr.AddTarget(t)
+					}
+				}
+			}
+
+			statsStore, err := telegram.NewStatsStore(config.CLIConfig.Telegram.StatsStorePath)
+			if err != nil {
+				logger.Warn("Failed to initialize stats store: %v", err)
+			}
+
 			if bot, err := telegram.New(
 				config.CLIConfig.Telegram.BotToken,
 				config.CLIConfig.Telegram.ChatIDs,
@@ -231,6 +262,14 @@ func main() {
 			); err != nil {
 				logger.Error("Telegram bot disabled: %v", err)
 			} else {
+				if botCfgMgr != nil {
+					bot.SetConfigManager(botCfgMgr)
+				}
+				if statsStore != nil {
+					bot.SetStatsStore(statsStore)
+				}
+				bot.SetDiagnosticsSource(proxyChecker)
+
 				tgBot = bot
 				tgBot.StartCommands()
 				defer tgBot.Stop()

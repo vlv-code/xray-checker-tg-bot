@@ -75,8 +75,17 @@ type CLI struct {
 		BotToken            string  `name:"telegram-bot-token" help:"Telegram bot token (from @BotFather); enables the bot when set" default:"" env:"TELEGRAM_BOT_TOKEN"`
 		ChatIDs             []int64 `name:"telegram-chat-id" help:"Chat ID(s) allowed to use the bot and receive alerts (can be specified multiple times)" env:"TELEGRAM_CHAT_IDS"`
 		NotifyOnRecovery    bool    `name:"telegram-notify-on-recovery" help:"Send a message when a proxy comes back online, not just when it goes down" default:"true" env:"TELEGRAM_NOTIFY_ON_RECOVERY"`
-		Commands            bool    `name:"telegram-commands" help:"Enable interactive bot commands (/status, /help)" default:"true" env:"TELEGRAM_COMMANDS_ENABLED"`
-		ManageSubscriptions bool    `name:"telegram-manage-subscriptions" help:"Allow /addsub, /delsub and /subs so allowed chats can add or remove subscriptions at runtime" default:"true" env:"TELEGRAM_MANAGE_SUBSCRIPTIONS"`
+		Commands            bool     `name:"telegram-commands" help:"Enable interactive bot commands (/status, /help)" default:"true" env:"TELEGRAM_COMMANDS_ENABLED"`
+		ManageSubscriptions bool     `name:"telegram-manage-subscriptions" help:"Allow /addsub, /delsub and /subs so allowed chats can add or remove subscriptions at runtime" default:"true" env:"TELEGRAM_MANAGE_SUBSCRIPTIONS"`
+		AlertMode           string   `name:"telegram-alert-mode" help:"Alert mode: 'live' (edits outage message) or 'clean' (auto-deletes)" default:"live" env:"TELEGRAM_ALERT_MODE"`
+		QuietHoursEnabled   bool     `name:"telegram-quiet-hours" help:"Enable quiet hours" default:"true" env:"TELEGRAM_QUIET_HOURS_ENABLED"`
+		QuietHoursStart     string   `name:"telegram-quiet-hours-start" help:"Quiet hours start time (HH:MM)" default:"23:00" env:"TELEGRAM_QUIET_HOURS_START"`
+		QuietHoursEnd       string   `name:"telegram-quiet-hours-end" help:"Quiet hours end time (HH:MM)" default:"08:00" env:"TELEGRAM_QUIET_HOURS_END"`
+		DayDigestEnabled    bool     `name:"telegram-day-digest" help:"Enable daytime status digests" default:"true" env:"TELEGRAM_DAY_DIGEST_ENABLED"`
+		DayDigestIntervalHours int   `name:"telegram-day-digest-interval" help:"Interval in hours between daytime digests" default:"6" env:"TELEGRAM_DAY_DIGEST_INTERVAL_HOURS"`
+		StatsStorePath      string   `name:"telegram-stats-store-path" help:"Path to JSON file storing outage statistics" default:"stats.json" env:"STATS_STORE_PATH"`
+		BotConfigStorePath  string   `name:"telegram-config-store-path" help:"Path to JSON file storing runtime bot configuration" default:"bot_config.json" env:"BOT_CONFIG_STORE_PATH"`
+		TargetURLs          []string `name:"proxy-target-url" help:"Target URLs to check proxies against (can be specified multiple times)" env:"PROXY_TARGET_URLS"`
 	} `embed:"" prefix:""`
 
 	Version  VersionFlag `name:"version" help:"Print version information and quit"`
