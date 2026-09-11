@@ -20,6 +20,9 @@
 
 </div>
 
+> [!NOTE]
+> **This repository is a fork of the original [kutovoys/xray-checker](https://github.com/kutovoys/xray-checker)** with added Telegram Bot support (real-time outage & recovery alerts, interactive `/status`, `/help`, dynamic subscription management via `/subs`, `/addsub`, `/delsub`), headless mode (`WEB_ENABLED`), and `.env` configuration.
+
 Xray Checker is a tool for monitoring proxy server availability with support for VLESS, VMess, Trojan, and Shadowsocks protocols. It automatically tests connections through Xray Core and provides metrics for Prometheus, as well as API endpoints for integration with monitoring systems.
 
 <div align="center">
@@ -117,17 +120,6 @@ docker compose up -d --build
 ```
 The dashboard and metrics will be accessible at `http://localhost:2112` (or `/metrics` if `WEB_ENABLED=false`).
 
-
-## 📈 Project Statistics
-
-<a href="https://star-history.com/#kutovoys/xray-checker&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=kutovoys/xray-checker&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=kutovoys/xray-checker&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=kutovoys/xray-checker&type=Date" />
- </picture>
-</a>
-
 ## 🤝 Contributing
 
 We welcome any contributions to Xray Checker! If you want to help:
@@ -153,4 +145,4 @@ Thanks to the all contributors who have helped improve Xray Checker:
 
 ## VPN Recommendation
 
-For secure and reliable internet access, we recommend [BlancVPN](https://getblancvpn.com/pricing?promo=klugscl&ref=xc-readme). Use promo code `KLUGSCL` for 15% off your subscription.
+For secure and reliable internet access, we recommend [bye-bye-home](https://cabinet.bbhome.xyz/).

@@ -10,6 +10,9 @@
 [![ru](https://img.shields.io/badge/lang-ru-blue)](https://github.com/kutovoys/xray-checker/blob/main/README_RU.md)
 [![en](https://img.shields.io/badge/lang-en-red)](https://github.com/kutovoys/xray-checker/blob/main/README.md)
 
+> [!NOTE]
+> **Данный репозиторий является форком оригинального проекта [kutovoys/xray-checker](https://github.com/kutovoys/xray-checker)** с добавлением интеграции с Telegram-ботом (мгновенные оповещения об отвале и восстановлении, команды `/status` и `/help`, динамическое управление подписками `/subs`, `/addsub`, `/delsub`), поддержкой headless-режима (`WEB_ENABLED`) и удобного управления через `.env`.
+
 Xray Checker - это инструмент для мониторинга доступности прокси-серверов с поддержкой протоколов VLESS, VMess, Trojan и Shadowsocks. Он автоматически тестирует соединения через Xray Core и предоставляет метрики для Prometheus, а также API-эндпоинты для интеграции с системами мониторинга.
 
 <div align="center">
@@ -107,16 +110,6 @@ docker compose up -d --build
 ```
 Веб-интерфейс и метрики станут доступны по адресу `http://<IP_сервера>:2112` (или только `/metrics` при `WEB_ENABLED=false`).
 
-## 📈 Статистика проекта
-
-<a href="https://star-history.com/#kutovoys/xray-checker&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=kutovoys/xray-checker&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=kutovoys/xray-checker&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=kutovoys/xray-checker&type=Date" />
- </picture>
-</a>
-
 ## 🤝 Участие в разработке
 
 Мы рады любому вкладу в развитие Xray Checker! Если вы хотите помочь:
@@ -144,4 +137,4 @@ docker compose up -d --build
 
 ## Рекомендация VPN
 
-Для безопасного и надежного доступа в интернет мы рекомендуем [BlancVPN](https://getblancvpn.com/pricing?promo=klugscl&ref=xc-readme). Используйте промокод `KLUGSCL` для получения скидки 15% на вашу подписку.
+Для безопасного и надежного доступа в интернет мы рекомендуем [bye-bye-home](https://cabinet.bbhome.xyz/).

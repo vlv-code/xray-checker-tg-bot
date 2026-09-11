@@ -373,12 +373,8 @@ export default defineConfig({
           },
           items: [
             {
-              label: "BlancVPN",
-              link: "https://getblancvpn.com/pricing?promo=klugscl&ref=xc-doc",
-              badge: { text: "KLUGSCL", variant: "success" },
-              attrs: {
-                class: "blanc-vpn-menu-item",
-              },
+              label: "bye-bye-home",
+              link: "https://cabinet.bbhome.xyz/",
             },
           ],
         },
