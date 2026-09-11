@@ -10,6 +10,7 @@ import (
 	"xray-checker/metrics"
 	"xray-checker/models"
 	"xray-checker/subscription"
+	"xray-checker/telegram"
 	"xray-checker/web"
 	"xray-checker/xray"
 
@@ -99,11 +100,37 @@ func main() {
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(metrics.NewCollector(config.CLIConfig.Metrics.Instance, proxyChecker))
 
+	// The Telegram bot is only started for a long-running instance: --run-once
+	// exits right after one check, so there's no continuous state to notify
+	// about and no point long-polling for commands.
+	var tgBot *telegram.Bot
+	if config.CLIConfig.Telegram.BotToken != "" {
+		if config.CLIConfig.RunOnce {
+			logger.Info("Telegram bot is not started in --run-once mode")
+		} else if bot, err := telegram.New(
+			config.CLIConfig.Telegram.BotToken,
+			config.CLIConfig.Telegram.ChatIDs,
+			proxyChecker,
+			config.CLIConfig.Telegram.NotifyOnRecovery,
+			config.CLIConfig.Telegram.Commands,
+		); err != nil {
+			logger.Error("Telegram bot disabled: %v", err)
+		} else {
+			tgBot = bot
+			tgBot.StartCommands()
+			defer tgBot.Stop()
+		}
+	}
+
 	runCheckIteration := func() {
 		logger.Info("Starting proxy check iteration")
 		start := time.Now()
 		proxyChecker.CheckAllProxies()
 		elapsed := time.Since(start)
+
+		if tgBot != nil {
+			tgBot.ProcessSnapshot(proxyChecker.MetricsSnapshot())
+		}
 
 		// Warn if a cycle overruns the interval: with PROXY_CHECK_CONCURRENCY set,
 		// a large/slow proxy set can take longer than PROXY_CHECK_INTERVAL, so checks
