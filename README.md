@@ -156,6 +156,7 @@ docker compose up -d --build
 | `TELEGRAM_BOT_TOKEN` | `""` | Telegram bot token from @BotFather (enables the bot) |
 | `TELEGRAM_CHAT_IDS` | `""` | Comma-separated list of authorized Telegram chat IDs |
 | `TELEGRAM_ALERT_MODE` | `live` | Alert mode: `live` (edits outage alert) or `clean` (auto-deletes) |
+| `TELEGRAM_RICH_MODE`  | `false` | Enable Telegram Bot API 10.1 rich messages for diagnostics (table + collapsible details) |
 | `TELEGRAM_QUIET_HOURS_ENABLED`| `true` | Suppress alert sound pings overnight |
 | `TELEGRAM_QUIET_HOURS_START`  | `23:00` | Start of quiet hours (HH:MM) |
 | `TELEGRAM_QUIET_HOURS_END`    | `08:00` | End of quiet hours (HH:MM) and morning digest trigger |

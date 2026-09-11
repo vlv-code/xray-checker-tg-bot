@@ -156,6 +156,7 @@ docker compose up -d --build
 | `TELEGRAM_BOT_TOKEN` | `""` | Токен Telegram-бота от @BotFather (включает бота) |
 | `TELEGRAM_CHAT_IDS` | `""` | Список Chat ID через запятую, допущенных к боту |
 | `TELEGRAM_ALERT_MODE` | `live` | Режим алертов: `live` (обновление сообщения) или `clean` (автоочистка) |
+| `TELEGRAM_RICH_MODE`  | `false` | Использовать Telegram Bot API 10.1 Rich-формат (таблица + спойлеры деталей) |
 | `TELEGRAM_QUIET_HOURS_ENABLED`| `true` | Включить тихий ночной режим (без звуковых алертов) |
 | `TELEGRAM_QUIET_HOURS_START`  | `23:00` | Начало тихого режима (HH:MM) |
 | `TELEGRAM_QUIET_HOURS_END`    | `08:00` | Окончание тихого режима (HH:MM) и утренняя сводка |

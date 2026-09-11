@@ -25,6 +25,7 @@ type BotConfig struct {
 	AlertMode              string   `json:"alert_mode"` // AlertModeLive or AlertModeClean
 	TargetURLs             []string `json:"target_urls"`
 	CheckIntervalSec       int      `json:"check_interval_sec,omitempty"`
+	RichMode               bool     `json:"rich_mode"`
 }
 
 // ConfigManager handles thread-safe access and persistence for BotConfig.

@@ -195,3 +195,60 @@ func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMa
 	return tu.InlineKeyboard(rows...)
 }
 
+// DiagPaginationMarkup returns pagination controls for the diagnostics view.
+func DiagPaginationMarkup(page, totalPages int) *telego.InlineKeyboardMarkup {
+	if page < 1 {
+		page = 1
+	}
+	if totalPages < 1 {
+		totalPages = 1
+	}
+
+	prevPage := page - 1
+	if prevPage < 1 {
+		prevPage = totalPages
+	}
+	nextPage := page + 1
+	if nextPage > totalPages {
+		nextPage = 1
+	}
+
+	var rows [][]telego.InlineKeyboardButton
+
+	// Pagination row if more than 1 page
+	if totalPages > 1 {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("⬅️ Пред", fmt.Sprintf("menu:diag:p:%d", prevPage)),
+			btn(fmt.Sprintf("%d / %d", page, totalPages), fmt.Sprintf("menu:diag:p:%d", page)),
+			btn("След ➡️", fmt.Sprintf("menu:diag:p:%d", nextPage)),
+		))
+	}
+
+	// Action row: Open Rich Report + Refresh current page
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("📊 Открыть Rich-отчёт", "menu:diag:rich"),
+		btn("🔄 Обновить", fmt.Sprintf("menu:diag:p:%d", page)),
+	))
+
+	// Back row
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("🔙 Главное меню", "menu:main"),
+	))
+
+	return tu.InlineKeyboard(rows...)
+}
+
+// RichReportMarkup returns buttons under a rich diagnostics message.
+func RichReportMarkup() *telego.InlineKeyboardMarkup {
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("📄 Постраничный вид", "menu:diag:p:1"),
+			btn("🔄 Обновить", "menu:diag:rich"),
+		),
+		tu.InlineKeyboardRow(
+			btn("🔙 Главное меню", "menu:main"),
+		),
+	)
+}
+
+

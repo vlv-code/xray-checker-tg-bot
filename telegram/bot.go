@@ -53,6 +53,7 @@ type Bot struct {
 	eventBuffer     *EventBuffer
 	diagSource      DiagnosticsSource
 	intervalHandler func(seconds int)
+	richMode        bool
 
 	mu            sync.Mutex
 	lastSeen      map[string]bool // stable_id -> last known online status
@@ -122,6 +123,18 @@ func (b *Bot) SetDiagnosticsSource(ds DiagnosticsSource) {
 // SetIntervalHandler attaches a dynamic check interval rescheduling callback.
 func (b *Bot) SetIntervalHandler(h func(seconds int)) {
 	b.intervalHandler = h
+}
+
+// SetRichMode sets default reporting format.
+func (b *Bot) SetRichMode(enabled bool) {
+	b.richMode = enabled
+}
+
+func (b *Bot) isRichMode() bool {
+	if b.configMgr != nil {
+		return b.configMgr.Get().RichMode
+	}
+	return b.richMode
 }
 
 func (b *Bot) getIntervalSec() int {
@@ -258,7 +271,7 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 	case strings.HasPrefix(msg.Text, "/status"):
 		b.replyStatus(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/diag"), strings.HasPrefix(msg.Text, "/check_now"):
-		go b.replyDiagnostics(msg.Chat.ID)
+		go b.replyDiagnostics(msg.Chat.ID, commandArg(msg.Text))
 	case strings.HasPrefix(msg.Text, "/stats"):
 		b.replyStats(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/quiet"), strings.HasPrefix(msg.Text, "/sleep"):
@@ -304,13 +317,21 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:diag":
 		b.editWithMarkup(chatID, msgID, "⏳ <b>Выполняется экспресс-диагностика всех прокси...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
 		go func() {
-			reportText := b.getDiagnosticsText()
-			if len(reportText) > maxMessageLen {
-				b.editWithMarkup(chatID, msgID, "⚡ <b>Результаты детальной диагностики:</b>\nОтчет отправлен отдельным сообщением ниже ⬇️", StatusMenuMarkup())
-				b.send(chatID, reportText)
-			} else {
-				b.editWithMarkup(chatID, msgID, reportText, StatusMenuMarkup())
+			reports := b.getDiagnosticsReports()
+			if b.isRichMode() {
+				rich := b.buildDiagnosticsRichMessage(reports)
+				b.showRichReport(chatID, msgID, rich)
+				return
 			}
+			pageText, totalPages := b.getDiagnosticsPageText(reports, 1)
+			b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(1, totalPages))
+		}()
+	case "menu:diag:rich":
+		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование Rich-отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
+		go func() {
+			reports := b.getDiagnosticsReports()
+			rich := b.buildDiagnosticsRichMessage(reports)
+			b.showRichReport(chatID, msgID, rich)
 		}()
 	case "menu:stats":
 		b.editWithMarkup(chatID, msgID, b.getStatsOverviewText(), StatsMenuMarkup())
@@ -390,7 +411,16 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		snapshot := b.source.MetricsSnapshot()
 		b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(), CheckHostMenuMarkup(snapshot))
 	default:
-		if strings.HasPrefix(cb.Data, "menu:checkhost:run:") {
+		if strings.HasPrefix(cb.Data, "menu:diag:p:") {
+			pageStr := strings.TrimPrefix(cb.Data, "menu:diag:p:")
+			page, _ := strconv.Atoi(pageStr)
+			if page <= 0 {
+				page = 1
+			}
+			reports := b.getDiagnosticsReports()
+			pageText, totalPages := b.getDiagnosticsPageText(reports, page)
+			b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages))
+		} else if strings.HasPrefix(cb.Data, "menu:checkhost:run:") {
 			stableID := strings.TrimPrefix(cb.Data, "menu:checkhost:run:")
 			go b.handleCheckHostProxy(chatID, msgID, stableID)
 		} else if strings.HasPrefix(cb.Data, "menu:interval:set:") {
@@ -660,9 +690,11 @@ func (b *Bot) getSubsText() string {
 	return sb.String()
 }
 
-func (b *Bot) getDiagnosticsText() string {
+const diagPageSize = 5
+
+func (b *Bot) getDiagnosticsReports() []checker.ProxyDiagReport {
 	if b.diagSource == nil {
-		return "Диагностика недоступна."
+		return nil
 	}
 
 	targets := []string{
@@ -677,22 +709,170 @@ func (b *Bot) getDiagnosticsText() string {
 	}
 
 	reports := b.diagSource.RunDiagnostics(targets)
+	sort.Slice(reports, func(i, j int) bool { return reports[i].ProxyName < reports[j].ProxyName })
+	return reports
+}
+
+func formatSingleProxyDiag(sb *strings.Builder, rep checker.ProxyDiagReport) {
+	icon := "🟢"
+	switch rep.Status {
+	case "offline":
+		icon = "🔴"
+	case "degraded":
+		icon = "🟡"
+	}
+
+	proto := strings.ToUpper(rep.Protocol)
+	if proto == "" {
+		proto = "PROXY"
+	}
+
+	fmt.Fprintf(sb, "%s <b>%s</b> <i>(%s)</i>\n", icon, escapeHTML(rep.ProxyName), proto)
+
+	// 1. DNS
+	if rep.NodeHealth.DNSErr != "" {
+		fmt.Fprintf(sb, "  • DNS: ❌ %s\n", escapeHTML(rep.NodeHealth.DNSErr))
+	} else if rep.NodeHealth.ResolvedIP != "" {
+		if rep.NodeHealth.DNSLatency > 0 {
+			fmt.Fprintf(sb, "  • DNS: ✅ <code>%s</code> (%.0f ms)\n", rep.NodeHealth.ResolvedIP, float64(rep.NodeHealth.DNSLatency.Milliseconds()))
+		} else {
+			fmt.Fprintf(sb, "  • DNS: ✅ <code>%s</code>\n", rep.NodeHealth.ResolvedIP)
+		}
+	}
+
+	// 2. TCP Ping
+	if rep.Port > 0 {
+		if rep.NodeHealth.TCPErr != "" {
+			fmt.Fprintf(sb, "  • TCP (%d): ❌ %s\n", rep.Port, escapeHTML(rep.NodeHealth.TCPErr))
+		} else if rep.NodeHealth.TCPPing > 0 {
+			fmt.Fprintf(sb, "  • TCP (%d): ✅ %.0f ms\n", rep.Port, float64(rep.NodeHealth.TCPPing.Milliseconds()))
+		}
+	}
+
+	// 3. TLS Handshake (if attempted)
+	if rep.NodeHealth.TLSErr != "" {
+		fmt.Fprintf(sb, "  • TLS: ❌ %s\n", escapeHTML(rep.NodeHealth.TLSErr))
+	} else if rep.NodeHealth.TLSLatency > 0 {
+		fmt.Fprintf(sb, "  • TLS: ✅ %.0f ms\n", float64(rep.NodeHealth.TLSLatency.Milliseconds()))
+	}
+
+	// 4. Target Endpoints
+	for _, tr := range rep.Targets {
+		siteName := simplifyTargetName(tr.URL)
+		if tr.Success {
+			fmt.Fprintf(sb, "  • %s: ✅ %.0f ms\n", siteName, float64(tr.Latency.Milliseconds()))
+		} else {
+			fmt.Fprintf(sb, "  • %s: ❌ %s\n", siteName, escapeHTML(tr.Error))
+		}
+	}
+
+	// 5. External Check-Host
+	if rep.CheckHost != nil {
+		ruStatus := "❌ недоступен"
+		if rep.CheckHost.RUAvailable {
+			ruStatus = "✅ отвечает"
+		}
+		worldStatus := "❌ недоступен"
+		if rep.CheckHost.WorldAvailable {
+			worldStatus = "✅ отвечает"
+		}
+		fmt.Fprintf(sb, "  • Check-Host (TCP): РФ %s, Мир %s\n", ruStatus, worldStatus)
+		if rep.CheckHost.PermanentLink != "" {
+			fmt.Fprintf(sb, "    🔗 <a href=\"%s\">отчет</a>\n", rep.CheckHost.PermanentLink)
+		}
+	}
+
+	// 6. Verdict
+	if rep.Verdict != "" {
+		fmt.Fprintf(sb, "  💡 <i>Вердикт: %s</i>\n", escapeHTML(rep.Verdict))
+	}
+
+	sb.WriteString("\n")
+}
+
+func (b *Bot) getDiagnosticsText() string {
+	reports := b.getDiagnosticsReports()
 	if len(reports) == 0 {
 		return "Нет прокси для проверки."
 	}
 
-	sort.Slice(reports, func(i, j int) bool { return reports[i].ProxyName < reports[j].ProxyName })
-
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("<b>⚡ Результаты детальной диагностики (%d прокси):</b>\n\n", len(reports)))
+	for _, rep := range reports {
+		formatSingleProxyDiag(&sb, rep)
+	}
+	return sb.String()
+}
+
+func (b *Bot) getDiagnosticsPageText(reports []checker.ProxyDiagReport, page int) (string, int) {
+	if len(reports) == 0 {
+		return "Нет доступных прокси для проверки.", 1
+	}
+
+	totalPages := (len(reports) + diagPageSize - 1) / diagPageSize
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+
+	start := (page - 1) * diagPageSize
+	end := start + diagPageSize
+	if end > len(reports) {
+		end = len(reports)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("⚡ <b>Экспресс-диагностика</b> (Стр. %d из %d, всего %d прокси):\n\n", page, totalPages, len(reports)))
+
+	for _, rep := range reports[start:end] {
+		formatSingleProxyDiag(&sb, rep)
+	}
+
+	return sb.String(), totalPages
+}
+
+func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *telego.InputRichMessage {
+	if len(reports) == 0 {
+		msg := tu.RichMessage(tu.RichBlockParagraph(tu.RichTextPlain("Нет доступных прокси для проверки.")))
+		return &msg
+	}
+
+	var blocks []telego.InputRichBlock
+
+	// 1. Heading
+	blocks = append(blocks, tu.RichBlockSectionHeading(
+		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("⚡ Результаты детальной диагностики (%d прокси)", len(reports)))),
+		2,
+	))
+
+	// 2. Table: Нода | Протокол | Пинг | Статус
+	headerRow := []telego.RichBlockTableCell{
+		tu.RichBlockTableCell(tu.RichTextBold(tu.RichTextPlain("Нода"))).WithIsHeader(),
+		tu.RichBlockTableCell(tu.RichTextBold(tu.RichTextPlain("Прот."))).WithIsHeader(),
+		tu.RichBlockTableCell(tu.RichTextBold(tu.RichTextPlain("Пинг"))).WithIsHeader(),
+		tu.RichBlockTableCell(tu.RichTextBold(tu.RichTextPlain("Статус"))).WithIsHeader(),
+	}
+
+	var tableRows [][]telego.RichBlockTableCell
+	tableRows = append(tableRows, headerRow)
 
 	for _, rep := range reports {
-		icon := "🟢"
+		latencyText := "—"
+		for _, tr := range rep.Targets {
+			if tr.Success {
+				latencyText = fmt.Sprintf("%.0f ms", float64(tr.Latency.Milliseconds()))
+				break
+			}
+		}
+
+		statusText := "🟢 OK"
 		switch rep.Status {
 		case "offline":
-			icon = "🔴"
+			statusText = "🔴 Оффлайн"
 		case "degraded":
-			icon = "🟡"
+			statusText = "🟡 Сбоит"
 		}
 
 		proto := strings.ToUpper(rep.Protocol)
@@ -700,70 +880,69 @@ func (b *Bot) getDiagnosticsText() string {
 			proto = "PROXY"
 		}
 
-		fmt.Fprintf(&sb, "%s <b>%s</b> <i>(%s)</i>\n", icon, escapeHTML(rep.ProxyName), proto)
-
-		// 1. DNS
-		if rep.NodeHealth.DNSErr != "" {
-			fmt.Fprintf(&sb, "  • DNS: ❌ %s\n", escapeHTML(rep.NodeHealth.DNSErr))
-		} else if rep.NodeHealth.ResolvedIP != "" {
-			if rep.NodeHealth.DNSLatency > 0 {
-				fmt.Fprintf(&sb, "  • DNS: ✅ <code>%s</code> (%.0f ms)\n", rep.NodeHealth.ResolvedIP, float64(rep.NodeHealth.DNSLatency.Milliseconds()))
-			} else {
-				fmt.Fprintf(&sb, "  • DNS: ✅ <code>%s</code>\n", rep.NodeHealth.ResolvedIP)
-			}
-		}
-
-		// 2. TCP Ping
-		if rep.Port > 0 {
-			if rep.NodeHealth.TCPErr != "" {
-				fmt.Fprintf(&sb, "  • TCP (%d): ❌ %s\n", rep.Port, escapeHTML(rep.NodeHealth.TCPErr))
-			} else if rep.NodeHealth.TCPPing > 0 {
-				fmt.Fprintf(&sb, "  • TCP (%d): ✅ %.0f ms\n", rep.Port, float64(rep.NodeHealth.TCPPing.Milliseconds()))
-			}
-		}
-
-		// 3. TLS Handshake (if attempted)
-		if rep.NodeHealth.TLSErr != "" {
-			fmt.Fprintf(&sb, "  • TLS: ❌ %s\n", escapeHTML(rep.NodeHealth.TLSErr))
-		} else if rep.NodeHealth.TLSLatency > 0 {
-			fmt.Fprintf(&sb, "  • TLS: ✅ %.0f ms\n", float64(rep.NodeHealth.TLSLatency.Milliseconds()))
-		}
-
-		// 4. Target Endpoints
-		for _, tr := range rep.Targets {
-			siteName := simplifyTargetName(tr.URL)
-			if tr.Success {
-				fmt.Fprintf(&sb, "  • %s: ✅ %.0f ms\n", siteName, float64(tr.Latency.Milliseconds()))
-			} else {
-				fmt.Fprintf(&sb, "  • %s: ❌ %s\n", siteName, escapeHTML(tr.Error))
-			}
-		}
-
-		// 5. External Check-Host
-		if rep.CheckHost != nil {
-			ruStatus := "❌ недоступен"
-			if rep.CheckHost.RUAvailable {
-				ruStatus = "✅ отвечает"
-			}
-			worldStatus := "❌ недоступен"
-			if rep.CheckHost.WorldAvailable {
-				worldStatus = "✅ отвечает"
-			}
-			fmt.Fprintf(&sb, "  • Check-Host (TCP): РФ %s, Мир %s\n", ruStatus, worldStatus)
-			if rep.CheckHost.PermanentLink != "" {
-				fmt.Fprintf(&sb, "    🔗 <a href=\"%s\">отчет</a>\n", rep.CheckHost.PermanentLink)
-			}
-		}
-
-		// 6. Verdict
-		if rep.Verdict != "" {
-			fmt.Fprintf(&sb, "  💡 <i>Вердикт: %s</i>\n", escapeHTML(rep.Verdict))
-		}
-
-		sb.WriteString("\n")
+		tableRows = append(tableRows, []telego.RichBlockTableCell{
+			tu.RichBlockTableCell(tu.RichTextPlain(rep.ProxyName)),
+			tu.RichBlockTableCell(tu.RichTextPlain(proto)),
+			tu.RichBlockTableCell(tu.RichTextPlain(latencyText)),
+			tu.RichBlockTableCell(tu.RichTextPlain(statusText)),
+		})
 	}
 
-	return sb.String()
+	table := tu.RichBlockTable(tableRows...).WithIsBordered().WithIsStriped().WithIsCompact()
+	blocks = append(blocks, table)
+	blocks = append(blocks, tu.RichBlockDivider())
+
+	// 3. Collapsible details for degraded/offline proxies
+	hasProblems := false
+	for _, rep := range reports {
+		if rep.Status == "online" {
+			continue
+		}
+		hasProblems = true
+
+		summary := tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("🔴 %s — детали сбоя (%s)", rep.ProxyName, strings.ToUpper(rep.Protocol))))
+
+		var detailLines []string
+		if rep.NodeHealth.DNSErr != "" {
+			detailLines = append(detailLines, fmt.Sprintf("DNS: ❌ %s", rep.NodeHealth.DNSErr))
+		} else if rep.NodeHealth.ResolvedIP != "" {
+			detailLines = append(detailLines, fmt.Sprintf("DNS: ✅ %s", rep.NodeHealth.ResolvedIP))
+		}
+		if rep.Port > 0 {
+			if rep.NodeHealth.TCPErr != "" {
+				detailLines = append(detailLines, fmt.Sprintf("TCP (%d): ❌ %s", rep.Port, rep.NodeHealth.TCPErr))
+			} else if rep.NodeHealth.TCPPing > 0 {
+				detailLines = append(detailLines, fmt.Sprintf("TCP (%d): ✅ %.0f ms", rep.Port, float64(rep.NodeHealth.TCPPing.Milliseconds())))
+			}
+		}
+		if rep.NodeHealth.TLSErr != "" {
+			detailLines = append(detailLines, fmt.Sprintf("TLS: ❌ %s", rep.NodeHealth.TLSErr))
+		}
+		for _, tr := range rep.Targets {
+			site := simplifyTargetName(tr.URL)
+			if tr.Success {
+				detailLines = append(detailLines, fmt.Sprintf("%s: ✅ %.0f ms", site, float64(tr.Latency.Milliseconds())))
+			} else {
+				detailLines = append(detailLines, fmt.Sprintf("%s: ❌ %s", site, tr.Error))
+			}
+		}
+		if rep.CheckHost != nil {
+			detailLines = append(detailLines, fmt.Sprintf("Check-Host: %s", rep.CheckHost.Verdict))
+		}
+
+		detailsBlock := tu.RichBlockDetails(
+			summary,
+			tu.RichBlockPreformatted(tu.RichTextPlain(strings.Join(detailLines, "\n"))),
+		)
+		blocks = append(blocks, detailsBlock)
+	}
+
+	if !hasProblems {
+		blocks = append(blocks, tu.RichBlockParagraph(tu.RichTextItalic(tu.RichTextPlain("Все прокси работают стабильно, сбоев не обнаружено."))))
+	}
+
+	msg := tu.RichMessage(blocks...)
+	return &msg
 }
 
 func simplifyTargetName(targetURL string) string {
@@ -783,10 +962,26 @@ func simplifyTargetName(targetURL string) string {
 	}
 }
 
-func (b *Bot) replyDiagnostics(chatID int64) {
-	b.send(chatID, "⏳ <b>Выполняется экспресс-диагностика всех прокси...</b>\nПожалуйста, подождите...")
-	text := b.getDiagnosticsText()
-	b.sendWithMarkup(chatID, text, BackToMenuMarkup())
+func (b *Bot) replyDiagnostics(chatID int64, arg string) {
+	sent, _ := b.sendAndReturn(chatID, "⏳ <b>Выполняется экспресс-диагностика всех прокси...</b>\nПожалуйста, подождите...")
+	reports := b.getDiagnosticsReports()
+	msgID := 0
+	if sent != nil {
+		msgID = sent.GetMessageID()
+	}
+
+	if b.isRichMode() || strings.ToLower(strings.TrimSpace(arg)) == "rich" {
+		rich := b.buildDiagnosticsRichMessage(reports)
+		b.showRichReport(chatID, msgID, rich)
+		return
+	}
+
+	pageText, totalPages := b.getDiagnosticsPageText(reports, 1)
+	if msgID > 0 {
+		b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(1, totalPages))
+	} else {
+		b.sendWithMarkup(chatID, pageText, DiagPaginationMarkup(1, totalPages))
+	}
 }
 
 func (b *Bot) replyDigest(chatID int64) {
@@ -1066,6 +1261,47 @@ func (b *Bot) editWithMarkup(chatID int64, messageID int, text string, markup *t
 		logger.Error("Telegram: failed to edit message %d in chat %d: %v", messageID, chatID, err)
 	}
 }
+
+func (b *Bot) editWithRichMarkup(chatID int64, messageID int, rich *telego.InputRichMessage, markup *telego.InlineKeyboardMarkup) error {
+	params := &telego.EditMessageTextParams{
+		ChatID:      tu.ID(chatID),
+		MessageID:   messageID,
+		RichMessage: rich,
+		ReplyMarkup: markup,
+	}
+	_, err := b.api.EditMessageText(b.ctx, params)
+	if err != nil {
+		logger.Error("Telegram: failed to edit rich message %d in chat %d: %v", messageID, chatID, err)
+	}
+	return err
+}
+
+func (b *Bot) sendRich(chatID int64, rich *telego.InputRichMessage, markup *telego.InlineKeyboardMarkup) (*telego.Message, error) {
+	if rich == nil {
+		return nil, fmt.Errorf("rich message is nil")
+	}
+	params := &telego.SendRichMessageParams{
+		ChatID:      tu.ID(chatID),
+		RichMessage: *rich,
+		ReplyMarkup: markup,
+	}
+	sent, err := b.api.SendRichMessage(b.ctx, params)
+	if err != nil {
+		logger.Error("Telegram: failed to send rich message to %d: %v", chatID, err)
+		return nil, err
+	}
+	return sent, nil
+}
+
+func (b *Bot) showRichReport(chatID int64, messageID int, rich *telego.InputRichMessage) {
+	if messageID > 0 {
+		if err := b.editWithRichMarkup(chatID, messageID, rich, RichReportMarkup()); err == nil {
+			return
+		}
+	}
+	_, _ = b.sendRich(chatID, rich, RichReportMarkup())
+}
+
 
 func splitMessage(text string, limit int) []string {
 	if len(text) <= limit {

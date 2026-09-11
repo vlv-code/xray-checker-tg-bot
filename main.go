@@ -255,6 +255,7 @@ func main() {
 				AlertMode:              config.CLIConfig.Telegram.AlertMode,
 				TargetURLs:             targetMgr.GetTargets(),
 				CheckIntervalSec:       config.CLIConfig.Proxy.CheckInterval,
+				RichMode:               config.CLIConfig.Telegram.RichMode,
 			}
 
 			botCfgMgr, err := telegram.NewConfigManager(config.CLIConfig.Telegram.BotConfigStorePath, defaultBotCfg)
@@ -295,6 +296,7 @@ func main() {
 				}
 				bot.SetDiagnosticsSource(proxyChecker)
 				bot.SetIntervalHandler(rescheduleChecks)
+				bot.SetRichMode(config.CLIConfig.Telegram.RichMode)
 
 				tgBot = bot
 				tgBot.StartCommands()

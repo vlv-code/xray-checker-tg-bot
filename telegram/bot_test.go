@@ -1,10 +1,13 @@
 package telegram
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"xray-checker/checker"
 	"xray-checker/metrics"
 )
 
@@ -93,4 +96,91 @@ func TestCheckHostMenuAndMarkup(t *testing.T) {
 		t.Errorf("expected /checkhost in menu text, got: %s", txt)
 	}
 }
+
+func TestBot_DiagnosticsPaginationAndRichMessage(t *testing.T) {
+	b := &Bot{}
+
+	// 1. RichMode getter/setter
+	if b.isRichMode() {
+		t.Errorf("expected default richMode to be false")
+	}
+	b.SetRichMode(true)
+	if !b.isRichMode() {
+		t.Errorf("expected richMode to be true after SetRichMode(true)")
+	}
+	b.SetRichMode(false)
+
+	// 2. Empty reports
+	emptyText, emptyPages := b.getDiagnosticsPageText(nil, 1)
+	if emptyPages != 1 || !strings.Contains(emptyText, "Нет доступных прокси") {
+		t.Errorf("unexpected empty reports result: pages=%d, text=%s", emptyPages, emptyText)
+	}
+
+	emptyRich := b.buildDiagnosticsRichMessage(nil)
+	if emptyRich == nil || len(emptyRich.Blocks) == 0 {
+		t.Errorf("expected non-empty rich message for empty reports")
+	}
+
+	// 3. Mock reports (12 proxies -> 3 pages of 5, 5, 2)
+	reports := make([]checker.ProxyDiagReport, 12)
+	for i := 0; i < 12; i++ {
+		status := "online"
+		if i == 1 {
+			status = "degraded"
+		} else if i == 5 {
+			status = "offline"
+		}
+		reports[i] = checker.ProxyDiagReport{
+			ProxyName: fmt.Sprintf("Proxy-%d", i+1),
+			Protocol:  "vless",
+			Port:      443,
+			Status:    status,
+			NodeHealth: checker.NodeHealth{
+				ResolvedIP: "1.2.3.4",
+				TCPPing:    50 * time.Millisecond,
+			},
+			Targets: []checker.TargetDiagResult{
+				{
+					URL:     "https://cp.cloudflare.com/generate_204",
+					Success: status != "offline",
+					Latency: 100 * time.Millisecond,
+				},
+			},
+		}
+	}
+
+	// Test page 1
+	p1Text, totalPages := b.getDiagnosticsPageText(reports, 1)
+	if totalPages != 3 {
+		t.Fatalf("expected 3 total pages, got %d", totalPages)
+	}
+	if !strings.Contains(p1Text, "Стр. 1 из 3") {
+		t.Errorf("expected header with page 1 of 3, got: %s", p1Text)
+	}
+	if !strings.Contains(p1Text, "Proxy-1") || !strings.Contains(p1Text, "Proxy-5") {
+		t.Errorf("expected Proxy-1 and Proxy-5 on page 1, got: %s", p1Text)
+	}
+	if strings.Contains(p1Text, "Proxy-6") {
+		t.Errorf("Proxy-6 should not be on page 1")
+	}
+
+	// Test page 3
+	p3Text, _ := b.getDiagnosticsPageText(reports, 3)
+	if !strings.Contains(p3Text, "Proxy-11") || !strings.Contains(p3Text, "Proxy-12") {
+		t.Errorf("expected Proxy-11 and Proxy-12 on page 3, got: %s", p3Text)
+	}
+	if strings.Contains(p3Text, "Proxy-10") {
+		t.Errorf("Proxy-10 should not be on page 3")
+	}
+
+	// Test rich message generation
+	richMsg := b.buildDiagnosticsRichMessage(reports)
+	if richMsg == nil {
+		t.Fatalf("expected non-nil rich message")
+	}
+	if len(richMsg.Blocks) < 3 {
+		t.Errorf("expected at least heading, table, divider and detail blocks, got %d blocks", len(richMsg.Blocks))
+	}
+}
+
 
