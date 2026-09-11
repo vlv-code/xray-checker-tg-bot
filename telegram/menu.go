@@ -40,22 +40,72 @@ func SettingsMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("🚫 Управление хостами (вкл/выкл)", "menu:disabled_hosts:1"),
 		),
 		tu.InlineKeyboardRow(
+			btn("🌐 Фоновый Check-Host", "menu:checkhost_cfg"),
 			btn("⏱️ Интервал проверок", "menu:interval"),
+		),
+		tu.InlineKeyboardRow(
 			btn("🎯 Сайты проверки", "menu:targets"),
-		),
-		tu.InlineKeyboardRow(
 			btn("🌙 Тихий режим", "menu:quiet"),
+		),
+		tu.InlineKeyboardRow(
 			btn("🧹 Режим алертов", "menu:alert_mode"),
-		),
-		tu.InlineKeyboardRow(
 			btn("📋 Подписки", "menu:subs"),
-			btn("📈 Статистика инцидентов", "menu:stats"),
 		),
 		tu.InlineKeyboardRow(
+			btn("📈 Статистика инцидентов", "menu:stats"),
 			btn("📊 Отправить сводку", "menu:digest:now"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🔙 Главное меню", "menu:main"),
+		),
+	)
+}
+
+// CheckHostSettingsMarkup returns keyboard for configuring background Check-Host auditing.
+func CheckHostSettingsMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
+	bgStatus := "❌ Фоновый чек: ВЫКЛ"
+	if cfg.CheckHostBgEnabled {
+		bgStatus = "✅ Фоновый чек: ВКЛ"
+	}
+
+	alertStatus := "🔕 Алерты по РФ: ВЫКЛ"
+	if cfg.CheckHostAlertEnabled {
+		alertStatus = "🔔 Алерты по РФ: ВКЛ"
+	}
+
+	intHours := cfg.CheckHostIntervalHours
+	if intHours <= 0 {
+		intHours = 1
+	}
+
+	makeIntBtn := func(h int) telego.InlineKeyboardButton {
+		text := fmt.Sprintf("%d ч.", h)
+		if intHours == h {
+			text = fmt.Sprintf("• %d ч. •", h)
+		}
+		return btn(text, fmt.Sprintf("menu:checkhost:int:%d", h))
+	}
+
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn(bgStatus, "menu:checkhost:toggle_bg"),
+		),
+		tu.InlineKeyboardRow(
+			btn(alertStatus, "menu:checkhost:toggle_alert"),
+		),
+		tu.InlineKeyboardRow(
+			makeIntBtn(1),
+			makeIntBtn(2),
+			makeIntBtn(4),
+			makeIntBtn(6),
+			makeIntBtn(12),
+		),
+		tu.InlineKeyboardRow(
+			btn("🚀 Запустить проверку сейчас", "menu:checkhost:run_now"),
+		),
+		tu.InlineKeyboardRow(
+			btn("🔙 К настройкам", "menu:settings"),
+			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
 }

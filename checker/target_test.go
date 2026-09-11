@@ -46,6 +46,7 @@ func TestTargetManager_AddRemove(t *testing.T) {
 
 func TestCheckSingleTarget(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Millisecond)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer ts.Close()

@@ -86,8 +86,11 @@ type CLI struct {
 		StatsStorePath      string   `name:"telegram-stats-store-path" help:"Path to JSON file storing outage statistics" default:"stats.json" env:"STATS_STORE_PATH"`
 		BotConfigStorePath  string   `name:"telegram-config-store-path" help:"Path to JSON file storing runtime bot configuration" default:"bot_config.json" env:"BOT_CONFIG_STORE_PATH"`
 		AlertStorePath      string   `name:"telegram-alert-store-path" help:"Path to JSON file storing active outage alerts" default:"alerts.json" env:"ALERT_STORE_PATH"`
-		TargetURLs          []string `name:"proxy-target-url" help:"Target URLs to check proxies against (can be specified multiple times)" env:"PROXY_TARGET_URLS"`
-		RichMode            bool     `name:"telegram-rich-mode" help:"Render reports as Telegram Bot API Rich Messages" default:"false" env:"TELEGRAM_RICH_MODE"`
+		TargetURLs             []string `name:"proxy-target-url" help:"Target URLs to check proxies against (can be specified multiple times)" env:"PROXY_TARGET_URLS"`
+		RichMode               bool     `name:"telegram-rich-mode" help:"Render reports as Telegram Bot API Rich Messages" default:"false" env:"TELEGRAM_RICH_MODE"`
+		CheckHostBgEnabled     bool     `name:"checkhost-bg-enabled" help:"Enable periodic background Check-Host auditing" default:"true" env:"CHECKHOST_BG_ENABLED"`
+		CheckHostIntervalHours int      `name:"checkhost-interval-hours" help:"Interval in hours between background Check-Host audits" default:"1" env:"CHECKHOST_INTERVAL_HOURS"`
+		CheckHostAlertEnabled  bool     `name:"checkhost-alert-enabled" help:"Send alert when host is unreachable from Russia in background check" default:"true" env:"CHECKHOST_ALERT_ENABLED"`
 	} `embed:"" prefix:""`
 
 	Version  VersionFlag `name:"version" help:"Print version information and quit"`

@@ -1,7 +1,11 @@
 package telegram
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -339,6 +343,141 @@ func TestBot_DisabledHostsView(t *testing.T) {
 		t.Errorf("expected enabled and disabled buttons in markup, got: %v", markup)
 	}
 }
+
+func TestCheckHostSettingsMarkupAndText(t *testing.T) {
+	cfg := BotConfig{
+		CheckHostBgEnabled:     true,
+		CheckHostIntervalHours: 2,
+		CheckHostAlertEnabled:  true,
+	}
+
+	markup := CheckHostSettingsMarkup(cfg)
+	if len(markup.InlineKeyboard) < 4 {
+		t.Fatalf("expected at least 4 rows in CheckHostSettingsMarkup, got %d", len(markup.InlineKeyboard))
+	}
+
+	// Row 1: toggle bg
+	if !strings.Contains(markup.InlineKeyboard[0][0].Text, "ВКЛ") {
+		t.Errorf("expected ВКЛ in bg toggle button, got %s", markup.InlineKeyboard[0][0].Text)
+	}
+	if markup.InlineKeyboard[0][0].CallbackData != "menu:checkhost:toggle_bg" {
+		t.Errorf("expected menu:checkhost:toggle_bg callback, got %s", markup.InlineKeyboard[0][0].CallbackData)
+	}
+
+	// Row 2: toggle alert
+	if !strings.Contains(markup.InlineKeyboard[1][0].Text, "ВКЛ") {
+		t.Errorf("expected ВКЛ in alert toggle button, got %s", markup.InlineKeyboard[1][0].Text)
+	}
+
+	// Row 3: interval 2h active
+	found2h := false
+	for _, b := range markup.InlineKeyboard[2] {
+		if strings.Contains(b.Text, "• 2 ч. •") {
+			found2h = true
+		}
+	}
+	if !found2h {
+		t.Errorf("expected active • 2 ч. • button in row 3, got: %v", markup.InlineKeyboard[2])
+	}
+
+	// Test text
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "bot_cfg.json")
+	cm, _ := NewConfigManager(cfgPath, cfg)
+	bot := &Bot{configMgr: cm}
+
+	txt := bot.getCheckHostSettingsText()
+	if !strings.Contains(txt, "Включена") || !strings.Contains(txt, "каждые 2 ч.") {
+		t.Errorf("unexpected checkhost settings text: %s", txt)
+	}
+}
+
+func TestBot_RunCheckHostAudit_RUBlock(t *testing.T) {
+	ruSuccess := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/check-tcp") {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"ok":             1,
+				"request_id":     "audit1",
+				"permanent_link": "https://check-host.net/check-report/audit1",
+				"nodes": map[string]interface{}{
+					"ru2.node.check-host.net": []interface{}{"ru", "Russia", "Moscow", "1.2.3.4", "AS1"},
+					"de1.node.check-host.net": []interface{}{"de", "Germany", "Frankfurt", "5.6.7.8", "AS2"},
+				},
+			})
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/check-result/audit1") {
+			ruRes := []interface{}{map[string]interface{}{"error": "Connection timed out"}}
+			if ruSuccess {
+				ruRes = []interface{}{map[string]interface{}{"time": 0.05, "address": "1.1.1.1"}}
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"ru2.node.check-host.net": ruRes,
+				"de1.node.check-host.net": []interface{}{map[string]interface{}{"time": 0.02, "address": "1.1.1.1"}},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	chClient := checker.NewCheckHostClient(ts.URL, 10*time.Millisecond)
+
+	ms := &mockSource{
+		metrics: []metrics.ProxyMetric{
+			{Name: "Node-1", Address: "1.1.1.1:443", StableID: "node-1", Protocol: "vless", Online: true},
+			{Name: "Node-2-Disabled", Address: "2.2.2.2:443", StableID: "node-2", Protocol: "vless", Online: true, Disabled: true},
+		},
+	}
+
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "bot_cfg.json")
+	cm, _ := NewConfigManager(cfgPath, BotConfig{
+		CheckHostBgEnabled:    true,
+		CheckHostAlertEnabled: true,
+		AlertMode:             AlertModeClean,
+	})
+
+	tracker := NewAlertTracker()
+	bot := &Bot{
+		source:          ms,
+		configMgr:       cm,
+		tracker:         tracker,
+		chatIDs:         []int64{12345},
+		checkHostClient: chClient,
+		checkHostNodes:  []string{"ru2.node.check-host.net", "de1.node.check-host.net"},
+		ctx:             context.Background(),
+	}
+
+	// 1. First audit: RU is down -> alert tracked
+	bot.RunCheckHostAudit()
+
+	alertKey := "checkhost:1.1.1.1:443"
+	if !tracker.HasAlert(12345, alertKey) {
+		t.Errorf("expected active alert for %s after RU block", alertKey)
+	}
+	// Verify disabled node-2 was not audited or tracked
+	if tracker.HasAlert(12345, "checkhost:2.2.2.2:443") {
+		t.Errorf("disabled node should not have active alert")
+	}
+
+	// 2. Second audit with same down state -> deduplicated
+	bot.RunCheckHostAudit()
+	if !tracker.HasAlert(12345, alertKey) {
+		t.Errorf("expected alert to remain active")
+	}
+
+	// 3. RU recovers -> alert resolved
+	ruSuccess = true
+	bot.RunCheckHostAudit()
+	if tracker.HasAlert(12345, alertKey) {
+		t.Errorf("expected alert to be resolved after RU recovery")
+	}
+}
+
+
 
 
 

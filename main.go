@@ -256,6 +256,9 @@ func main() {
 				TargetURLs:             targetMgr.GetTargets(),
 				CheckIntervalSec:       config.CLIConfig.Proxy.CheckInterval,
 				RichMode:               config.CLIConfig.Telegram.RichMode,
+				CheckHostBgEnabled:     config.CLIConfig.Telegram.CheckHostBgEnabled,
+				CheckHostIntervalHours: config.CLIConfig.Telegram.CheckHostIntervalHours,
+				CheckHostAlertEnabled:  config.CLIConfig.Telegram.CheckHostAlertEnabled,
 			}
 
 			botCfgMgr, err := telegram.NewConfigManager(config.CLIConfig.Telegram.BotConfigStorePath, defaultBotCfg)

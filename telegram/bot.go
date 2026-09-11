@@ -7,6 +7,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -66,6 +67,12 @@ type Bot struct {
 	diagMu       sync.Mutex
 	cachedDiag   []checker.ProxyDiagReport
 	cachedDiagAt time.Time
+
+	checkHostMu        sync.Mutex
+	checkHostRunning   bool
+	lastCheckHostAudit time.Time
+	checkHostClient    *checker.CheckHostClient
+	checkHostNodes     []string
 }
 
 // New creates a Bot and verifies the token against the Telegram API.
@@ -293,6 +300,21 @@ func (b *Bot) checkSchedules(now time.Time) {
 		}
 	}
 
+	// Periodic Check-Host background audit
+	if cfg.CheckHostBgEnabled {
+		interval := time.Duration(cfg.CheckHostIntervalHours) * time.Hour
+		if interval <= 0 {
+			interval = 1 * time.Hour
+		}
+		if b.lastCheckHostAudit.IsZero() {
+			// Schedule first audit 2 minutes after startup
+			b.lastCheckHostAudit = now.Add(-interval + 2*time.Minute)
+		} else if now.Sub(b.lastCheckHostAudit) >= interval {
+			b.lastCheckHostAudit = now
+			go b.RunCheckHostAudit()
+		}
+	}
+
 	// Periodically persist stats to disk
 	if b.statsStore != nil && now.Minute()%5 == 0 {
 		_ = b.statsStore.Save()
@@ -320,6 +342,8 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		b.replyTargets(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/interval"):
 		b.handleIntervalCommand(msg)
+	case strings.HasPrefix(msg.Text, "/checkhost_bg"):
+		b.handleCheckHostBgCommand(msg)
 	case strings.HasPrefix(msg.Text, "/checkhost"):
 		go b.handleCheckHostCommand(msg)
 	case strings.HasPrefix(msg.Text, "/settings"):
@@ -472,8 +496,37 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:checkhost":
 		snapshot := b.source.MetricsSnapshot()
 		b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(), CheckHostMenuMarkup(snapshot))
+	case "menu:checkhost_cfg":
+		b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
+	case "menu:checkhost:toggle_bg":
+		if b.configMgr != nil {
+			_ = b.configMgr.Update(func(c *BotConfig) {
+				c.CheckHostBgEnabled = !c.CheckHostBgEnabled
+			})
+		}
+		b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
+	case "menu:checkhost:toggle_alert":
+		if b.configMgr != nil {
+			_ = b.configMgr.Update(func(c *BotConfig) {
+				c.CheckHostAlertEnabled = !c.CheckHostAlertEnabled
+			})
+		}
+		b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
+	case "menu:checkhost:run_now":
+		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🚀 Запуск фоновой проверки Check-Host..."))
+		go b.RunCheckHostAudit()
 	default:
-		if strings.HasPrefix(cb.Data, "menu:disabled_hosts:") {
+		if strings.HasPrefix(cb.Data, "menu:checkhost:int:") {
+			intStr := strings.TrimPrefix(cb.Data, "menu:checkhost:int:")
+			if hours, err := strconv.Atoi(intStr); err == nil && hours > 0 {
+				if b.configMgr != nil {
+					_ = b.configMgr.Update(func(c *BotConfig) {
+						c.CheckHostIntervalHours = hours
+					})
+				}
+				b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
+			}
+		} else if strings.HasPrefix(cb.Data, "menu:disabled_hosts:") {
 			pageStr := strings.TrimPrefix(cb.Data, "menu:disabled_hosts:")
 			page, _ := strconv.Atoi(pageStr)
 			if page <= 0 {
@@ -625,13 +678,24 @@ func (b *Bot) getSettingsText() string {
 
 	disabledCount := len(cfg.DisabledHosts) + len(cfg.DisabledProxies)
 
+	chBgStatus := "выключен"
+	if cfg.CheckHostBgEnabled {
+		chBgStatus = fmt.Sprintf("каждые %d ч.", cfg.CheckHostIntervalHours)
+		if cfg.CheckHostAlertEnabled {
+			chBgStatus += " (алерты по РФ: вкл)"
+		} else {
+			chBgStatus += " (алерты по РФ: выкл)"
+		}
+	}
+
 	return fmt.Sprintf("<b>⚙️ Настройки Xray Checker</b>\n\n"+
 		"• Интервал проверок: <b>%s</b>\n"+
+		"• Фоновый Check-Host: <b>%s</b>\n"+
 		"• Режим алертов: <b>%s</b>\n"+
 		"• Тихий режим: <b>%s</b>\n"+
 		"• Отключено хостов/нод: <b>%d</b>\n\n"+
 		"Выберите раздел настроек с помощью кнопок ниже:",
-		intervalStr, modeName, quietStatus, disabledCount)
+		intervalStr, chBgStatus, modeName, quietStatus, disabledCount)
 }
 
 func (b *Bot) getDisabledHostsView(page int) (string, *telego.InlineKeyboardMarkup) {
@@ -1359,6 +1423,7 @@ func (b *Bot) replyHelp(chatID int64) {
 		"/diag — детальный отчёт\n" +
 		"/settings — настройки бота и отключение хостов\n" +
 		"/checkhost [хост[:порт]] — глобальная проверка через Check-Host.net\n" +
+		"/checkhost_bg [on|off|1h|run] — фоновая проверка Check-Host\n" +
 		"/stats — статистика аптайма и инцидентов\n" +
 		"/interval [сек] — интервал проверок прокси\n" +
 		"/quiet — настройки тихого режима (сна)\n" +
@@ -1533,6 +1598,9 @@ func (b *Bot) broadcast(text string) {
 }
 
 func (b *Bot) send(chatID int64, text string) {
+	if b.api == nil {
+		return
+	}
 	for _, chunk := range splitMessage(text, maxMessageLen) {
 		params := tu.Message(tu.ID(chatID), chunk).WithParseMode(telego.ModeHTML)
 		if _, err := b.api.SendMessage(b.ctx, params); err != nil {
@@ -1542,6 +1610,9 @@ func (b *Bot) send(chatID int64, text string) {
 }
 
 func (b *Bot) sendAndReturn(chatID int64, text string) (*telego.Message, error) {
+	if b.api == nil {
+		return &telego.Message{MessageID: 100}, nil
+	}
 	params := tu.Message(tu.ID(chatID), text).WithParseMode(telego.ModeHTML)
 	sent, err := b.api.SendMessage(b.ctx, params)
 	if err != nil {
@@ -1552,6 +1623,9 @@ func (b *Bot) sendAndReturn(chatID int64, text string) (*telego.Message, error) 
 }
 
 func (b *Bot) sendWithMarkup(chatID int64, text string, markup *telego.InlineKeyboardMarkup) (*telego.Message, error) {
+	if b.api == nil {
+		return &telego.Message{MessageID: 100}, nil
+	}
 	params := tu.Message(tu.ID(chatID), text).WithParseMode(telego.ModeHTML).WithReplyMarkup(markup)
 	sent, err := b.api.SendMessage(b.ctx, params)
 	if err != nil {
@@ -1562,6 +1636,9 @@ func (b *Bot) sendWithMarkup(chatID int64, text string, markup *telego.InlineKey
 }
 
 func (b *Bot) editWithMarkup(chatID int64, messageID int, text string, markup *telego.InlineKeyboardMarkup) {
+	if b.api == nil {
+		return
+	}
 	params := &telego.EditMessageTextParams{
 		ChatID:      tu.ID(chatID),
 		MessageID:   messageID,
@@ -1748,5 +1825,285 @@ func (b *Bot) handleCheckHostProxy(chatID int64, msgID int, stableID string) {
 
 	report := checker.FormatCheckHostReport(summary)
 	b.editWithMarkup(chatID, msgID, report, BackToMenuMarkup())
+}
+
+func (b *Bot) getCheckHostSettingsText() string {
+	cfg := b.GetConfig()
+	bgStatus := "❌ Выключена"
+	if cfg.CheckHostBgEnabled {
+		bgStatus = "✅ Включена"
+	}
+
+	alertStatus := "🔕 Выключены"
+	if cfg.CheckHostAlertEnabled {
+		alertStatus = "🔔 Включены"
+	}
+
+	intHours := cfg.CheckHostIntervalHours
+	if intHours <= 0 {
+		intHours = 1
+	}
+
+	return fmt.Sprintf("🌐 <b>Настройки фоновой проверки Check-Host</b>\n\n"+
+		"• Фоновая проверка: <b>%s</b>\n"+
+		"• Периодичность: <b>каждые %d ч.</b>\n"+
+		"• Алерты о недоступности из РФ: <b>%s</b>\n\n"+
+		"Бот периодически проверяет доступность всех активных хостов из подписок с российских и мировых узлов Check-Host.net и оповещает при проблемах с доступностью в РФ.\n\n"+
+		"<i>Отключённые в настройках хосты автоматически пропускаются.</i>",
+		bgStatus, intHours, alertStatus)
+}
+
+func (b *Bot) handleCheckHostBgCommand(msg *telego.Message) {
+	arg := strings.TrimSpace(commandArg(msg.Text))
+	cfg := b.GetConfig()
+	if arg == "" {
+		b.sendWithMarkup(msg.Chat.ID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(cfg))
+		return
+	}
+
+	switch strings.ToLower(arg) {
+	case "on", "enable", "1":
+		if b.configMgr != nil {
+			_ = b.configMgr.Update(func(c *BotConfig) {
+				c.CheckHostBgEnabled = true
+			})
+		}
+		b.send(msg.Chat.ID, "✅ Фоновая проверка Check-Host <b>включена</b>.")
+	case "off", "disable", "0":
+		if b.configMgr != nil {
+			_ = b.configMgr.Update(func(c *BotConfig) {
+				c.CheckHostBgEnabled = false
+			})
+		}
+		b.send(msg.Chat.ID, "❌ Фоновая проверка Check-Host <b>выключена</b>.")
+	case "alert_on", "alerts_on":
+		if b.configMgr != nil {
+			_ = b.configMgr.Update(func(c *BotConfig) {
+				c.CheckHostAlertEnabled = true
+			})
+		}
+		b.send(msg.Chat.ID, "🔔 Алерты по недоступности из РФ <b>включены</b>.")
+	case "alert_off", "alerts_off":
+		if b.configMgr != nil {
+			_ = b.configMgr.Update(func(c *BotConfig) {
+				c.CheckHostAlertEnabled = false
+			})
+		}
+		b.send(msg.Chat.ID, "🔕 Алерты по недоступности из РФ <b>выключены</b>.")
+	case "run", "now":
+		b.send(msg.Chat.ID, "🚀 Запуск фоновой проверки Check-Host...")
+		go b.RunCheckHostAudit()
+	default:
+		cleanArg := strings.TrimSuffix(strings.ToLower(arg), "h")
+		cleanArg = strings.TrimSuffix(cleanArg, "ч")
+		if hours, err := strconv.Atoi(cleanArg); err == nil && hours > 0 {
+			if b.configMgr != nil {
+				_ = b.configMgr.Update(func(c *BotConfig) {
+					c.CheckHostIntervalHours = hours
+				})
+			}
+			b.send(msg.Chat.ID, fmt.Sprintf("⏱️ Интервал фонового Check-Host установлен на <b>каждые %d ч.</b>", hours))
+		} else {
+			b.send(msg.Chat.ID, "Использование: <code>/checkhost_bg [on|off|alert_on|alert_off|1h|2h|run]</code>")
+		}
+	}
+}
+
+// RunCheckHostAudit checks all unique active proxy hosts via Check-Host and alerts if unreachable from Russia.
+func (b *Bot) RunCheckHostAudit() {
+	b.checkHostMu.Lock()
+	if b.checkHostRunning {
+		b.checkHostMu.Unlock()
+		return
+	}
+	b.checkHostRunning = true
+	b.checkHostMu.Unlock()
+
+	defer func() {
+		b.checkHostMu.Lock()
+		b.checkHostRunning = false
+		b.checkHostMu.Unlock()
+	}()
+
+	cfg := b.GetConfig()
+	if !cfg.CheckHostBgEnabled {
+		return
+	}
+
+	snapshot := b.source.MetricsSnapshot()
+	if len(snapshot) == 0 {
+		return
+	}
+
+	type auditTarget struct {
+		targetAddr string
+		host       string
+		isUDP      bool
+		proxyName  string
+		stableID   string
+	}
+
+	seen := make(map[string]bool)
+	var targets []auditTarget
+
+	for _, pm := range snapshot {
+		if pm.Disabled {
+			continue
+		}
+		host, _, err := net.SplitHostPort(pm.Address)
+		if err != nil {
+			host = pm.Address
+		}
+		if cfg.IsDisabled(host, pm.StableID) {
+			continue
+		}
+
+		isUDP := checker.IsUDPProto(pm.Protocol)
+		dedupKey := pm.Address
+		if isUDP {
+			dedupKey = host
+		}
+
+		if seen[dedupKey] {
+			continue
+		}
+		seen[dedupKey] = true
+
+		targets = append(targets, auditTarget{
+			targetAddr: pm.Address,
+			host:       host,
+			isUDP:      isUDP,
+			proxyName:  pm.Name,
+			stableID:   pm.StableID,
+		})
+	}
+
+	if len(targets) == 0 {
+		return
+	}
+
+	logger.Info("Starting periodic Check-Host audit for %d unique active targets", len(targets))
+	chClient := b.checkHostClient
+	if chClient == nil {
+		chClient = checker.NewCheckHostClient("", 1500*time.Millisecond)
+	}
+	fastNodes := b.checkHostNodes
+	if len(fastNodes) == 0 {
+		fastNodes = append(checker.DefaultFastRUNodes, checker.DefaultFastWorldNodes...)
+	}
+
+	for i, target := range targets {
+		if i > 0 {
+			time.Sleep(3 * time.Second) // rate-limiting between Check-Host API calls
+		}
+
+		ctx, cancel := context.WithTimeout(b.ctx, 15*time.Second)
+		var summary *checker.CheckHostSummary
+		var err error
+
+		if target.isUDP {
+			summary, err = chClient.CheckPing(ctx, target.host, fastNodes)
+		} else {
+			summary, err = chClient.CheckTCP(ctx, target.targetAddr, fastNodes)
+		}
+		cancel()
+
+		if err != nil || summary == nil {
+			continue
+		}
+
+		alertKey := fmt.Sprintf("checkhost:%s", target.targetAddr)
+		now := time.Now()
+
+		if !summary.RUAvailable {
+			// Unreachable from Russian federation nodes
+			if !cfg.CheckHostAlertEnabled {
+				continue
+			}
+			isQuiet := IsQuietTime(now, cfg)
+
+			for _, chatID := range b.chatIDs {
+				if b.tracker.HasAlert(chatID, alertKey) {
+					continue
+				}
+
+				worldStatus := "❌ недоступен"
+				verdict := "Хост недоступен как из РФ, так и из других стран"
+				if summary.WorldAvailable {
+					worldStatus = "✅ доступен"
+					verdict = "Вероятная блокировка РКН на территории РФ"
+				}
+
+				alertText := fmt.Sprintf("⚠️ <b>[Check-Host] Проблема доступности из РФ</b>\n\n"+
+					"• Сервер: <code>%s</code> <i>(%s)</i>\n"+
+					"• Статус: РФ ❌ недоступен | Мир %s\n"+
+					"• Вердикт: <b>%s</b>\n"+
+					"🔗 <a href=\"%s\">Отчёт Check-Host</a>",
+					escapeHTML(target.targetAddr), escapeHTML(target.proxyName),
+					worldStatus, escapeHTML(verdict), summary.PermanentLink)
+
+				if isQuiet {
+					b.eventBuffer.Add(BufferedEvent{
+						Timestamp: now,
+						Type:      "down",
+						ProxyName: fmt.Sprintf("[Check-Host] %s", target.proxyName),
+						Reason:    "Недоступен из РФ",
+					})
+				} else {
+					if sent, err := b.sendAndReturn(chatID, alertText); err == nil {
+						b.tracker.Track(chatID, sent.MessageID, alertKey, target.proxyName, now, "CheckHost RU Block")
+					}
+				}
+			}
+		} else {
+			// RU is available: resolve any previous alert
+			for _, chatID := range b.chatIDs {
+				alert, hadAlert := b.tracker.Resolve(chatID, alertKey)
+				if !hadAlert {
+					continue
+				}
+
+				downtime := now.Sub(alert.DownAt)
+				if cfg.AlertMode == AlertModeClean {
+					if b.api != nil {
+						_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+							ChatID:    tu.ID(chatID),
+							MessageID: alert.MessageID,
+						})
+					}
+					if b.notifyOnRecovery {
+						recText := fmt.Sprintf("✅ <b>[Check-Host] Доступность из РФ восстановилась</b>\n\n• Сервер: <code>%s</code> <i>(%s)</i>",
+							escapeHTML(target.targetAddr), escapeHTML(target.proxyName))
+						if downtime > 0 {
+							recText += fmt.Sprintf("\n• Был недоступен: <b>%s</b>", FormatDowntime(downtime))
+						}
+						if sent, err := b.sendAndReturn(chatID, recText); err == nil {
+							go func(cID int64, mID int) {
+								time.Sleep(2 * time.Minute)
+								if b.api != nil {
+									_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+										ChatID:    tu.ID(cID),
+										MessageID: mID,
+									})
+								}
+							}(chatID, sent.MessageID)
+						}
+					}
+				} else { // AlertModeLive
+					if b.api != nil {
+						liveText := fmt.Sprintf("✅ <b>[Check-Host] Доступность из РФ восстановилась</b>\n\n• Сервер: <code>%s</code> <i>(%s)</i> (был недоступен %s)",
+							escapeHTML(target.targetAddr), escapeHTML(target.proxyName), FormatDowntime(downtime))
+						params := &telego.EditMessageTextParams{
+							ChatID:    tu.ID(chatID),
+							MessageID: alert.MessageID,
+							Text:      liveText,
+							ParseMode: telego.ModeHTML,
+						}
+						_, _ = b.api.EditMessageText(b.ctx, params)
+					}
+				}
+			}
+		}
+	}
 }
 

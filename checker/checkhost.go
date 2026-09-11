@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"sort"
 	"strings"
@@ -78,10 +79,12 @@ func NewCheckHostClient(baseURL string, pollInterval time.Duration) *CheckHostCl
 	if pollInterval <= 0 {
 		pollInterval = 1500 * time.Millisecond
 	}
+	jar, _ := cookiejar.New(nil)
 	return &CheckHostClient{
 		BaseURL: baseURL,
 		HTTPClient: &http.Client{
 			Timeout: 10 * time.Second,
+			Jar:     jar,
 		},
 		PollInterval: pollInterval,
 	}
@@ -95,25 +98,35 @@ type checkInitResponse struct {
 	Error         string                 `json:"error"`
 }
 
-// CheckTCP runs a TCP connection check on host using specified nodes
+// CheckTCP runs a TCP connection check on host (host:port) using specified nodes
 func (c *CheckHostClient) CheckTCP(ctx context.Context, host string, nodes []string) (*CheckHostSummary, error) {
+	return c.checkInternal(ctx, "check-tcp", host, nodes)
+}
+
+// CheckPing runs an ICMP ping check on host (domain or IP) using specified nodes
+func (c *CheckHostClient) CheckPing(ctx context.Context, host string, nodes []string) (*CheckHostSummary, error) {
+	return c.checkInternal(ctx, "check-ping", host, nodes)
+}
+
+func (c *CheckHostClient) checkInternal(ctx context.Context, checkType, host string, nodes []string) (*CheckHostSummary, error) {
 	if len(nodes) == 0 {
 		nodes = append(DefaultFastRUNodes, DefaultFastWorldNodes...)
 	}
 
-	// 1. Send check-tcp request
+	// 1. Send check request
 	q := url.Values{}
 	q.Set("host", host)
 	for _, n := range nodes {
 		q.Add("node", n)
 	}
 
-	reqURL := fmt.Sprintf("%s/check-tcp?%s", c.BaseURL, q.Encode())
+	reqURL := fmt.Sprintf("%s/%s?%s", c.BaseURL, checkType, q.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -174,6 +187,7 @@ func (c *CheckHostClient) CheckTCP(ctx context.Context, host string, nodes []str
 				return nil, err
 			}
 			resReq.Header.Set("Accept", "application/json")
+			resReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 			resResp, err := c.HTTPClient.Do(resReq)
 			if err != nil {
@@ -215,6 +229,7 @@ DonePolling:
 		rawVal := finalResults[nID]
 		if rawVal != nil {
 			if arr, ok := rawVal.([]interface{}); ok && len(arr) > 0 {
+				// 1. TCP result format: [{"time": float, "address": "..."}] or [{"error": "..."}]
 				if item, ok := arr[0].(map[string]interface{}); ok {
 					if t, ok := item["time"].(float64); ok {
 						meta.Success = true
@@ -222,6 +237,19 @@ DonePolling:
 					} else if errMsg, ok := item["error"].(string); ok {
 						meta.Success = false
 						meta.Error = errMsg
+					}
+				} else if attempts, ok := arr[0].([]interface{}); ok {
+					// 2. Ping result format: [[["OK", float, "ip"], ["OK", float], ...]]
+					for _, attRaw := range attempts {
+						if att, ok := attRaw.([]interface{}); ok && len(att) >= 2 {
+							if status, ok := att[0].(string); ok && status == "OK" {
+								meta.Success = true
+								if t, ok := att[1].(float64); ok {
+									meta.Latency = time.Duration(t * float64(time.Second))
+								}
+								break
+							}
+						}
 					}
 				}
 			}

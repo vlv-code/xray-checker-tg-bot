@@ -131,3 +131,61 @@ func TestFormatCheckHostReport(t *testing.T) {
 		t.Errorf("expected permalink in report, got: %s", report)
 	}
 }
+
+func TestCheckHostClient_CheckPing(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/check-ping") {
+			resp := map[string]interface{}{
+				"ok":             1,
+				"request_id":     "ping1234",
+				"permanent_link": "https://check-host.net/check-report/ping1234",
+				"nodes": map[string]interface{}{
+					"ru2.node.check-host.net": []interface{}{"ru", "Russia", "Moscow", "194.26.229.20", "AS210644"},
+					"de1.node.check-host.net": []interface{}{"de", "Germany", "Nuremberg", "142.132.174.167", "AS24940"},
+				},
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		if strings.HasPrefix(r.URL.Path, "/check-result/ping1234") {
+			resp := map[string]interface{}{
+				"ru2.node.check-host.net": []interface{}{
+					[]interface{}{
+						[]interface{}{"TIMEOUT"},
+						[]interface{}{"TIMEOUT"},
+					},
+				},
+				"de1.node.check-host.net": []interface{}{
+					[]interface{}{
+						[]interface{}{"OK", 0.015, "1.1.1.1"},
+						[]interface{}{"OK", 0.016, "1.1.1.1"},
+					},
+				},
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	client := NewCheckHostClient(ts.URL, 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	summary, err := client.CheckPing(ctx, "1.1.1.1", []string{"ru2.node.check-host.net", "de1.node.check-host.net"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if summary.RUAvailable {
+		t.Errorf("expected RUAvailable=false for ping timeout, got true")
+	}
+	if !summary.WorldAvailable {
+		t.Errorf("expected WorldAvailable=true for de1 ping OK, got false")
+	}
+}
+

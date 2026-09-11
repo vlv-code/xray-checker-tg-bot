@@ -29,6 +29,9 @@ type BotConfig struct {
 	RichMode               bool     `json:"rich_mode"`
 	DisabledHosts          []string `json:"disabled_hosts,omitempty"`
 	DisabledProxies        []string `json:"disabled_proxies,omitempty"`
+	CheckHostBgEnabled     bool     `json:"checkhost_bg_enabled"`
+	CheckHostIntervalHours int      `json:"checkhost_interval_hours"`
+	CheckHostAlertEnabled  bool     `json:"checkhost_alert_enabled"`
 }
 
 // IsHostDisabled checks if a server address/hostname is in the disabled list.
@@ -64,12 +67,18 @@ type ConfigManager struct {
 	cfg  BotConfig
 }
 
-// NewConfigManager initializes or loads BotConfig from path. If file does not exist,
-// defaults are written.
-func NewConfigManager(path string, defaults BotConfig) (*ConfigManager, error) {
+// NewConfigManager initializes a ConfigManager with a path and default values.
+func NewConfigManager(path string, defaultCfg BotConfig) (*ConfigManager, error) {
+	if defaultCfg.AlertMode == "" {
+		defaultCfg.AlertMode = AlertModeClean
+	}
+	if defaultCfg.CheckHostIntervalHours <= 0 {
+		defaultCfg.CheckHostIntervalHours = 1
+	}
+
 	cm := &ConfigManager{
 		path: path,
-		cfg:  defaults,
+		cfg:  defaultCfg,
 	}
 
 	if err := cm.load(); err != nil {
@@ -91,7 +100,7 @@ func (cm *ConfigManager) load() error {
 		return err
 	}
 
-	var loaded BotConfig
+	loaded := cm.cfg
 	if err := json.Unmarshal(data, &loaded); err != nil {
 		return err
 	}
@@ -107,6 +116,9 @@ func (cm *ConfigManager) load() error {
 	}
 	if loaded.DayDigestIntervalHours <= 0 {
 		loaded.DayDigestIntervalHours = 6
+	}
+	if loaded.CheckHostIntervalHours <= 0 {
+		loaded.CheckHostIntervalHours = 1
 	}
 
 	cm.cfg = loaded
