@@ -6,6 +6,8 @@ import (
 
 	"github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
+
+	"xray-checker/metrics"
 )
 
 func btn(text, data string) telego.InlineKeyboardButton {
@@ -32,6 +34,7 @@ func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("⚙️ Режим алертов", "menu:alert_mode"),
 		),
 		tu.InlineKeyboardRow(
+			btn("🌐 Check-Host", "menu:checkhost"),
 			btn("📑 Сводка сейчас", "menu:digest:now"),
 		),
 	)
@@ -163,3 +166,32 @@ func IntervalMenuMarkup(currentInterval int) *telego.InlineKeyboardMarkup {
 		),
 	)
 }
+
+// CheckHostMenuMarkup returns keyboard for selecting a proxy to test with Check-Host.
+func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+	limit := len(proxies)
+	if limit > 20 {
+		limit = 20
+	}
+
+	for i := 0; i < limit; i += 2 {
+		if i+1 < limit {
+			rows = append(rows, tu.InlineKeyboardRow(
+				btn(proxies[i].Name, "menu:checkhost:run:"+proxies[i].StableID),
+				btn(proxies[i+1].Name, "menu:checkhost:run:"+proxies[i+1].StableID),
+			))
+		} else {
+			rows = append(rows, tu.InlineKeyboardRow(
+				btn(proxies[i].Name, "menu:checkhost:run:"+proxies[i].StableID),
+			))
+		}
+	}
+
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("🔙 Главное меню", "menu:main"),
+	))
+
+	return tu.InlineKeyboard(rows...)
+}
+

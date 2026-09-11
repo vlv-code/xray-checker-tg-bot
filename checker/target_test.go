@@ -150,3 +150,35 @@ func TestDetermineVerdict(t *testing.T) {
 		t.Errorf("expected offline / Xray session EOF, got %s / %s", status, verdict)
 	}
 }
+
+func TestEnrichVerdictWithCheckHost(t *testing.T) {
+	baseVerdict := "Нода не отвечает на TCP (таймаут)"
+
+	// RU offline, World online
+	ch1 := &CheckHostSummary{RUAvailable: false, WorldAvailable: true}
+	v1 := EnrichVerdictWithCheckHost(baseVerdict, ch1)
+	if !strings.Contains(v1, "недоступен из узлов РФ, но отвечает из зарубежных сетей") {
+		t.Errorf("expected RU unavailable verdict, got: %s", v1)
+	}
+
+	// Both offline
+	ch2 := &CheckHostSummary{RUAvailable: false, WorldAvailable: false}
+	v2 := EnrichVerdictWithCheckHost(baseVerdict, ch2)
+	if !strings.Contains(v2, "недоступен как из РФ, так и из других стран") {
+		t.Errorf("expected both offline verdict, got: %s", v2)
+	}
+
+	// Both online
+	ch3 := &CheckHostSummary{RUAvailable: true, WorldAvailable: true}
+	v3 := EnrichVerdictWithCheckHost(baseVerdict, ch3)
+	if !strings.Contains(v3, "отвечает из РФ") {
+		t.Errorf("expected RU online verdict, got: %s", v3)
+	}
+
+	// Nil CheckHost returns original verdict
+	v4 := EnrichVerdictWithCheckHost(baseVerdict, nil)
+	if v4 != baseVerdict {
+		t.Errorf("expected unchanged verdict on nil, got: %s", v4)
+	}
+}
+

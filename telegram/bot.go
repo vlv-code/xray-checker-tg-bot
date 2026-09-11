@@ -263,6 +263,8 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		b.replyTargets(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/interval"):
 		b.handleIntervalCommand(msg)
+	case strings.HasPrefix(msg.Text, "/checkhost"):
+		go b.handleCheckHostCommand(msg)
 	case strings.HasPrefix(msg.Text, "/digest"):
 		b.replyDigest(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/subs"):
@@ -375,8 +377,14 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		b.editWithMarkup(chatID, msgID, b.getSubsText(), BackToMenuMarkup())
 	case "menu:digest:now":
 		b.replyDigest(chatID)
+	case "menu:checkhost":
+		snapshot := b.source.MetricsSnapshot()
+		b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(), CheckHostMenuMarkup(snapshot))
 	default:
-		if strings.HasPrefix(cb.Data, "menu:interval:set:") {
+		if strings.HasPrefix(cb.Data, "menu:checkhost:run:") {
+			stableID := strings.TrimPrefix(cb.Data, "menu:checkhost:run:")
+			go b.handleCheckHostProxy(chatID, msgID, stableID)
+		} else if strings.HasPrefix(cb.Data, "menu:interval:set:") {
 			secStr := strings.TrimPrefix(cb.Data, "menu:interval:set:")
 			if sec, err := strconv.Atoi(secStr); err == nil && sec >= 10 {
 				b.updateCheckInterval(sec)
@@ -722,7 +730,23 @@ func (b *Bot) getDiagnosticsText() string {
 			}
 		}
 
-		// 5. Verdict
+		// 5. External Check-Host
+		if rep.CheckHost != nil {
+			ruStatus := "❌ недоступен"
+			if rep.CheckHost.RUAvailable {
+				ruStatus = "✅ отвечает"
+			}
+			worldStatus := "❌ недоступен"
+			if rep.CheckHost.WorldAvailable {
+				worldStatus = "✅ отвечает"
+			}
+			fmt.Fprintf(&sb, "  • Check-Host (TCP): РФ %s, Мир %s\n", ruStatus, worldStatus)
+			if rep.CheckHost.PermanentLink != "" {
+				fmt.Fprintf(&sb, "    🔗 <a href=\"%s\">отчет</a>\n", rep.CheckHost.PermanentLink)
+			}
+		}
+
+		// 6. Verdict
 		if rep.Verdict != "" {
 			fmt.Fprintf(&sb, "  💡 <i>Вердикт: %s</i>\n", escapeHTML(rep.Verdict))
 		}
@@ -1049,3 +1073,92 @@ func escapeHTML(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 	return r.Replace(s)
 }
+
+func (b *Bot) getCheckHostMenuText() string {
+	return "🌐 <b>Глобальная проверка доступности через Check-Host.net</b>\n\n" +
+		"Выберите прокси из списка ниже для проверки через узлы по всему миру (Россия, Европа, США, Азия):\n\n" +
+		"Или отправьте команду с любым хостом:\n" +
+		"<code>/checkhost &lt;хост[:порт]&gt;</code>\n" +
+		"<i>Примеры: <code>/checkhost 185.120.45.10:443</code> или <code>/checkhost mydomain.com</code></i>"
+}
+
+func (b *Bot) handleCheckHostCommand(msg *telego.Message) {
+	target := commandArg(msg.Text)
+	if target == "" {
+		b.send(msg.Chat.ID, "💡 <b>Использование:</b> <code>/checkhost &lt;хост[:порт]&gt;</code>\n\n"+
+			"Примеры:\n"+
+			"• <code>/checkhost 185.120.45.10:443</code>\n"+
+			"• <code>/checkhost mydomain.com</code>\n\n"+
+			"Или выберите прокси в меню: /menu")
+		return
+	}
+
+	if !strings.Contains(target, ":") {
+		target = target + ":443"
+	}
+
+	sentMsg, _ := b.sendAndReturn(msg.Chat.ID, fmt.Sprintf("⏳ <b>Запрос отправлен в Check-Host.net...</b>\n"+
+		"Проверяем <code>%s</code> (TCP) по глобальной сети узлов (РФ, Европа, США, Азия)...\n"+
+		"Пожалуйста, подождите 4–6 секунд...", escapeHTML(target)))
+
+	chClient := checker.NewCheckHostClient("", 1500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(b.ctx, 15*time.Second)
+	defer cancel()
+
+	summary, err := chClient.CheckTCP(ctx, target, checker.DefaultWorldwideNodes)
+	if err != nil {
+		errMsg := fmt.Sprintf("❌ <b>Ошибка Check-Host:</b> %s", escapeHTML(err.Error()))
+		if sentMsg != nil {
+			b.editWithMarkup(msg.Chat.ID, sentMsg.GetMessageID(), errMsg, nil)
+		} else {
+			b.send(msg.Chat.ID, errMsg)
+		}
+		return
+	}
+
+	report := checker.FormatCheckHostReport(summary)
+	if sentMsg != nil {
+		b.editWithMarkup(msg.Chat.ID, sentMsg.GetMessageID(), report, nil)
+	} else {
+		b.send(msg.Chat.ID, report)
+	}
+}
+
+func (b *Bot) handleCheckHostProxy(chatID int64, msgID int, stableID string) {
+	snapshot := b.source.MetricsSnapshot()
+	var targetProxy *metrics.ProxyMetric
+	for i := range snapshot {
+		if snapshot[i].StableID == stableID {
+			targetProxy = &snapshot[i]
+			break
+		}
+	}
+
+	if targetProxy == nil {
+		b.editWithMarkup(chatID, msgID, "❌ Прокси не найден в текущей конфигурации.", BackToMenuMarkup())
+		return
+	}
+
+	target := targetProxy.Address
+	if !strings.Contains(target, ":") {
+		target = target + ":443"
+	}
+
+	b.editWithMarkup(chatID, msgID, fmt.Sprintf("⏳ <b>Запрос отправлен в Check-Host.net...</b>\n"+
+		"Проверяем <b>%s</b> (<code>%s</code>) по всемирной сети узлов...\nПожалуйста, подождите 4–6 секунд...",
+		escapeHTML(targetProxy.Name), escapeHTML(target)), BackToMenuMarkup())
+
+	chClient := checker.NewCheckHostClient("", 1500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(b.ctx, 15*time.Second)
+	defer cancel()
+
+	summary, err := chClient.CheckTCP(ctx, target, checker.DefaultWorldwideNodes)
+	if err != nil {
+		b.editWithMarkup(chatID, msgID, fmt.Sprintf("❌ <b>Ошибка Check-Host:</b> %s", escapeHTML(err.Error())), BackToMenuMarkup())
+		return
+	}
+
+	report := checker.FormatCheckHostReport(summary)
+	b.editWithMarkup(chatID, msgID, report, BackToMenuMarkup())
+}
+

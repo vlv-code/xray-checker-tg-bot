@@ -43,6 +43,7 @@ type ProxyDiagReport struct {
 	Port       int                `json:"port"`
 	StableID   string             `json:"stable_id"`
 	NodeHealth NodeHealth         `json:"node_health"`
+	CheckHost  *CheckHostSummary  `json:"check_host,omitempty"`
 	Targets    []TargetDiagResult `json:"targets"`
 	Status     string             `json:"status"` // "online", "degraded", "offline"
 	Verdict    string             `json:"verdict"`
@@ -234,6 +235,9 @@ func ProbeNodeHealth(server string, port int, security string, sni string, allow
 	tcpStart := time.Now()
 	conn, err := net.DialTimeout("tcp", tcpAddr, 2500*time.Millisecond)
 	health.TCPPing = time.Since(tcpStart)
+	if health.TCPPing == 0 {
+		health.TCPPing = time.Microsecond
+	}
 	if err != nil {
 		health.TCPErr = simplifyError(err)
 		return health
@@ -271,7 +275,7 @@ func DetermineVerdict(health NodeHealth, targets []TargetDiagResult) (status str
 
 	if health.TCPErr != "" {
 		if strings.Contains(health.TCPErr, "Timeout") {
-			return "offline", "Нода не отвечает на TCP (таймаут: возможен бан IP или выключен VPS)"
+			return "offline", "Нода не отвечает на TCP (таймаут: хост недоступен с сервера чекера)"
 		}
 		if strings.Contains(strings.ToLower(health.TCPErr), "refused") {
 			return "offline", "TCP-соединение сброшено (порт закрыт / сервис Xray на ноде остановлен)"
@@ -312,16 +316,33 @@ func DetermineVerdict(health NodeHealth, targets []TargetDiagResult) (status str
 	}
 
 	if eofCount > 0 {
-		return "offline", "Сервер сбросил сессию Xray (ошибка авторизации/UUID или бан)"
+		return "offline", "Сервер сбросил сессию Xray (ошибка авторизации/UUID или закрыто сервером)"
 	}
 	if forbiddenCount > 0 {
-		return "offline", "IP ноды заблокирован целевыми сервисами (HTTP 403 / Cloudflare Challenge)"
+		return "offline", "Ограничение доступа со стороны целевых сервисов (HTTP 403 / Cloudflare Challenge)"
 	}
 	if timeoutCount > 0 {
 		return "offline", "Таймаут проксирования через туннель"
 	}
 
 	return "offline", "Проксирование через туннель завершилось ошибкой"
+}
+
+// EnrichVerdictWithCheckHost enriches a diagnostic verdict with objective Check-Host findings
+func EnrichVerdictWithCheckHost(verdict string, ch *CheckHostSummary) string {
+	if ch == nil {
+		return verdict
+	}
+	switch {
+	case !ch.RUAvailable && ch.WorldAvailable:
+		return fmt.Sprintf("%s | Check-Host: хост недоступен из узлов РФ, но отвечает из зарубежных сетей", verdict)
+	case !ch.RUAvailable && !ch.WorldAvailable:
+		return fmt.Sprintf("%s | Check-Host: хост недоступен как из РФ, так и из других стран", verdict)
+	case ch.RUAvailable && ch.WorldAvailable:
+		return fmt.Sprintf("%s | Check-Host: хост отвечает из РФ и других стран", verdict)
+	default:
+		return fmt.Sprintf("%s | Check-Host: хост доступен из РФ, но недоступен из части внешних сетей", verdict)
+	}
 }
 
 // RunDiagnostics executes concurrent tests against all given targets for each proxy.
@@ -397,6 +418,21 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 
 			status, verdict := DetermineVerdict(health, targetResults)
 
+			var checkHostSummary *CheckHostSummary
+			// Only run Check-Host if the node has connectivity issues
+			if status == "offline" && proxy.Server != "" && proxy.Port > 0 {
+				chClient := NewCheckHostClient("", 1500*time.Millisecond)
+				chCtx, chCancel := context.WithTimeout(context.Background(), 7*time.Second)
+				targetHost := fmt.Sprintf("%s:%d", proxy.Server, proxy.Port)
+				fastNodes := append(DefaultFastRUNodes, DefaultFastWorldNodes...)
+				chSummary, chErr := chClient.CheckTCP(chCtx, targetHost, fastNodes)
+				chCancel()
+				if chErr == nil && chSummary != nil {
+					checkHostSummary = chSummary
+					verdict = EnrichVerdictWithCheckHost(verdict, chSummary)
+				}
+			}
+
 			results[idx] = ProxyDiagReport{
 				ProxyName:  proxy.Name,
 				Protocol:   proxy.Protocol,
@@ -404,6 +440,7 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 				Port:       proxy.Port,
 				StableID:   proxy.StableID,
 				NodeHealth: health,
+				CheckHost:  checkHostSummary,
 				Targets:    targetResults,
 				Status:     status,
 				Verdict:    verdict,

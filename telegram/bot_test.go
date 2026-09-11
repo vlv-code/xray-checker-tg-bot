@@ -2,7 +2,10 @@ package telegram
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"xray-checker/metrics"
 )
 
 func TestBot_IntervalHandling(t *testing.T) {
@@ -44,3 +47,50 @@ func TestBot_IntervalHandling(t *testing.T) {
 		t.Errorf("expected callback with 10, got %d", notifiedInterval)
 	}
 }
+
+func TestCheckHostMenuAndMarkup(t *testing.T) {
+	// 1. Check MainMenuMarkup contains Check-Host
+	mainMarkup := MainMenuMarkup()
+	foundCheckHost := false
+	for _, row := range mainMarkup.InlineKeyboard {
+		for _, btn := range row {
+			if btn.CallbackData == "menu:checkhost" {
+				foundCheckHost = true
+				break
+			}
+		}
+	}
+	if !foundCheckHost {
+		t.Errorf("expected menu:checkhost button in MainMenuMarkup")
+	}
+
+	// 2. Check CheckHostMenuMarkup generates proxy buttons
+	proxies := []metrics.ProxyMetric{
+		{Name: "Node-1", StableID: "id-1", Address: "1.1.1.1:443"},
+		{Name: "Node-2", StableID: "id-2", Address: "2.2.2.2:443"},
+	}
+	chMarkup := CheckHostMenuMarkup(proxies)
+	if chMarkup == nil || len(chMarkup.InlineKeyboard) < 2 {
+		t.Fatalf("expected rows in CheckHostMenuMarkup, got %v", chMarkup)
+	}
+
+	foundID1 := false
+	for _, row := range chMarkup.InlineKeyboard {
+		for _, btn := range row {
+			if btn.CallbackData == "menu:checkhost:run:id-1" {
+				foundID1 = true
+			}
+		}
+	}
+	if !foundID1 {
+		t.Errorf("expected menu:checkhost:run:id-1 button in CheckHostMenuMarkup")
+	}
+
+	// 3. Check getCheckHostMenuText
+	bot := &Bot{}
+	txt := bot.getCheckHostMenuText()
+	if txt == "" || !strings.Contains(txt, "/checkhost") {
+		t.Errorf("expected /checkhost in menu text, got: %s", txt)
+	}
+}
+
