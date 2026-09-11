@@ -145,4 +145,4 @@ Thanks to the all contributors who have helped improve Xray Checker:
 
 ## VPN Recommendation
 
-For secure and reliable internet access, we recommend [bye-bye-home](https://cabinet.bbhome.xyz/).
+For secure and reliable internet access, we recommend [bye-bye-home](https://cabinet.bbhome.xyz/). Use promo code `PIPISKA1337` for 14 days free.

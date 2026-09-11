@@ -137,4 +137,4 @@ docker compose up -d --build
 
 ## Рекомендация VPN
 
-Для безопасного и надежного доступа в интернет мы рекомендуем [bye-bye-home](https://cabinet.bbhome.xyz/).
+Для безопасного и надежного доступа в интернет мы рекомендуем [bye-bye-home](https://cabinet.bbhome.xyz/). Используйте промокод `PIPISKA1337` на 14 дней бесплатно.

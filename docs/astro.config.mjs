@@ -375,6 +375,7 @@ export default defineConfig({
             {
               label: "bye-bye-home",
               link: "https://cabinet.bbhome.xyz/",
+              badge: { text: "PIPISKA1337", variant: "success" },
             },
           ],
         },
