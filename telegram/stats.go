@@ -102,6 +102,39 @@ func (ss *StatsStore) RecordCheck(stableID, name string, online bool, latencyMs 
 	ps.LastCheckAt = time.Now().Unix()
 }
 
+// RecordInitialDown marks a proxy as down if it is already failing on the initial check iteration.
+func (ss *StatsStore) RecordInitialDown(stableID, name string, timestamp time.Time) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
+	ps, exists := ss.Stats[stableID]
+	if !exists {
+		ps = &ProxyStats{
+			ProxyName: name,
+		}
+		ss.Stats[stableID] = ps
+	}
+	ps.ProxyName = name
+
+	if !ps.CurrentlyDown {
+		ps.CurrentlyDown = true
+		ps.CurrentDownAt = timestamp.Unix()
+		ps.DropCount++
+
+		incident := Incident{
+			ProxyName: name,
+			StableID:  stableID,
+			DownAt:    timestamp.Unix(),
+			UpAt:      0,
+			Reason:    "Offline at startup",
+		}
+		ss.Incidents = append([]Incident{incident}, ss.Incidents...)
+		if len(ss.Incidents) > 100 {
+			ss.Incidents = ss.Incidents[:100]
+		}
+	}
+}
+
 // RecordTransition logs a state transition (down or up).
 func (ss *StatsStore) RecordTransition(stableID, name string, online bool, reason string, timestamp time.Time) {
 	ss.mu.Lock()

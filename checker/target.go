@@ -202,8 +202,14 @@ func simplifyError(err error) string {
 	}
 }
 
+// IsUDPProto returns true if the proxy protocol operates over UDP/QUIC rather than TCP.
+func IsUDPProto(proto string) bool {
+	p := strings.ToLower(strings.TrimSpace(proto))
+	return p == "hysteria" || p == "hysteria2" || p == "tuic" || p == "wireguard"
+}
+
 // ProbeNodeHealth runs direct low-level reachability tests against the proxy node server.
-func ProbeNodeHealth(server string, port int, security string, sni string, allowInsecure bool) NodeHealth {
+func ProbeNodeHealth(server string, port int, protocol string, security string, sni string, allowInsecure bool) NodeHealth {
 	var health NodeHealth
 
 	// 1. DNS Resolution
@@ -228,6 +234,12 @@ func ProbeNodeHealth(server string, port int, security string, sni string, allow
 		}
 		health.ResolvedIP = ips[0].String()
 		targetIP = health.ResolvedIP
+	}
+
+	// For UDP-based protocols (Hysteria, Hysteria2, TUIC, Wireguard), raw TCP ping
+	// will always fail with Connection Refused or Timeout because the node does not listen on TCP.
+	if IsUDPProto(protocol) {
+		return health
 	}
 
 	// 2. TCP Ping
@@ -268,25 +280,8 @@ func ProbeNodeHealth(server string, port int, security string, sni string, allow
 }
 
 // DetermineVerdict produces a health status and concise root-cause diagnosis.
-func DetermineVerdict(health NodeHealth, targets []TargetDiagResult) (status string, verdict string) {
-	if health.DNSErr != "" {
-		return "offline", fmt.Sprintf("Сбой DNS домена ноды (%s)", health.DNSErr)
-	}
-
-	if health.TCPErr != "" {
-		if strings.Contains(health.TCPErr, "Timeout") {
-			return "offline", "Нода не отвечает на TCP (таймаут: хост недоступен с сервера чекера)"
-		}
-		if strings.Contains(strings.ToLower(health.TCPErr), "refused") {
-			return "offline", "TCP-соединение сброшено (порт закрыт / сервис Xray на ноде остановлен)"
-		}
-		return "offline", fmt.Sprintf("Сбой TCP подключения (%s)", health.TCPErr)
-	}
-
-	if health.TLSErr != "" {
-		return "offline", fmt.Sprintf("Сбой TLS рукопожатия (%s)", health.TLSErr)
-	}
-
+// End-to-end target connectivity through the proxy tunnel is the primary source of truth.
+func DetermineVerdict(proto string, health NodeHealth, targets []TargetDiagResult) (status string, verdict string) {
 	successCount := 0
 	eofCount := 0
 	forbiddenCount := 0
@@ -307,16 +302,37 @@ func DetermineVerdict(health NodeHealth, targets []TargetDiagResult) (status str
 		}
 	}
 
+	// 1. If all targets succeeded, the proxy is 100% online!
 	if len(targets) > 0 && successCount == len(targets) {
 		return "online", "Полностью исправен"
 	}
 
+	// 2. If some targets succeeded, it is degraded
 	if successCount > 0 {
 		return "degraded", fmt.Sprintf("Частичная доступность (%d/%d сайтов доступны)", successCount, len(targets))
 	}
 
+	// 3. If no targets succeeded, investigate the root cause using low-level probes:
+	if health.DNSErr != "" {
+		return "offline", fmt.Sprintf("Сбой DNS домена ноды (%s)", health.DNSErr)
+	}
+
+	if !IsUDPProto(proto) && health.TCPErr != "" {
+		if strings.Contains(health.TCPErr, "Timeout") {
+			return "offline", "Нода не отвечает на TCP (таймаут: хост недоступен с сервера чекера)"
+		}
+		if strings.Contains(strings.ToLower(health.TCPErr), "refused") {
+			return "offline", "TCP-соединение сброшено (порт закрыт / сервис на ноде остановлен)"
+		}
+		return "offline", fmt.Sprintf("Сбой TCP подключения (%s)", health.TCPErr)
+	}
+
+	if !IsUDPProto(proto) && health.TLSErr != "" {
+		return "offline", fmt.Sprintf("Сбой TLS рукопожатия (%s)", health.TLSErr)
+	}
+
 	if eofCount > 0 {
-		return "offline", "Сервер сбросил сессию Xray (ошибка авторизации/UUID или закрыто сервером)"
+		return "offline", "Сервер сбросил сессию (ошибка авторизации/UUID или закрыто сервером)"
 	}
 	if forbiddenCount > 0 {
 		return "offline", "Ограничение доступа со стороны целевых сервисов (HTTP 403 / Cloudflare Challenge)"
@@ -401,7 +417,7 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 			nodeWg.Add(1)
 			go func() {
 				defer nodeWg.Done()
-				health = ProbeNodeHealth(proxy.Server, proxy.Port, proxy.Security, proxy.SNI, proxy.AllowInsecure)
+				health = ProbeNodeHealth(proxy.Server, proxy.Port, proxy.Protocol, proxy.Security, proxy.SNI, proxy.AllowInsecure)
 			}()
 
 			targetResults := make([]TargetDiagResult, len(targets))
@@ -416,11 +432,11 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 			innerWg.Wait()
 			nodeWg.Wait()
 
-			status, verdict := DetermineVerdict(health, targetResults)
+			status, verdict := DetermineVerdict(proxy.Protocol, health, targetResults)
 
 			var checkHostSummary *CheckHostSummary
-			// Only run Check-Host if the node has connectivity issues
-			if status == "offline" && proxy.Server != "" && proxy.Port > 0 {
+			// Only run Check-Host if the node has connectivity issues AND it's a TCP protocol
+			if status == "offline" && proxy.Server != "" && proxy.Port > 0 && !IsUDPProto(proxy.Protocol) {
 				chClient := NewCheckHostClient("", 1500*time.Millisecond)
 				chCtx, chCancel := context.WithTimeout(context.Background(), 7*time.Second)
 				targetHost := fmt.Sprintf("%s:%d", proxy.Server, proxy.Port)

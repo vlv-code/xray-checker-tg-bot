@@ -73,3 +73,35 @@ func TestStatsStore_RecordAndAggregate(t *testing.T) {
 		t.Errorf("expected Proxy One, got %s", reloadedIncidents[0].ProxyName)
 	}
 }
+
+func TestStatsStore_RecordInitialDown(t *testing.T) {
+	tmpDir := t.TempDir()
+	statsPath := filepath.Join(tmpDir, "stats.json")
+
+	store, err := NewStatsStore(statsPath)
+	if err != nil {
+		t.Fatalf("NewStatsStore failed: %v", err)
+	}
+
+	now := time.Now()
+	store.RecordInitialDown("dead-1", "Dead Node", now)
+
+	ps, exists := store.Stats["dead-1"]
+	if !exists {
+		t.Fatalf("expected stats entry for dead-1")
+	}
+	if !ps.CurrentlyDown {
+		t.Errorf("expected CurrentlyDown to be true")
+	}
+	if ps.CurrentDownAt != now.Unix() {
+		t.Errorf("expected CurrentDownAt %d, got %d", now.Unix(), ps.CurrentDownAt)
+	}
+	if ps.DropCount != 1 {
+		t.Errorf("expected DropCount 1, got %d", ps.DropCount)
+	}
+
+	incidents := store.GetRecentIncidents(10)
+	if len(incidents) != 1 || incidents[0].Reason != "Offline at startup" {
+		t.Errorf("expected startup incident, got %v", incidents)
+	}
+}

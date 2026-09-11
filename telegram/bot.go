@@ -61,6 +61,10 @@ type Bot struct {
 	wasQuiet      bool
 	lastDayDigest time.Time
 	stopChan      chan struct{}
+
+	diagMu       sync.Mutex
+	cachedDiag   []checker.ProxyDiagReport
+	cachedDiagAt time.Time
 }
 
 // New creates a Bot and verifies the token against the Telegram API.
@@ -304,10 +308,25 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		return
 	}
 
+	msgID := cb.Message.GetMessageID()
+
+	// Handle non-modifying callbacks with informational toasts
+	if strings.HasPrefix(cb.Data, "menu:diag:noop:") {
+		parts := strings.Split(strings.TrimPrefix(cb.Data, "menu:diag:noop:"), ":")
+		if len(parts) == 2 {
+			_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText(fmt.Sprintf("Страница %s из %s", parts[0], parts[1])))
+		} else {
+			_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID))
+		}
+		return
+	}
+	if cb.Data == "menu:noop" {
+		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID))
+		return
+	}
+
 	// Acknowledge callback immediately to dismiss spinner
 	_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID))
-
-	msgID := cb.Message.GetMessageID()
 
 	switch cb.Data {
 	case "menu:main":
@@ -317,7 +336,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:diag":
 		b.editWithMarkup(chatID, msgID, "⏳ <b>Выполняется экспресс-диагностика всех прокси...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
 		go func() {
-			reports := b.getDiagnosticsReports()
+			reports := b.getDiagnosticsReports(true)
 			if b.isRichMode() {
 				rich := b.buildDiagnosticsRichMessage(reports)
 				b.showRichReport(chatID, msgID, rich)
@@ -329,7 +348,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:diag:rich":
 		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование Rich-отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
 		go func() {
-			reports := b.getDiagnosticsReports()
+			reports := b.getDiagnosticsReports(false)
 			rich := b.buildDiagnosticsRichMessage(reports)
 			b.showRichReport(chatID, msgID, rich)
 		}()
@@ -417,9 +436,30 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			if page <= 0 {
 				page = 1
 			}
-			reports := b.getDiagnosticsReports()
+			reports := b.getDiagnosticsReports(false)
 			pageText, totalPages := b.getDiagnosticsPageText(reports, page)
 			b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages))
+		} else if strings.HasPrefix(cb.Data, "menu:diag:refresh:") {
+			arg := strings.TrimPrefix(cb.Data, "menu:diag:refresh:")
+			if arg == "rich" {
+				b.editWithMarkup(chatID, msgID, "⏳ <b>Обновление данных диагностики...</b>", BackToMenuMarkup())
+				go func() {
+					reports := b.getDiagnosticsReports(true)
+					rich := b.buildDiagnosticsRichMessage(reports)
+					b.showRichReport(chatID, msgID, rich)
+				}()
+			} else {
+				page, _ := strconv.Atoi(arg)
+				if page <= 0 {
+					page = 1
+				}
+				b.editWithMarkup(chatID, msgID, "⏳ <b>Обновление данных диагностики...</b>", BackToMenuMarkup())
+				go func() {
+					reports := b.getDiagnosticsReports(true)
+					pageText, totalPages := b.getDiagnosticsPageText(reports, page)
+					b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages))
+				}()
+			}
 		} else if strings.HasPrefix(cb.Data, "menu:checkhost:run:") {
 			stableID := strings.TrimPrefix(cb.Data, "menu:checkhost:run:")
 			go b.handleCheckHostProxy(chatID, msgID, stableID)
@@ -692,10 +732,19 @@ func (b *Bot) getSubsText() string {
 
 const diagPageSize = 5
 
-func (b *Bot) getDiagnosticsReports() []checker.ProxyDiagReport {
+func (b *Bot) getDiagnosticsReports(force bool) []checker.ProxyDiagReport {
 	if b.diagSource == nil {
 		return nil
 	}
+
+	b.diagMu.Lock()
+	if !force && len(b.cachedDiag) > 0 && time.Since(b.cachedDiagAt) < 60*time.Second {
+		reports := make([]checker.ProxyDiagReport, len(b.cachedDiag))
+		copy(reports, b.cachedDiag)
+		b.diagMu.Unlock()
+		return reports
+	}
+	b.diagMu.Unlock()
 
 	targets := []string{
 		"https://cp.cloudflare.com/generate_204",
@@ -710,6 +759,13 @@ func (b *Bot) getDiagnosticsReports() []checker.ProxyDiagReport {
 
 	reports := b.diagSource.RunDiagnostics(targets)
 	sort.Slice(reports, func(i, j int) bool { return reports[i].ProxyName < reports[j].ProxyName })
+
+	b.diagMu.Lock()
+	b.cachedDiag = make([]checker.ProxyDiagReport, len(reports))
+	copy(b.cachedDiag, reports)
+	b.cachedDiagAt = time.Now()
+	b.diagMu.Unlock()
+
 	return reports
 }
 
@@ -740,8 +796,12 @@ func formatSingleProxyDiag(sb *strings.Builder, rep checker.ProxyDiagReport) {
 		}
 	}
 
-	// 2. TCP Ping
-	if rep.Port > 0 {
+	// 2. Transport Protocol / TCP Ping
+	if checker.IsUDPProto(rep.Protocol) {
+		if rep.Port > 0 {
+			fmt.Fprintf(sb, "  • Порт (%d): ⚡ UDP / QUIC\n", rep.Port)
+		}
+	} else if rep.Port > 0 {
 		if rep.NodeHealth.TCPErr != "" {
 			fmt.Fprintf(sb, "  • TCP (%d): ❌ %s\n", rep.Port, escapeHTML(rep.NodeHealth.TCPErr))
 		} else if rep.NodeHealth.TCPPing > 0 {
@@ -791,7 +851,7 @@ func formatSingleProxyDiag(sb *strings.Builder, rep checker.ProxyDiagReport) {
 }
 
 func (b *Bot) getDiagnosticsText() string {
-	reports := b.getDiagnosticsReports()
+	reports := b.getDiagnosticsReports(true)
 	if len(reports) == 0 {
 		return "Нет прокси для проверки."
 	}
@@ -908,7 +968,11 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 		} else if rep.NodeHealth.ResolvedIP != "" {
 			detailLines = append(detailLines, fmt.Sprintf("DNS: ✅ %s", rep.NodeHealth.ResolvedIP))
 		}
-		if rep.Port > 0 {
+		if checker.IsUDPProto(rep.Protocol) {
+			if rep.Port > 0 {
+				detailLines = append(detailLines, fmt.Sprintf("Порт (%d): ⚡ UDP / QUIC", rep.Port))
+			}
+		} else if rep.Port > 0 {
 			if rep.NodeHealth.TCPErr != "" {
 				detailLines = append(detailLines, fmt.Sprintf("TCP (%d): ❌ %s", rep.Port, rep.NodeHealth.TCPErr))
 			} else if rep.NodeHealth.TCPPing > 0 {
@@ -964,7 +1028,7 @@ func simplifyTargetName(targetURL string) string {
 
 func (b *Bot) replyDiagnostics(chatID int64, arg string) {
 	sent, _ := b.sendAndReturn(chatID, "⏳ <b>Выполняется экспресс-диагностика всех прокси...</b>\nПожалуйста, подождите...")
-	reports := b.getDiagnosticsReports()
+	reports := b.getDiagnosticsReports(true)
 	msgID := 0
 	if sent != nil {
 		msgID = sent.GetMessageID()
@@ -1087,6 +1151,9 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 			b.lastSeen[pm.StableID] = pm.Online
 			if b.statsStore != nil {
 				b.statsStore.RecordCheck(pm.StableID, pm.Name, pm.Online, pm.LatencyMs)
+				if !pm.Online {
+					b.statsStore.RecordInitialDown(pm.StableID, pm.Name, now)
+				}
 			}
 		}
 		b.seeded = true
@@ -1246,6 +1313,9 @@ func (b *Bot) editWithMarkup(chatID int64, messageID int, text string, markup *t
 		ReplyMarkup: markup,
 	}
 	if _, err := b.api.EditMessageText(b.ctx, params); err != nil {
+		if strings.Contains(err.Error(), "message is not modified") {
+			return
+		}
 		if strings.Contains(err.Error(), "MESSAGE_TOO_LONG") {
 			fallbackParams := &telego.EditMessageTextParams{
 				ChatID:      tu.ID(chatID),
@@ -1271,6 +1341,9 @@ func (b *Bot) editWithRichMarkup(chatID int64, messageID int, rich *telego.Input
 	}
 	_, err := b.api.EditMessageText(b.ctx, params)
 	if err != nil {
+		if strings.Contains(err.Error(), "message is not modified") {
+			return nil
+		}
 		logger.Error("Telegram: failed to edit rich message %d in chat %d: %v", messageID, chatID, err)
 	}
 	return err

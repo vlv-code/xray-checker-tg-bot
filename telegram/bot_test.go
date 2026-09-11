@@ -181,6 +181,25 @@ func TestBot_DiagnosticsPaginationAndRichMessage(t *testing.T) {
 	if len(richMsg.Blocks) < 3 {
 		t.Errorf("expected at least heading, table, divider and detail blocks, got %d blocks", len(richMsg.Blocks))
 	}
+
+	// 4. Test UDP protocol formatting
+	var udpSb strings.Builder
+	formatSingleProxyDiag(&udpSb, checker.ProxyDiagReport{
+		ProxyName: "Hysteria-Node",
+		Protocol:  "hysteria",
+		Port:      2077,
+		Status:    "online",
+		Targets: []checker.TargetDiagResult{
+			{URL: "https://cp.cloudflare.com/generate_204", Success: true, Latency: 120 * time.Millisecond},
+		},
+	})
+	udpStr := udpSb.String()
+	if !strings.Contains(udpStr, "UDP / QUIC") {
+		t.Errorf("expected UDP / QUIC in formatSingleProxyDiag output, got: %s", udpStr)
+	}
+	if strings.Contains(udpStr, "TCP") {
+		t.Errorf("did not expect TCP in formatSingleProxyDiag for hysteria, got: %s", udpStr)
+	}
 }
 
 

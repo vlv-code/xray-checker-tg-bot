@@ -54,8 +54,15 @@ func TestMenuMarkups(t *testing.T) {
 	if navRow[0].CallbackData != "menu:diag:p:1" {
 		t.Errorf("expected prev page 1, got %s", navRow[0].CallbackData)
 	}
+	if navRow[1].CallbackData != "menu:diag:noop:2:4" {
+		t.Errorf("expected noop counter callback, got %s", navRow[1].CallbackData)
+	}
 	if navRow[2].CallbackData != "menu:diag:p:3" {
 		t.Errorf("expected next page 3, got %s", navRow[2].CallbackData)
+	}
+	actionRow := multiPageMarkup.InlineKeyboard[1]
+	if actionRow[1].CallbackData != "menu:diag:refresh:2" {
+		t.Errorf("expected refresh callback menu:diag:refresh:2, got %s", actionRow[1].CallbackData)
 	}
 
 	// 3. Rich report markup
@@ -65,6 +72,9 @@ func TestMenuMarkups(t *testing.T) {
 	}
 	if richMarkup.InlineKeyboard[0][0].CallbackData != "menu:diag:p:1" {
 		t.Errorf("expected switch to page 1 button, got %s", richMarkup.InlineKeyboard[0][0].CallbackData)
+	}
+	if richMarkup.InlineKeyboard[0][1].CallbackData != "menu:diag:refresh:rich" {
+		t.Errorf("expected refresh rich button, got %s", richMarkup.InlineKeyboard[0][1].CallbackData)
 	}
 }
 

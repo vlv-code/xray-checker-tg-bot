@@ -219,7 +219,7 @@ func DiagPaginationMarkup(page, totalPages int) *telego.InlineKeyboardMarkup {
 	if totalPages > 1 {
 		rows = append(rows, tu.InlineKeyboardRow(
 			btn("⬅️ Пред", fmt.Sprintf("menu:diag:p:%d", prevPage)),
-			btn(fmt.Sprintf("%d / %d", page, totalPages), fmt.Sprintf("menu:diag:p:%d", page)),
+			btn(fmt.Sprintf("%d / %d", page, totalPages), fmt.Sprintf("menu:diag:noop:%d:%d", page, totalPages)),
 			btn("След ➡️", fmt.Sprintf("menu:diag:p:%d", nextPage)),
 		))
 	}
@@ -227,7 +227,7 @@ func DiagPaginationMarkup(page, totalPages int) *telego.InlineKeyboardMarkup {
 	// Action row: Open Rich Report + Refresh current page
 	rows = append(rows, tu.InlineKeyboardRow(
 		btn("📊 Открыть Rich-отчёт", "menu:diag:rich"),
-		btn("🔄 Обновить", fmt.Sprintf("menu:diag:p:%d", page)),
+		btn("🔄 Обновить", fmt.Sprintf("menu:diag:refresh:%d", page)),
 	))
 
 	// Back row
@@ -243,7 +243,7 @@ func RichReportMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
 			btn("📄 Постраничный вид", "menu:diag:p:1"),
-			btn("🔄 Обновить", "menu:diag:rich"),
+			btn("🔄 Обновить", "menu:diag:refresh:rich"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🔙 Главное меню", "menu:main"),
