@@ -7,6 +7,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -63,7 +64,10 @@ type Bot struct {
 
 // New creates a Bot and verifies the token against the Telegram API.
 func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRecovery, commandsEnabled bool, subs SubscriptionManager) (*Bot, error) {
-	api, err := telego.NewBot(token, telego.WithDiscardLogger())
+	httpClient := &http.Client{
+		Transport: http.DefaultTransport,
+	}
+	api, err := telego.NewBot(token, telego.WithDiscardLogger(), telego.WithHTTPClient(httpClient))
 	if err != nil {
 		return nil, fmt.Errorf("telegram: %w", err)
 	}
