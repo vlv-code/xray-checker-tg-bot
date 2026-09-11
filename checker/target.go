@@ -2,7 +2,9 @@ package checker
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -22,11 +24,28 @@ type TargetDiagResult struct {
 	Error      string        `json:"error,omitempty"`
 }
 
+// NodeHealth holds reachability results for a proxy server node itself.
+type NodeHealth struct {
+	ResolvedIP string        `json:"resolved_ip,omitempty"`
+	DNSErr     string        `json:"dns_err,omitempty"`
+	DNSLatency time.Duration `json:"dns_latency,omitempty"`
+	TCPPing    time.Duration `json:"tcp_ping,omitempty"`
+	TCPErr     string        `json:"tcp_err,omitempty"`
+	TLSErr     string        `json:"tls_err,omitempty"`
+	TLSLatency time.Duration `json:"tls_latency,omitempty"`
+}
+
 // ProxyDiagReport holds diagnostic results across all target endpoints for one proxy.
 type ProxyDiagReport struct {
-	ProxyName string             `json:"proxy_name"`
-	StableID  string             `json:"stable_id"`
-	Targets   []TargetDiagResult `json:"targets"`
+	ProxyName  string             `json:"proxy_name"`
+	Protocol   string             `json:"protocol"`
+	Server     string             `json:"server"`
+	Port       int                `json:"port"`
+	StableID   string             `json:"stable_id"`
+	NodeHealth NodeHealth         `json:"node_health"`
+	Targets    []TargetDiagResult `json:"targets"`
+	Status     string             `json:"status"` // "online", "degraded", "offline"
+	Verdict    string             `json:"verdict"`
 }
 
 // TargetManager manages the list of target endpoints to test proxies against.
@@ -160,9 +179,12 @@ func CheckSingleTarget(client *http.Client, targetURL string) TargetDiagResult {
 }
 
 func simplifyError(err error) string {
+	if err == nil {
+		return ""
+	}
 	s := err.Error()
 	switch {
-	case strings.Contains(s, "context deadline exceeded") || strings.Contains(s, "Client.Timeout"):
+	case strings.Contains(s, "context deadline exceeded") || strings.Contains(s, "Client.Timeout") || strings.Contains(s, "i/o timeout"):
 		return "Timeout"
 	case strings.Contains(s, "EOF"):
 		return "EOF / Connection reset"
@@ -170,9 +192,136 @@ func simplifyError(err error) string {
 		return "Connection refused"
 	case strings.Contains(s, "no such host"):
 		return "DNS resolution error"
+	case strings.Contains(s, "certificate has expired"):
+		return "Certificate expired"
+	case strings.Contains(s, "certificate is not trusted") || strings.Contains(s, "unknown authority"):
+		return "Untrusted certificate"
 	default:
 		return s
 	}
+}
+
+// ProbeNodeHealth runs direct low-level reachability tests against the proxy node server.
+func ProbeNodeHealth(server string, port int, security string, sni string, allowInsecure bool) NodeHealth {
+	var health NodeHealth
+
+	// 1. DNS Resolution
+	targetIP := server
+	if net.ParseIP(server) != nil {
+		health.ResolvedIP = server
+	} else {
+		dnsStart := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+		defer cancel()
+
+		var r net.Resolver
+		ips, err := r.LookupIP(ctx, "ip", server)
+		health.DNSLatency = time.Since(dnsStart)
+		if err != nil {
+			health.DNSErr = simplifyError(err)
+			return health
+		}
+		if len(ips) == 0 {
+			health.DNSErr = "No IP found"
+			return health
+		}
+		health.ResolvedIP = ips[0].String()
+		targetIP = health.ResolvedIP
+	}
+
+	// 2. TCP Ping
+	tcpAddr := net.JoinHostPort(targetIP, fmt.Sprintf("%d", port))
+	tcpStart := time.Now()
+	conn, err := net.DialTimeout("tcp", tcpAddr, 2500*time.Millisecond)
+	health.TCPPing = time.Since(tcpStart)
+	if err != nil {
+		health.TCPErr = simplifyError(err)
+		return health
+	}
+	defer conn.Close()
+
+	// 3. TLS Probe (if security == "tls")
+	if strings.EqualFold(security, "tls") {
+		serverName := sni
+		if serverName == "" {
+			serverName = server
+		}
+		tlsConf := &tls.Config{
+			ServerName:         serverName,
+			InsecureSkipVerify: allowInsecure,
+		}
+		tlsConn := tls.Client(conn, tlsConf)
+		_ = tlsConn.SetDeadline(time.Now().Add(2500 * time.Millisecond))
+		tlsStart := time.Now()
+		if err := tlsConn.Handshake(); err != nil {
+			health.TLSErr = simplifyError(err)
+		} else {
+			health.TLSLatency = time.Since(tlsStart)
+		}
+	}
+
+	return health
+}
+
+// DetermineVerdict produces a health status and concise root-cause diagnosis.
+func DetermineVerdict(health NodeHealth, targets []TargetDiagResult) (status string, verdict string) {
+	if health.DNSErr != "" {
+		return "offline", fmt.Sprintf("Сбой DNS домена ноды (%s)", health.DNSErr)
+	}
+
+	if health.TCPErr != "" {
+		if strings.Contains(health.TCPErr, "Timeout") {
+			return "offline", "Нода не отвечает на TCP (таймаут: возможен бан IP или выключен VPS)"
+		}
+		if strings.Contains(strings.ToLower(health.TCPErr), "refused") {
+			return "offline", "TCP-соединение сброшено (порт закрыт / сервис Xray на ноде остановлен)"
+		}
+		return "offline", fmt.Sprintf("Сбой TCP подключения (%s)", health.TCPErr)
+	}
+
+	if health.TLSErr != "" {
+		return "offline", fmt.Sprintf("Сбой TLS рукопожатия (%s)", health.TLSErr)
+	}
+
+	successCount := 0
+	eofCount := 0
+	forbiddenCount := 0
+	timeoutCount := 0
+
+	for _, t := range targets {
+		if t.Success {
+			successCount++
+		} else {
+			errLow := strings.ToLower(t.Error)
+			if strings.Contains(errLow, "eof") || strings.Contains(errLow, "reset") {
+				eofCount++
+			} else if strings.Contains(errLow, "403") {
+				forbiddenCount++
+			} else if strings.Contains(errLow, "timeout") {
+				timeoutCount++
+			}
+		}
+	}
+
+	if len(targets) > 0 && successCount == len(targets) {
+		return "online", "Полностью исправен"
+	}
+
+	if successCount > 0 {
+		return "degraded", fmt.Sprintf("Частичная доступность (%d/%d сайтов доступны)", successCount, len(targets))
+	}
+
+	if eofCount > 0 {
+		return "offline", "Сервер сбросил сессию Xray (ошибка авторизации/UUID или бан)"
+	}
+	if forbiddenCount > 0 {
+		return "offline", "IP ноды заблокирован целевыми сервисами (HTTP 403 / Cloudflare Challenge)"
+	}
+	if timeoutCount > 0 {
+		return "offline", "Таймаут проксирования через туннель"
+	}
+
+	return "offline", "Проксирование через туннель завершилось ошибкой"
 }
 
 // RunDiagnostics executes concurrent tests against all given targets for each proxy.
@@ -202,12 +351,17 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 			if err != nil {
 				results[idx] = ProxyDiagReport{
 					ProxyName: proxy.Name,
+					Protocol:  proxy.Protocol,
+					Server:    proxy.Server,
+					Port:      proxy.Port,
 					StableID:  proxy.StableID,
 					Targets: []TargetDiagResult{{
 						URL:     "local socks5",
 						Success: false,
 						Error:   err.Error(),
 					}},
+					Status:  "offline",
+					Verdict: "Ошибка конфигурации локального SOCKS5 порта",
 				}
 				return
 			}
@@ -220,6 +374,15 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 				Timeout: time.Second * 10,
 			}
 
+			// Run Node health probe in parallel with target tests
+			var health NodeHealth
+			var nodeWg sync.WaitGroup
+			nodeWg.Add(1)
+			go func() {
+				defer nodeWg.Done()
+				health = ProbeNodeHealth(proxy.Server, proxy.Port, proxy.Security, proxy.SNI, proxy.AllowInsecure)
+			}()
+
 			targetResults := make([]TargetDiagResult, len(targets))
 			var innerWg sync.WaitGroup
 			for tIdx, targetURL := range targets {
@@ -230,11 +393,20 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 				}(tIdx, targetURL)
 			}
 			innerWg.Wait()
+			nodeWg.Wait()
+
+			status, verdict := DetermineVerdict(health, targetResults)
 
 			results[idx] = ProxyDiagReport{
-				ProxyName: proxy.Name,
-				StableID:  proxy.StableID,
-				Targets:   targetResults,
+				ProxyName:  proxy.Name,
+				Protocol:   proxy.Protocol,
+				Server:     proxy.Server,
+				Port:       proxy.Port,
+				StableID:   proxy.StableID,
+				NodeHealth: health,
+				Targets:    targetResults,
+				Status:     status,
+				Verdict:    verdict,
 			}
 		}(i, p)
 	}

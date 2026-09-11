@@ -1,8 +1,10 @@
 package checker
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,5 +62,91 @@ func TestCheckSingleTarget(t *testing.T) {
 	}
 	if res.Latency <= 0 {
 		t.Errorf("expected positive latency, got %v", res.Latency)
+	}
+}
+
+func TestProbeNodeHealth_TCPAndDNS(t *testing.T) {
+	// 1. Valid local TCP listener
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+
+	health := ProbeNodeHealth("127.0.0.1", port, "none", "", false)
+	if health.ResolvedIP != "127.0.0.1" {
+		t.Errorf("expected resolved IP 127.0.0.1, got %s", health.ResolvedIP)
+	}
+	if health.TCPErr != "" {
+		t.Errorf("expected no TCP error on open port, got %s", health.TCPErr)
+	}
+	if health.TCPPing <= 0 {
+		t.Errorf("expected positive TCP ping, got %v", health.TCPPing)
+	}
+
+	// 2. Closed port
+	l.Close()
+	closedHealth := ProbeNodeHealth("127.0.0.1", port, "none", "", false)
+	if closedHealth.TCPErr == "" {
+		t.Errorf("expected TCP error on closed port, got nil")
+	}
+
+	// 3. Invalid DNS host
+	dnsHealth := ProbeNodeHealth("invalid-test-domain-not-found.invalid", 443, "none", "", false)
+	if dnsHealth.DNSErr == "" {
+		t.Errorf("expected DNS error on invalid domain, got nil")
+	}
+}
+
+func TestDetermineVerdict(t *testing.T) {
+	// 1. All ok
+	status, verdict := DetermineVerdict(NodeHealth{ResolvedIP: "1.1.1.1"}, []TargetDiagResult{
+		{Success: true},
+		{Success: true},
+	})
+	if status != "online" || verdict != "Полностью исправен" {
+		t.Errorf("expected online / Полностью исправен, got %s / %s", status, verdict)
+	}
+
+	// 2. DNS error
+	status, _ = DetermineVerdict(NodeHealth{DNSErr: "no such host"}, nil)
+	if status != "offline" {
+		t.Errorf("expected offline on DNS error, got %s", status)
+	}
+
+	// 3. TCP Timeout
+	status, verdict = DetermineVerdict(NodeHealth{TCPErr: "Timeout"}, nil)
+	if status != "offline" || !strings.Contains(verdict, "таймаут") {
+		t.Errorf("expected offline / таймаут, got %s / %s", status, verdict)
+	}
+
+	// 4. TCP Refused
+	status, verdict = DetermineVerdict(NodeHealth{TCPErr: "Connection refused"}, nil)
+	if status != "offline" || !strings.Contains(verdict, "порт закрыт") {
+		t.Errorf("expected offline / порт закрыт, got %s / %s", status, verdict)
+	}
+
+	// 5. TLS error
+	status, verdict = DetermineVerdict(NodeHealth{TLSErr: "Certificate expired"}, nil)
+	if status != "offline" || !strings.Contains(verdict, "Сбой TLS") {
+		t.Errorf("expected offline / Сбой TLS, got %s / %s", status, verdict)
+	}
+
+	// 6. Partial targets (Degraded)
+	status, _ = DetermineVerdict(NodeHealth{ResolvedIP: "1.1.1.1"}, []TargetDiagResult{
+		{Success: true},
+		{Success: false, Error: "Timeout"},
+	})
+	if status != "degraded" {
+		t.Errorf("expected degraded, got %s", status)
+	}
+
+	// 7. EOF from Xray
+	status, verdict = DetermineVerdict(NodeHealth{ResolvedIP: "1.1.1.1"}, []TargetDiagResult{
+		{Success: false, Error: "EOF / Connection reset"},
+		{Success: false, Error: "EOF / Connection reset"},
+	})
+	if status != "offline" || !strings.Contains(verdict, "сессию Xray") {
+		t.Errorf("expected offline / Xray session EOF, got %s / %s", status, verdict)
 	}
 }

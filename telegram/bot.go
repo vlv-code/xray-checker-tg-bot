@@ -7,6 +7,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -666,43 +667,87 @@ func (b *Bot) getDiagnosticsText() string {
 	sort.Slice(reports, func(i, j int) bool { return reports[i].ProxyName < reports[j].ProxyName })
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("<b>⚡ Результаты экспресс-диагностики (%d прокси):</b>\n\n", len(reports)))
+	sb.WriteString(fmt.Sprintf("<b>⚡ Результаты детальной диагностики (%d прокси):</b>\n\n", len(reports)))
 
 	for _, rep := range reports {
-		allOk := true
-		for _, tr := range rep.Targets {
-			if !tr.Success {
-				allOk = false
-				break
-			}
-		}
-
 		icon := "🟢"
-		if !allOk {
+		switch rep.Status {
+		case "offline":
 			icon = "🔴"
+		case "degraded":
+			icon = "🟡"
 		}
 
-		fmt.Fprintf(&sb, "%s <b>%s</b>\n", icon, escapeHTML(rep.ProxyName))
-		for _, tr := range rep.Targets {
-			siteName := tr.URL
-			if strings.Contains(siteName, "cloudflare") {
-				siteName = "Cloudflare 204"
-			} else if strings.Contains(siteName, "gstatic") || strings.Contains(siteName, "google") {
-				siteName = "Google 204"
-			} else if strings.Contains(siteName, "ipify") {
-				siteName = "ipify.org"
-			}
+		proto := strings.ToUpper(rep.Protocol)
+		if proto == "" {
+			proto = "PROXY"
+		}
 
+		fmt.Fprintf(&sb, "%s <b>%s</b> <i>(%s)</i>\n", icon, escapeHTML(rep.ProxyName), proto)
+
+		// 1. DNS
+		if rep.NodeHealth.DNSErr != "" {
+			fmt.Fprintf(&sb, "  • DNS: ❌ %s\n", escapeHTML(rep.NodeHealth.DNSErr))
+		} else if rep.NodeHealth.ResolvedIP != "" {
+			if rep.NodeHealth.DNSLatency > 0 {
+				fmt.Fprintf(&sb, "  • DNS: ✅ <code>%s</code> (%.0f ms)\n", rep.NodeHealth.ResolvedIP, float64(rep.NodeHealth.DNSLatency.Milliseconds()))
+			} else {
+				fmt.Fprintf(&sb, "  • DNS: ✅ <code>%s</code>\n", rep.NodeHealth.ResolvedIP)
+			}
+		}
+
+		// 2. TCP Ping
+		if rep.Port > 0 {
+			if rep.NodeHealth.TCPErr != "" {
+				fmt.Fprintf(&sb, "  • TCP (%d): ❌ %s\n", rep.Port, escapeHTML(rep.NodeHealth.TCPErr))
+			} else if rep.NodeHealth.TCPPing > 0 {
+				fmt.Fprintf(&sb, "  • TCP (%d): ✅ %.0f ms\n", rep.Port, float64(rep.NodeHealth.TCPPing.Milliseconds()))
+			}
+		}
+
+		// 3. TLS Handshake (if attempted)
+		if rep.NodeHealth.TLSErr != "" {
+			fmt.Fprintf(&sb, "  • TLS: ❌ %s\n", escapeHTML(rep.NodeHealth.TLSErr))
+		} else if rep.NodeHealth.TLSLatency > 0 {
+			fmt.Fprintf(&sb, "  • TLS: ✅ %.0f ms\n", float64(rep.NodeHealth.TLSLatency.Milliseconds()))
+		}
+
+		// 4. Target Endpoints
+		for _, tr := range rep.Targets {
+			siteName := simplifyTargetName(tr.URL)
 			if tr.Success {
 				fmt.Fprintf(&sb, "  • %s: ✅ %.0f ms\n", siteName, float64(tr.Latency.Milliseconds()))
 			} else {
 				fmt.Fprintf(&sb, "  • %s: ❌ %s\n", siteName, escapeHTML(tr.Error))
 			}
 		}
+
+		// 5. Verdict
+		if rep.Verdict != "" {
+			fmt.Fprintf(&sb, "  💡 <i>Вердикт: %s</i>\n", escapeHTML(rep.Verdict))
+		}
+
 		sb.WriteString("\n")
 	}
 
 	return sb.String()
+}
+
+func simplifyTargetName(targetURL string) string {
+	switch {
+	case strings.Contains(targetURL, "cloudflare"):
+		return "Cloudflare 204"
+	case strings.Contains(targetURL, "gstatic") || strings.Contains(targetURL, "google"):
+		return "Google 204"
+	case strings.Contains(targetURL, "ipify"):
+		return "ipify.org"
+	default:
+		u, err := url.Parse(targetURL)
+		if err == nil && u.Host != "" {
+			return u.Host
+		}
+		return targetURL
+	}
 }
 
 func (b *Bot) replyDiagnostics(chatID int64) {
