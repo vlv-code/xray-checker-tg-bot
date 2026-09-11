@@ -63,6 +63,7 @@ type CLI struct {
 	} `embed:"" prefix:""`
 
 	Web struct {
+		Enabled             bool   `name:"web-enabled" help:"Enable web dashboard panel (default: true). Set to false to run without web UI" default:"true" env:"WEB_ENABLED"`
 		ShowServerDetails   bool   `name:"web-show-details" help:"Show server IP addresses and ports in web UI" default:"false" env:"WEB_SHOW_DETAILS"`
 		Public              bool   `name:"web-public" help:"Make dashboard public (requires --metrics-protected)" default:"false" env:"WEB_PUBLIC"`
 		TrustedExternalAuth bool   `name:"web-trusted-external-auth" help:"Allow server details in public mode when an external auth proxy protects the dashboard" default:"false" env:"WEB_TRUSTED_EXTERNAL_AUTH"`
@@ -84,7 +85,7 @@ type CLI struct {
 }
 
 func (c *CLI) Validate() error {
-	if c.Web.Public && !c.Metrics.Protected {
+	if c.Web.Enabled && c.Web.Public && !c.Metrics.Protected {
 		return fmt.Errorf("--web-public requires --metrics-protected to be enabled")
 	}
 	if c.Telegram.BotToken != "" && len(c.Telegram.ChatIDs) == 0 {

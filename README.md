@@ -74,7 +74,17 @@ Xray Checker includes a built-in Telegram bot for alerts and live subscription m
 | `TELEGRAM_COMMANDS_ENABLED` | `--telegram-commands` | `true` | Enable interactive commands (`/status`, `/help`, etc.) |
 | `TELEGRAM_MANAGE_SUBSCRIPTIONS` | `--telegram-manage-subscriptions` | `true` | Allow managing subscriptions via `/addsub`, `/delsub`, `/subs` |
 | `SUBSCRIPTION_STORE_PATH` | `--subscription-store-path` | `subscriptions.json` | Path to JSON file where bot-added subscriptions are persisted across restarts |
+| `WEB_ENABLED` | `--web-enabled` | `true` | Enable web dashboard panel. Set to `false` to run without web UI |
 
+### Running Without Web Panel (Headless Mode)
+
+If you only need Prometheus metrics or Telegram bot alerts without the web dashboard:
+* Set `WEB_ENABLED=false` in `.env` or pass `--web-enabled=false`. Prometheus `/metrics` and `/health` remain active.
+* To completely disable the HTTP server (bot and periodic checks only), set `METRICS_PORT=0`.
+* To build a Docker image with web UI disabled by default:
+  ```bash
+  docker build --build-arg WEB_ENABLED=false -t xray-checker:headless .
+  ```
 
 ## 🚀 Quick Start
 
@@ -98,13 +108,14 @@ Key settings to configure:
 * `TELEGRAM_BOT_TOKEN`: Token from [@BotFather](https://t.me/BotFather)
 * `TELEGRAM_CHAT_IDS`: Your Telegram user ID or group ID
 * `SUBSCRIPTION_STORE_PATH`: Path to persist bot-added subscriptions (default `/app/data/subscriptions.json` inside container)
+* `WEB_ENABLED`: `true` (default) or `false` to run without web dashboard
 
 ### 3. Launch with Docker Compose
 ```bash
 cp docker-compose.example.yml docker-compose.yml
 docker compose up -d --build
 ```
-The dashboard and metrics will be accessible at `http://localhost:2112`.
+The dashboard and metrics will be accessible at `http://localhost:2112` (or `/metrics` if `WEB_ENABLED=false`).
 
 
 ## 📈 Project Statistics

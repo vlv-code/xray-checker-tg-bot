@@ -64,7 +64,17 @@ Xray Checker включает встроенного Telegram-бота для о
 | `TELEGRAM_COMMANDS_ENABLED` | `--telegram-commands` | `true` | Включить обработку команд (`/status`, `/help` и др.) |
 | `TELEGRAM_MANAGE_SUBSCRIPTIONS` | `--telegram-manage-subscriptions` | `true` | Разрешить управление подписками через `/addsub`, `/delsub`, `/subs` |
 | `SUBSCRIPTION_STORE_PATH` | `--subscription-store-path` | `subscriptions.json` | Путь к файлу сохранения добавленных через бота подписок (для переживания рестартов) |
+| `WEB_ENABLED` | `--web-enabled` | `true` | Включить веб-панель (дашборд). Значение `false` отключает веб-интерфейс |
 
+### Работа без веб-панели (Headless режим)
+
+Если вам нужны только метрики Prometheus или оповещения в Telegram без веб-интерфейса:
+* Установите `WEB_ENABLED=false` в `.env` или передайте флаг `--web-enabled=false`. Эндпоинты `/metrics` и `/health` продолжают работать.
+* Чтобы полностью отключить HTTP-сервер (только Telegram-бот и проверки прокси), установите `METRICS_PORT=0`.
+* Чтобы собрать Docker-образ без веб-панели по умолчанию:
+  ```bash
+  docker build --build-arg WEB_ENABLED=false -t xray-checker:headless .
+  ```
 
 ## 🚀 Быстрый старт
  
@@ -88,13 +98,14 @@ nano .env
 * `TELEGRAM_BOT_TOKEN`: Токен бота от [@BotFather](https://t.me/BotFather)
 * `TELEGRAM_CHAT_IDS`: Ваш Telegram ID или ID группы для алертов и команд
 * `SUBSCRIPTION_STORE_PATH`: Путь для сохранения подписок бота (по умолчанию `/app/data/subscriptions.json` в контейнере)
+* `WEB_ENABLED`: `true` (по умолчанию) или `false` для работы без веб-панели
 
 ### 3. Запуск через Docker Compose
 ```bash
 cp docker-compose.example.yml docker-compose.yml
 docker compose up -d --build
 ```
-Веб-интерфейс и метрики станут доступны по адресу `http://<IP_сервера>:2112`.
+Веб-интерфейс и метрики станут доступны по адресу `http://<IP_сервера>:2112` (или только `/metrics` при `WEB_ENABLED=false`).
 
 ## 📈 Статистика проекта
 

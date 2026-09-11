@@ -187,6 +187,14 @@ Adds measured latency (TTFB - Time To First Byte) to endpoint responses, useful 
 
 ## Web UI
 
+### WEB_ENABLED
+
+- CLI: `--web-enabled`
+- Required: No
+- Default: `true`
+
+Enables the web dashboard panel, static assets, and web API endpoints. When set to `false`, the web UI and web API routes are completely disabled. Prometheus `/metrics` and `/health` remain operational (unless `METRICS_PORT=0` or empty, which runs in pure headless mode with only Telegram bot and periodic checks).
+
 ### WEB_SHOW_DETAILS
 
 - CLI: `--web-show-details`

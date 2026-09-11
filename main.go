@@ -2,8 +2,11 @@ package main
 
 import (
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"xray-checker/checker"
 	"xray-checker/config"
@@ -36,8 +39,10 @@ func main() {
 		logger.Startup("Log level: none (silent mode)")
 	}
 
-	if err := web.InitAssetLoader(config.CLIConfig.Web.CustomAssetsPath); err != nil {
-		logger.Fatal("Failed to initialize custom assets: %v", err)
+	if config.CLIConfig.Web.Enabled {
+		if err := web.InitAssetLoader(config.CLIConfig.Web.CustomAssetsPath); err != nil {
+			logger.Fatal("Failed to initialize custom assets: %v", err)
+		}
 	}
 
 	geoManager := xray.NewGeoFileManager("")
@@ -271,52 +276,75 @@ func main() {
 		logger.Fatal("Error creating web server: %v", err)
 	}
 	mux.Handle("/health", web.HealthHandler())
-	mux.Handle("/static/", web.StaticHandler())
-	mux.Handle("/api/v1/public/proxies", web.APIPublicProxiesHandler(proxyChecker))
-
-	web.RegisterConfigEndpoints(*proxyConfigs, proxyChecker, config.CLIConfig.Xray.StartPort)
 
 	protectedHandler := http.NewServeMux()
 	protectedHandler.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-	protectedHandler.Handle("/config/", web.ConfigStatusHandler(proxyChecker))
-	protectedHandler.Handle("/api/v1/proxies/", web.APIProxyHandler(proxyChecker, config.CLIConfig.Xray.StartPort))
-	protectedHandler.Handle("/api/v1/proxies", web.APIProxiesHandler(proxyChecker, config.CLIConfig.Xray.StartPort))
-	protectedHandler.Handle("/api/v1/config", web.APIConfigHandler(proxyChecker))
-	protectedHandler.Handle("/api/v1/status", web.APIStatusHandler(proxyChecker))
-	protectedHandler.Handle("/api/v1/system/info", web.APISystemInfoHandler(version, startTime))
-	protectedHandler.Handle("/api/v1/system/ip", web.APISystemIPHandler(proxyChecker))
-	protectedHandler.Handle("/api/v1/docs", web.APIDocsHandler())
-	protectedHandler.Handle("/api/v1/openapi.yaml", web.APIOpenAPIHandler())
 
-	if config.CLIConfig.Web.Public {
-		mux.Handle("/", web.IndexHandler(version, proxyChecker))
-		mux.Handle("/config/", web.ConfigStatusHandler(proxyChecker))
-		middlewareHandler := web.BasicAuthMiddleware(
-			config.CLIConfig.Metrics.Username,
-			config.CLIConfig.Metrics.Password,
-		)(protectedHandler)
-		mux.Handle("/metrics", middlewareHandler)
-		mux.Handle("/api/", middlewareHandler)
-	} else if config.CLIConfig.Metrics.Protected {
-		protectedHandler.Handle("/", web.IndexHandler(version, proxyChecker))
-		middlewareHandler := web.BasicAuthMiddleware(
-			config.CLIConfig.Metrics.Username,
-			config.CLIConfig.Metrics.Password,
-		)(protectedHandler)
-		mux.Handle("/", middlewareHandler)
+	if config.CLIConfig.Web.Enabled {
+		mux.Handle("/static/", web.StaticHandler())
+		mux.Handle("/api/v1/public/proxies", web.APIPublicProxiesHandler(proxyChecker))
+
+		web.RegisterConfigEndpoints(*proxyConfigs, proxyChecker, config.CLIConfig.Xray.StartPort)
+
+		protectedHandler.Handle("/config/", web.ConfigStatusHandler(proxyChecker))
+		protectedHandler.Handle("/api/v1/proxies/", web.APIProxyHandler(proxyChecker, config.CLIConfig.Xray.StartPort))
+		protectedHandler.Handle("/api/v1/proxies", web.APIProxiesHandler(proxyChecker, config.CLIConfig.Xray.StartPort))
+		protectedHandler.Handle("/api/v1/config", web.APIConfigHandler(proxyChecker))
+		protectedHandler.Handle("/api/v1/status", web.APIStatusHandler(proxyChecker))
+		protectedHandler.Handle("/api/v1/system/info", web.APISystemInfoHandler(version, startTime))
+		protectedHandler.Handle("/api/v1/system/ip", web.APISystemIPHandler(proxyChecker))
+		protectedHandler.Handle("/api/v1/docs", web.APIDocsHandler())
+		protectedHandler.Handle("/api/v1/openapi.yaml", web.APIOpenAPIHandler())
+
+		if config.CLIConfig.Web.Public {
+			mux.Handle("/", web.IndexHandler(version, proxyChecker))
+			mux.Handle("/config/", web.ConfigStatusHandler(proxyChecker))
+			middlewareHandler := web.BasicAuthMiddleware(
+				config.CLIConfig.Metrics.Username,
+				config.CLIConfig.Metrics.Password,
+			)(protectedHandler)
+			mux.Handle("/metrics", middlewareHandler)
+			mux.Handle("/api/", middlewareHandler)
+		} else if config.CLIConfig.Metrics.Protected {
+			protectedHandler.Handle("/", web.IndexHandler(version, proxyChecker))
+			middlewareHandler := web.BasicAuthMiddleware(
+				config.CLIConfig.Metrics.Username,
+				config.CLIConfig.Metrics.Password,
+			)(protectedHandler)
+			mux.Handle("/", middlewareHandler)
+		} else {
+			protectedHandler.Handle("/", web.IndexHandler(version, proxyChecker))
+			mux.Handle("/", protectedHandler)
+		}
 	} else {
-		protectedHandler.Handle("/", web.IndexHandler(version, proxyChecker))
-		mux.Handle("/", protectedHandler)
+		logger.Info("Web dashboard panel is disabled (--web-enabled=false)")
+		if config.CLIConfig.Metrics.Protected {
+			middlewareHandler := web.BasicAuthMiddleware(
+				config.CLIConfig.Metrics.Username,
+				config.CLIConfig.Metrics.Password,
+			)(protectedHandler)
+			mux.Handle("/metrics", middlewareHandler)
+		} else {
+			mux.Handle("/metrics", protectedHandler)
+		}
 	}
 
 	if !config.CLIConfig.RunOnce {
-		logger.Info("Server listening on %s:%s%s",
-			config.CLIConfig.Metrics.Host,
-			config.CLIConfig.Metrics.Port,
-			config.CLIConfig.Metrics.BasePath,
-		)
-		if err := http.ListenAndServe(config.CLIConfig.Metrics.Host+":"+config.CLIConfig.Metrics.Port, mux); err != nil {
-			logger.Fatal("Error starting server: %v", err)
+		if config.CLIConfig.Metrics.Port == "" || config.CLIConfig.Metrics.Port == "0" {
+			logger.Info("HTTP server disabled. Running headless (Telegram bot / scheduler only)")
+			sigChan := make(chan os.Signal, 1)
+			signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+			<-sigChan
+			logger.Info("Shutting down...")
+		} else {
+			logger.Info("Server listening on %s:%s%s",
+				config.CLIConfig.Metrics.Host,
+				config.CLIConfig.Metrics.Port,
+				config.CLIConfig.Metrics.BasePath,
+			)
+			if err := http.ListenAndServe(config.CLIConfig.Metrics.Host+":"+config.CLIConfig.Metrics.Port, mux); err != nil {
+				logger.Fatal("Error starting server: %v", err)
+			}
 		}
 	}
 }
@@ -353,7 +381,9 @@ func updateConfiguration(newConfigs []*models.ProxyConfig, currentConfigs *[]*mo
 
 	*currentConfigs = newConfigs
 
-	web.RegisterConfigEndpoints(newConfigs, proxyChecker, config.CLIConfig.Xray.StartPort)
+	if config.CLIConfig.Web.Enabled {
+		web.RegisterConfigEndpoints(newConfigs, proxyChecker, config.CLIConfig.Xray.StartPort)
+	}
 
 	logger.Info("Configuration updated: %d proxies", len(newConfigs))
 	return nil

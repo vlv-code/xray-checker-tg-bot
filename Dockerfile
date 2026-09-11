@@ -31,6 +31,7 @@ FROM alpine:3.21
 
 ARG USERNAME=kutovoys
 ARG REPOSITORY_NAME=xray-checker
+ARG WEB_ENABLED=true
 
 LABEL org.opencontainers.image.source=https://github.com/${USERNAME}/${REPOSITORY_NAME}
 
@@ -41,6 +42,8 @@ RUN apk add --no-cache ca-certificates curl tzdata && \
 
 WORKDIR /app
 COPY --from=builder /usr/bin/xray-checker /usr/bin/xray-checker
+
+ENV WEB_ENABLED=${WEB_ENABLED}
 
 USER appuser
 
