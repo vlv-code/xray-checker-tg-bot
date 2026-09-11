@@ -1,6 +1,7 @@
 // Package telegram wires the checker's proxy snapshot into a Telegram bot: it
-// sends a message whenever a proxy's online/offline state flips, and (optionally)
-// answers /status and /help commands from a fixed set of allowed chats.
+// sends alerts whenever a proxy's online/offline state flips, manages alert lifecycles
+// (live-editing and auto-cleanup), tracks outage statistics, enforces quiet hours with
+// morning and daytime digests, and provides an interactive inline menu.
 package telegram
 
 import (
@@ -8,9 +9,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	tgbotapi "github.com/kirugan/telegram-bot-api/v5"
 
+	"xray-checker/checker"
 	"xray-checker/logger"
 	"xray-checker/metrics"
 )
@@ -19,8 +22,14 @@ import (
 // with headroom for HTML entities added by escaping.
 const maxMessageLen = 3500
 
-// Bot sends proxy-status notifications to Telegram and, optionally, answers
-// interactive commands from a fixed set of allowed chats.
+// DiagnosticsSource provides diagnostic testing across target endpoints.
+type DiagnosticsSource interface {
+	RunDiagnostics(targets []string) []checker.ProxyDiagReport
+	GetTargetManager() *checker.TargetManager
+}
+
+// Bot sends proxy-status notifications to Telegram and answers interactive commands
+// and inline button queries from a fixed set of allowed chats.
 type Bot struct {
 	api            *tgbotapi.BotAPI
 	chatIDs        []int64
@@ -31,17 +40,21 @@ type Bot struct {
 	notifyOnRecovery bool
 	commandsEnabled  bool
 
-	mu       sync.Mutex
-	lastSeen map[string]bool // stable_id -> last known online status
-	seeded   bool            // true once the first snapshot has been recorded
+	configMgr   *ConfigManager
+	statsStore  *StatsStore
+	tracker     *AlertTracker
+	eventBuffer *EventBuffer
+	diagSource  DiagnosticsSource
+
+	mu            sync.Mutex
+	lastSeen      map[string]bool // stable_id -> last known online status
+	seeded        bool            // true once the first snapshot has been recorded
+	wasQuiet      bool
+	lastDayDigest time.Time
+	stopChan      chan struct{}
 }
 
-// New creates a Bot and verifies the token against the Telegram API. source
-// supplies the live proxy snapshot for /status and for transition detection —
-// checker.ProxyChecker satisfies metrics.MetricsSource. subs enables /addsub,
-// /delsub and /subs; pass nil to disable those commands (they're the only
-// ones that let an allowed chat change what the checker fetches from, so
-// callers may want to gate them separately from notifyOnRecovery/commandsEnabled).
+// New creates a Bot and verifies the token against the Telegram API.
 func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRecovery, commandsEnabled bool, subs SubscriptionManager) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
@@ -63,16 +76,50 @@ func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRe
 		subs:             subs,
 		notifyOnRecovery: notifyOnRecovery,
 		commandsEnabled:  commandsEnabled,
+		tracker:          NewAlertTracker(),
+		eventBuffer:      NewEventBuffer(),
 		lastSeen:         make(map[string]bool),
+		stopChan:         make(chan struct{}),
 	}, nil
 }
 
-// StartCommands begins long-polling for updates and answering /status and
-// /help in a background goroutine. It is a no-op if commands are disabled.
+// SetConfigManager attaches persistent configuration management.
+func (b *Bot) SetConfigManager(cm *ConfigManager) {
+	b.configMgr = cm
+}
+
+// SetStatsStore attaches outage statistics tracking.
+func (b *Bot) SetStatsStore(ss *StatsStore) {
+	b.statsStore = ss
+}
+
+// SetDiagnosticsSource attaches multi-target diagnostic capability.
+func (b *Bot) SetDiagnosticsSource(ds DiagnosticsSource) {
+	b.diagSource = ds
+}
+
+// GetConfig returns the active configuration or sensible defaults.
+func (b *Bot) GetConfig() BotConfig {
+	if b.configMgr != nil {
+		return b.configMgr.Get()
+	}
+	return BotConfig{
+		QuietHoursEnabled:      false,
+		QuietHoursStart:        "23:00",
+		QuietHoursEnd:          "08:00",
+		DayDigestEnabled:       false,
+		DayDigestIntervalHours: 6,
+		AlertMode:              AlertModeLive,
+	}
+}
+
+// StartCommands begins long-polling for updates and answering commands in a background goroutine.
 func (b *Bot) StartCommands() {
 	if !b.commandsEnabled {
 		return
 	}
+
+	b.startScheduler()
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -80,18 +127,69 @@ func (b *Bot) StartCommands() {
 
 	go func() {
 		for update := range updates {
-			if update.Message == nil {
-				continue
+			if update.Message != nil {
+				b.handleMessage(update.Message)
+			} else if update.CallbackQuery != nil {
+				b.handleCallbackQuery(update.CallbackQuery)
 			}
-			b.handleMessage(update.Message)
 		}
 	}()
 }
 
-// Stop halts long-polling. Safe to call even if StartCommands was never called
-// or commands are disabled.
+// Stop halts long-polling and scheduled routines.
 func (b *Bot) Stop() {
+	select {
+	case <-b.stopChan:
+	default:
+		close(b.stopChan)
+	}
 	b.api.StopReceivingUpdates()
+}
+
+func (b *Bot) startScheduler() {
+	b.wasQuiet = IsQuietTime(time.Now(), b.GetConfig())
+	b.lastDayDigest = time.Now()
+
+	ticker := time.NewTicker(1 * time.Minute)
+	go func() {
+		for {
+			select {
+			case <-b.stopChan:
+				ticker.Stop()
+				return
+			case now := <-ticker.C:
+				b.checkSchedules(now)
+			}
+		}
+	}()
+}
+
+func (b *Bot) checkSchedules(now time.Time) {
+	cfg := b.GetConfig()
+	isQuiet := IsQuietTime(now, cfg)
+
+	// Morning transition: quiet ended -> send morning digest
+	if b.wasQuiet && !isQuiet {
+		b.sendMorningDigest(now)
+	}
+	b.wasQuiet = isQuiet
+
+	// Daytime digest
+	if cfg.DayDigestEnabled && !isQuiet {
+		interval := time.Duration(cfg.DayDigestIntervalHours) * time.Hour
+		if interval <= 0 {
+			interval = 6 * time.Hour
+		}
+		if now.Sub(b.lastDayDigest) >= interval {
+			b.sendDaytimeDigest(now)
+			b.lastDayDigest = now
+		}
+	}
+
+	// Periodically persist stats to disk
+	if b.statsStore != nil && now.Minute()%5 == 0 {
+		_ = b.statsStore.Save()
+	}
 }
 
 func (b *Bot) handleMessage(msg *tgbotapi.Message) {
@@ -101,27 +199,158 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 	}
 
 	switch {
+	case strings.HasPrefix(msg.Text, "/start"), strings.HasPrefix(msg.Text, "/menu"):
+		b.replyMenu(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/status"):
 		b.replyStatus(msg.Chat.ID)
+	case strings.HasPrefix(msg.Text, "/diag"), strings.HasPrefix(msg.Text, "/check_now"):
+		go b.replyDiagnostics(msg.Chat.ID)
+	case strings.HasPrefix(msg.Text, "/stats"):
+		b.replyStats(msg.Chat.ID)
+	case strings.HasPrefix(msg.Text, "/quiet"), strings.HasPrefix(msg.Text, "/sleep"):
+		b.replyQuiet(msg.Chat.ID)
+	case strings.HasPrefix(msg.Text, "/targets"):
+		b.replyTargets(msg.Chat.ID)
+	case strings.HasPrefix(msg.Text, "/digest"):
+		b.replyDigest(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/subs"):
 		b.replySubs(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/addsub"):
-		// Fetching the subscription and reloading Xray can take a few
-		// seconds, so this runs off the update-processing loop to keep the
-		// bot responsive to other chats/commands in the meantime.
 		go b.handleAddSub(msg)
 	case strings.HasPrefix(msg.Text, "/delsub"), strings.HasPrefix(msg.Text, "/removesub"):
 		go b.handleDelSub(msg)
-	case strings.HasPrefix(msg.Text, "/start"), strings.HasPrefix(msg.Text, "/help"):
+	case strings.HasPrefix(msg.Text, "/help"):
 		b.replyHelp(msg.Chat.ID)
 	}
 }
 
-func (b *Bot) replyStatus(chatID int64) {
+func (b *Bot) handleCallbackQuery(cb *tgbotapi.CallbackQuery) {
+	chatID := cb.Message.Chat.ID
+	if !b.allowedChatIDs[chatID] {
+		return
+	}
+
+	// Acknowledge callback immediately to dismiss spinner
+	b.api.Send(tgbotapi.NewCallback(cb.ID, ""))
+
+	msgID := cb.Message.MessageID
+
+	switch cb.Data {
+	case "menu:main":
+		b.editWithMarkup(chatID, msgID, b.getMenuText(), MainMenuMarkup())
+	case "menu:status":
+		b.editWithMarkup(chatID, msgID, b.getStatusText(), StatusMenuMarkup())
+	case "menu:diag":
+		b.editWithMarkup(chatID, msgID, "⏳ <b>Выполняется экспресс-диагностика всех прокси...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
+		go func() {
+			reportText := b.getDiagnosticsText()
+			b.editWithMarkup(chatID, msgID, reportText, StatusMenuMarkup())
+		}()
+	case "menu:stats":
+		b.editWithMarkup(chatID, msgID, b.getStatsOverviewText(), StatsMenuMarkup())
+	case "menu:stats:incidents":
+		b.editWithMarkup(chatID, msgID, b.getIncidentsText(), BackToMenuMarkup())
+	case "menu:stats:top":
+		b.editWithMarkup(chatID, msgID, b.getTopProblematicText(), BackToMenuMarkup())
+	case "menu:quiet":
+		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
+	case "menu:quiet:toggle":
+		if b.configMgr != nil {
+			_ = b.configMgr.Update(func(c *BotConfig) {
+				c.QuietHoursEnabled = !c.QuietHoursEnabled
+			})
+		}
+		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
+	case "menu:quiet:snooze:1h":
+		if b.configMgr != nil {
+			until := time.Now().Add(1 * time.Hour).Unix()
+			_ = b.configMgr.Update(func(c *BotConfig) {
+				c.QuietSnoozeUntil = until
+			})
+		}
+		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
+	case "menu:quiet:snooze:4h":
+		if b.configMgr != nil {
+			until := time.Now().Add(4 * time.Hour).Unix()
+			_ = b.configMgr.Update(func(c *BotConfig) {
+				c.QuietSnoozeUntil = until
+			})
+		}
+		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
+	case "menu:quiet:snooze:morning":
+		if b.configMgr != nil {
+			now := time.Now()
+			next8 := time.Date(now.Year(), now.Month(), now.Day(), 8, 0, 0, 0, now.Location())
+			if !now.Before(next8) {
+				next8 = next8.Add(24 * time.Hour)
+			}
+			_ = b.configMgr.Update(func(c *BotConfig) {
+				c.QuietSnoozeUntil = next8.Unix()
+			})
+		}
+		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
+	case "menu:quiet:unsnooze":
+		if b.configMgr != nil {
+			_ = b.configMgr.Update(func(c *BotConfig) {
+				c.QuietSnoozeUntil = 0
+			})
+		}
+		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
+	case "menu:alert_mode":
+		b.editWithMarkup(chatID, msgID, b.getAlertModeText(), AlertModeMarkup(b.GetConfig()))
+	case "menu:alert_mode:live":
+		if b.configMgr != nil {
+			_ = b.configMgr.Update(func(c *BotConfig) {
+				c.AlertMode = AlertModeLive
+			})
+		}
+		b.editWithMarkup(chatID, msgID, b.getAlertModeText(), AlertModeMarkup(b.GetConfig()))
+	case "menu:alert_mode:clean":
+		if b.configMgr != nil {
+			_ = b.configMgr.Update(func(c *BotConfig) {
+				c.AlertMode = AlertModeClean
+			})
+		}
+		b.editWithMarkup(chatID, msgID, b.getAlertModeText(), AlertModeMarkup(b.GetConfig()))
+	case "menu:targets":
+		b.editWithMarkup(chatID, msgID, b.getTargetsText(), TargetsMenuMarkup())
+	case "menu:subs":
+		b.editWithMarkup(chatID, msgID, b.getSubsText(), BackToMenuMarkup())
+	case "menu:digest:now":
+		b.replyDigest(chatID)
+	}
+}
+
+func (b *Bot) getMenuText() string {
+	cfg := b.GetConfig()
+	modeName := "🔄 Live (редактирование)"
+	if cfg.AlertMode == AlertModeClean {
+		modeName = "🧹 Clean (автоочистка)"
+	}
+
+	quietStatus := "выключен"
+	if cfg.QuietHoursEnabled {
+		quietStatus = fmt.Sprintf("активен (%s–%s)", cfg.QuietHoursStart, cfg.QuietHoursEnd)
+	}
+	if cfg.QuietSnoozeUntil > time.Now().Unix() {
+		rem := time.Duration(cfg.QuietSnoozeUntil-time.Now().Unix()) * time.Second
+		quietStatus = fmt.Sprintf("пауза ещё %s", FormatDowntime(rem))
+	}
+
+	return fmt.Sprintf("<b>📱 Главное меню Xray Checker</b>\n\n"+
+		"• Режим алертов: <b>%s</b>\n"+
+		"• Тихий режим: <b>%s</b>\n\n"+
+		"Выберите нужный раздел с помощью кнопок ниже:", modeName, quietStatus)
+}
+
+func (b *Bot) replyMenu(chatID int64) {
+	b.sendWithMarkup(chatID, b.getMenuText(), MainMenuMarkup())
+}
+
+func (b *Bot) getStatusText() string {
 	snapshot := b.source.MetricsSnapshot()
 	if len(snapshot) == 0 {
-		b.send(chatID, "Нет данных о прокси — проверки ещё не выполнялись.")
-		return
+		return "Нет данных о прокси — проверки ещё не выполнялись."
 	}
 
 	sort.Slice(snapshot, func(i, j int) bool { return snapshot[i].Name < snapshot[j].Name })
@@ -138,35 +367,353 @@ func (b *Bot) replyStatus(chatID int64) {
 	}
 
 	header := fmt.Sprintf("<b>Статус прокси: %d/%d online</b>\n\n", online, len(snapshot))
-	b.send(chatID, header+body.String())
+	return header + body.String()
+}
+
+func (b *Bot) replyStatus(chatID int64) {
+	b.sendWithMarkup(chatID, b.getStatusText(), StatusMenuMarkup())
+}
+
+func (b *Bot) getStatsOverviewText() string {
+	if b.statsStore == nil {
+		return "Статистика недоступна."
+	}
+
+	snapshot := b.source.MetricsSnapshot()
+	totalProxies := len(snapshot)
+
+	var totalUptime float64
+	for _, pm := range snapshot {
+		totalUptime += b.statsStore.GetUptimePercent(pm.StableID)
+	}
+	avgUptime := 100.0
+	if totalProxies > 0 {
+		avgUptime = totalUptime / float64(totalProxies)
+	}
+
+	incidents := b.statsStore.GetRecentIncidents(1)
+	lastIncidentText := "Нет зарегистрированных инцидентов"
+	if len(incidents) > 0 {
+		inc := incidents[0]
+		downTime := time.Unix(inc.DownAt, 0).Format("15:04 02.01")
+		durText := "ещё не восстановился"
+		if inc.UpAt > 0 {
+			durText = FormatDowntime(time.Duration(inc.DurationSec) * time.Second)
+		}
+		lastIncidentText = fmt.Sprintf("%s: %s (длительность: %s)", escapeHTML(inc.ProxyName), downTime, durText)
+	}
+
+	return fmt.Sprintf("<b>📈 Статистика аптайма</b>\n\n"+
+		"• Всего прокси в мониторинге: <b>%d</b>\n"+
+		"• Средний аптайм пула: <b>%.1f%%</b>\n"+
+		"• Последний сбой: <i>%s</i>\n\n"+
+		"Выберите детализацию:", totalProxies, avgUptime, lastIncidentText)
+}
+
+func (b *Bot) replyStats(chatID int64) {
+	b.sendWithMarkup(chatID, b.getStatsOverviewText(), StatsMenuMarkup())
+}
+
+func (b *Bot) getIncidentsText() string {
+	if b.statsStore == nil {
+		return "Статистика недоступна."
+	}
+	incidents := b.statsStore.GetRecentIncidents(15)
+	if len(incidents) == 0 {
+		return "<b>📋 Журнал инцидентов</b>\n\nЗафиксированных сбоев нет — все прокси работают стабильно!"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<b>📋 Последние инциденты:</b>\n\n")
+	for _, inc := range incidents {
+		downTime := time.Unix(inc.DownAt, 0).Format("15:04 02.01")
+		if inc.UpAt == 0 {
+			fmt.Fprintf(&sb, "🔴 <b>%s</b> — упал %s (<i>сейчас оффлайн</i>)\nПричина: %s\n\n",
+				escapeHTML(inc.ProxyName), downTime, escapeHTML(inc.Reason))
+		} else {
+			fmt.Fprintf(&sb, "🟡 <b>%s</b> — %s (оффлайн %s)\nПричина: %s\n\n",
+				escapeHTML(inc.ProxyName), downTime, FormatDowntime(time.Duration(inc.DurationSec)*time.Second), escapeHTML(inc.Reason))
+		}
+	}
+	return sb.String()
+}
+
+func (b *Bot) getTopProblematicText() string {
+	if b.statsStore == nil {
+		return "Статистика недоступна."
+	}
+	top := b.statsStore.GetTopProblematic(10)
+	if len(top) == 0 {
+		return "Нет данных для отображения."
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<b>🔝 Топ проблемных прокси (по падениям):</b>\n\n")
+	for i, p := range top {
+		fmt.Fprintf(&sb, "%d. <b>%s</b>: падений: %d, аптайм: %.1f%%, суммарный простой: %s\n",
+			i+1, escapeHTML(p.ProxyName), p.DropCount, p.UptimePct, FormatDowntime(time.Duration(p.DowntimeSec)*time.Second))
+	}
+	return sb.String()
+}
+
+func (b *Bot) getQuietHoursText() string {
+	cfg := b.GetConfig()
+	status := "Отключен"
+	if cfg.QuietHoursEnabled {
+		status = fmt.Sprintf("Включен (%s – %s)", cfg.QuietHoursStart, cfg.QuietHoursEnd)
+	}
+
+	snoozeStatus := "Нет"
+	now := time.Now().Unix()
+	if cfg.QuietSnoozeUntil > now {
+		rem := time.Duration(cfg.QuietSnoozeUntil-now) * time.Second
+		snoozeStatus = fmt.Sprintf("Активен (осталось %s)", FormatDowntime(rem))
+	}
+
+	return fmt.Sprintf("<b>🌙 Тихий режим (ночной сон)</b>\n\n"+
+		"В тихом режиме звуковые алерты об авариях не приходят в чат, а копятся для утренней сводки.\n\n"+
+		"• Расписание сна: <b>%s</b>\n"+
+		"• Ручная пауза: <b>%s</b>\n\n"+
+		"Управляйте режимом с помощью кнопок:", status, snoozeStatus)
+}
+
+func (b *Bot) replyQuiet(chatID int64) {
+	b.sendWithMarkup(chatID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
+}
+
+func (b *Bot) getAlertModeText() string {
+	cfg := b.GetConfig()
+	current := "🔄 Live (редактирование)"
+	if cfg.AlertMode == AlertModeClean {
+		current = "🧹 Чистый чат (автоочистка)"
+	}
+
+	return fmt.Sprintf("<b>⚙️ Режим уведомлений об авариях</b>\n\n"+
+		"Текущий режим: <b>%s</b>\n\n"+
+		"• <b>Live-режим</b>: аварийное сообщение о падении не удаляется, а при восстановлении обновляется на статус «Восстановлен» с длительностью даунтайма.\n"+
+		"• <b>Чистый чат</b>: аварийное сообщение удаляется сразу при восстановлении, а подтверждение восстановления исчезает через 2 минуты, оставляя чат чистым.", current)
+}
+
+func (b *Bot) getTargetsText() string {
+	targets := []string{
+		"https://cp.cloudflare.com/generate_204",
+		"https://www.gstatic.com/generate_204",
+	}
+	if b.diagSource != nil {
+		if tm := b.diagSource.GetTargetManager(); tm != nil {
+			configured := tm.GetTargets()
+			if len(configured) > 0 {
+				targets = configured
+			}
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<b>🎯 Целевые серверы для проверки прокси:</b>\n\n")
+	for i, t := range targets {
+		fmt.Fprintf(&sb, "%d. <code>%s</code>\n", i+1, escapeHTML(t))
+	}
+	sb.WriteString("\nЧекер проверяет доступность нод по этим эндпоинтам. Если хотя бы один ответил успехом, нода считается рабочей.")
+	return sb.String()
+}
+
+func (b *Bot) replyTargets(chatID int64) {
+	b.sendWithMarkup(chatID, b.getTargetsText(), TargetsMenuMarkup())
+}
+
+func (b *Bot) getSubsText() string {
+	if b.subs == nil {
+		return "Управление подписками отключено."
+	}
+	static := b.subs.Static()
+	dynamic := b.subs.Dynamic()
+	if len(static) == 0 && len(dynamic) == 0 {
+		return "Нет активных подписок."
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<b>📋 Список подписок:</b>\n\n")
+	for _, u := range static {
+		fmt.Fprintf(&sb, "🔒 <code>%s</code>\n", escapeHTML(u))
+	}
+	for _, u := range dynamic {
+		fmt.Fprintf(&sb, "➕ <code>%s</code>\n", escapeHTML(u))
+	}
+	sb.WriteString("\n🔒 — из окружения / флагов, ➕ — добавлена через /addsub")
+	return sb.String()
+}
+
+func (b *Bot) getDiagnosticsText() string {
+	if b.diagSource == nil {
+		return "Диагностика недоступна."
+	}
+
+	targets := []string{
+		"https://cp.cloudflare.com/generate_204",
+		"https://www.gstatic.com/generate_204",
+	}
+	if tm := b.diagSource.GetTargetManager(); tm != nil {
+		configured := tm.GetTargets()
+		if len(configured) > 0 {
+			targets = configured
+		}
+	}
+
+	reports := b.diagSource.RunDiagnostics(targets)
+	if len(reports) == 0 {
+		return "Нет прокси для проверки."
+	}
+
+	sort.Slice(reports, func(i, j int) bool { return reports[i].ProxyName < reports[j].ProxyName })
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("<b>⚡ Результаты экспресс-диагностики (%d прокси):</b>\n\n", len(reports)))
+
+	for _, rep := range reports {
+		allOk := true
+		for _, tr := range rep.Targets {
+			if !tr.Success {
+				allOk = false
+				break
+			}
+		}
+
+		icon := "🟢"
+		if !allOk {
+			icon = "🔴"
+		}
+
+		fmt.Fprintf(&sb, "%s <b>%s</b>\n", icon, escapeHTML(rep.ProxyName))
+		for _, tr := range rep.Targets {
+			siteName := tr.URL
+			if strings.Contains(siteName, "cloudflare") {
+				siteName = "Cloudflare 204"
+			} else if strings.Contains(siteName, "gstatic") || strings.Contains(siteName, "google") {
+				siteName = "Google 204"
+			} else if strings.Contains(siteName, "ipify") {
+				siteName = "ipify.org"
+			}
+
+			if tr.Success {
+				fmt.Fprintf(&sb, "  • %s: ✅ %.0f ms\n", siteName, float64(tr.Latency.Milliseconds()))
+			} else {
+				fmt.Fprintf(&sb, "  • %s: ❌ %s\n", siteName, escapeHTML(tr.Error))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
+}
+
+func (b *Bot) replyDiagnostics(chatID int64) {
+	b.send(chatID, "⏳ <b>Выполняется экспресс-диагностика всех прокси...</b>\nПожалуйста, подождите...")
+	text := b.getDiagnosticsText()
+	b.sendWithMarkup(chatID, text, BackToMenuMarkup())
+}
+
+func (b *Bot) replyDigest(chatID int64) {
+	snapshot := b.source.MetricsSnapshot()
+	online := 0
+	for _, pm := range snapshot {
+		if pm.Online {
+			online++
+		}
+	}
+
+	text := fmt.Sprintf("<b>📊 Сводка Xray Checker</b>\n\n"+
+		"• Текущий статус: <b>%d/%d online</b>\n"+
+		"• Время: <b>%s</b>\n", online, len(snapshot), time.Now().Format("15:04:05 02.01.2006"))
+
+	if b.statsStore != nil {
+		text += fmt.Sprintf("• Средний аптайм: <b>%.1f%%</b>\n", b.statsStore.GetUptimePercent(""))
+	}
+
+	b.sendWithMarkup(chatID, text, BackToMenuMarkup())
+}
+
+func (b *Bot) sendMorningDigest(now time.Time) {
+	snapshot := b.source.MetricsSnapshot()
+	online := 0
+	for _, pm := range snapshot {
+		if pm.Online {
+			online++
+		}
+	}
+
+	events := b.eventBuffer.Drain()
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "<b>🌅 Утренняя сводка Xray Checker</b>\n\n"+
+		"• Статус прокси: <b>%d/%d online</b>\n"+
+		"• Время: <b>%s</b>\n\n", online, len(snapshot), now.Format("15:04"))
+
+	if len(events) == 0 {
+		sb.WriteString("🌙 <i>За ночь аварий не зафиксировано, все серверы работали стабильно.</i>")
+	} else {
+		sb.WriteString("<b>События за ночь:</b>\n")
+		for _, e := range events {
+			tStr := e.Timestamp.Format("15:04")
+			if e.Type == "down" {
+				fmt.Fprintf(&sb, "• 🔴 %s: <b>%s</b> упал (%s)\n", tStr, escapeHTML(e.ProxyName), escapeHTML(e.Reason))
+			} else {
+				fmt.Fprintf(&sb, "• ✅ %s: <b>%s</b> восстановился (был оффлайн %s)\n", tStr, escapeHTML(e.ProxyName), FormatDowntime(e.Downtime))
+			}
+		}
+	}
+
+	b.broadcast(sb.String())
+}
+
+func (b *Bot) sendDaytimeDigest(now time.Time) {
+	snapshot := b.source.MetricsSnapshot()
+	online := 0
+	for _, pm := range snapshot {
+		if pm.Online {
+			online++
+		}
+	}
+
+	text := fmt.Sprintf("<b>📊 Дневная сводка Xray Checker</b>\n\n"+
+		"• Доступность: <b>%d/%d онлайн</b>\n"+
+		"• Время: <b>%s</b>", online, len(snapshot), now.Format("15:04"))
+
+	b.broadcast(text)
 }
 
 func (b *Bot) replyHelp(chatID int64) {
-	text := "<b>Xray Checker</b>\n\n" +
-		"/status — текущий статус всех прокси\n"
+	text := "<b>Xray Checker Bot</b>\n\n" +
+		"/menu — главное интерактивное меню\n" +
+		"/status — статус всех прокси\n" +
+		"/diag — экспресс-проверка по сайтам\n" +
+		"/stats — статистика аптайма и инцидентов\n" +
+		"/quiet — настройки тихого режима (сна)\n" +
+		"/targets — список целевых серверов проверки\n"
 	if b.subs != nil {
 		text += "/subs — список подписок\n" +
 			"/addsub &lt;URL&gt; — добавить подписку\n" +
 			"/delsub &lt;URL&gt; — удалить добавленную подписку\n"
 	}
-	text += "/help — это сообщение\n\n" +
-		"Уведомления о недоступности и восстановлении приходят сюда автоматически."
-	b.send(chatID, text)
+	text += "/help — эта справка\n\n" +
+		"Уведомления об авариях приходят сюда автоматически."
+	b.sendWithMarkup(chatID, text, MainMenuMarkup())
 }
 
 // ProcessSnapshot compares the current proxy snapshot against the last known
-// state and sends a notification for every online/offline transition. The
-// first call after startup only seeds state — it never fires notifications —
-// so a pre-existing outage at boot doesn't trigger a burst of alerts, and a
-// proxy added later by a subscription update is likewise seeded silently on
-// the cycle it first appears rather than treated as a transition.
+// state and handles transitions with smart alert lifecycle and stats tracking.
 func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	now := time.Now()
+	cfg := b.GetConfig()
+	isQuiet := IsQuietTime(now, cfg)
+
 	if !b.seeded {
 		for _, pm := range snapshot {
 			b.lastSeen[pm.StableID] = pm.Online
+			if b.statsStore != nil {
+				b.statsStore.RecordCheck(pm.StableID, pm.Name, pm.Online, pm.LatencyMs)
+			}
 		}
 		b.seeded = true
 		return
@@ -176,6 +723,10 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 	for _, pm := range snapshot {
 		seenNow[pm.StableID] = true
 
+		if b.statsStore != nil {
+			b.statsStore.RecordCheck(pm.StableID, pm.Name, pm.Online, pm.LatencyMs)
+		}
+
 		prev, known := b.lastSeen[pm.StableID]
 		b.lastSeen[pm.StableID] = pm.Online
 		if !known {
@@ -184,14 +735,82 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 
 		switch {
 		case prev && !pm.Online:
-			b.broadcast(fmt.Sprintf("🔴 <b>%s</b> недоступен\n%s", escapeHTML(pm.Name), escapeHTML(pm.Address)))
-		case !prev && pm.Online && b.notifyOnRecovery:
-			b.broadcast(fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms", escapeHTML(pm.Name), pm.LatencyMs))
+			if b.statsStore != nil {
+				b.statsStore.RecordTransition(pm.StableID, pm.Name, false, "Offline", now)
+			}
+
+			if isQuiet {
+				b.eventBuffer.Add(BufferedEvent{
+					Timestamp: now,
+					Type:      "down",
+					ProxyName: pm.Name,
+					Reason:    "Offline",
+				})
+			} else {
+				outageText := fmt.Sprintf("🔴 <b>%s</b> недоступен\n%s", escapeHTML(pm.Name), escapeHTML(pm.Address))
+				for _, chatID := range b.chatIDs {
+					if sent, err := b.sendAndReturn(chatID, outageText); err == nil {
+						b.tracker.Track(chatID, sent.MessageID, pm.StableID, pm.Name, now, "Offline")
+					}
+				}
+			}
+
+		case !prev && pm.Online:
+			if b.statsStore != nil {
+				b.statsStore.RecordTransition(pm.StableID, pm.Name, true, "", now)
+			}
+
+			if isQuiet {
+				b.eventBuffer.Add(BufferedEvent{
+					Timestamp: now,
+					Type:      "up",
+					ProxyName: pm.Name,
+					LatencyMs: pm.LatencyMs,
+				})
+			} else {
+				for _, chatID := range b.chatIDs {
+					alert, hadAlert := b.tracker.Resolve(chatID, pm.StableID)
+					var downtime time.Duration
+					if hadAlert {
+						downtime = now.Sub(alert.DownAt)
+					}
+
+					if cfg.AlertMode == AlertModeClean {
+						// Delete outage alert
+						if hadAlert {
+							b.api.Send(tgbotapi.NewDeleteMessage(chatID, alert.MessageID))
+						}
+						if b.notifyOnRecovery {
+							recoveryText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms", escapeHTML(pm.Name), pm.LatencyMs)
+							if hadAlert && downtime > 0 {
+								recoveryText += fmt.Sprintf(" (был оффлайн %s)", FormatDowntime(downtime))
+							}
+							if sent, err := b.sendAndReturn(chatID, recoveryText); err == nil {
+								// Delete recovery confirmation after 2 minutes
+								go func(cID int64, mID int) {
+									time.Sleep(2 * time.Minute)
+									b.api.Send(tgbotapi.NewDeleteMessage(cID, mID))
+								}(chatID, sent.MessageID)
+							}
+						}
+					} else { // AlertModeLive
+						if hadAlert {
+							liveText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms (был оффлайн %s)",
+								escapeHTML(pm.Name), pm.LatencyMs, FormatDowntime(downtime))
+							edit := tgbotapi.NewEditMessageText(chatID, alert.MessageID, liveText)
+							edit.ParseMode = tgbotapi.ModeHTML
+							b.api.Send(edit)
+						} else if b.notifyOnRecovery {
+							recoveryText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms", escapeHTML(pm.Name), pm.LatencyMs)
+							b.send(chatID, recoveryText)
+						}
+					}
+				}
+			}
 		}
 	}
 
-	// Drop state for proxies no longer in the current set (removed by a
-	// subscription update) so lastSeen doesn't grow without bound.
+	// Drop state for removed proxies
 	for id := range b.lastSeen {
 		if !seenNow[id] {
 			delete(b.lastSeen, id)
@@ -215,8 +834,37 @@ func (b *Bot) send(chatID int64, text string) {
 	}
 }
 
-// splitMessage breaks text into chunks no larger than limit, breaking on line
-// boundaries so a status list with many proxies doesn't get cut mid-line.
+func (b *Bot) sendAndReturn(chatID int64, text string) (*tgbotapi.Message, error) {
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = tgbotapi.ModeHTML
+	sent, err := b.api.Send(msg)
+	if err != nil {
+		logger.Error("Telegram: failed to send message to %d: %v", chatID, err)
+		return nil, err
+	}
+	return &sent, nil
+}
+
+func (b *Bot) sendWithMarkup(chatID int64, text string, markup tgbotapi.InlineKeyboardMarkup) (*tgbotapi.Message, error) {
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = tgbotapi.ModeHTML
+	msg.ReplyMarkup = markup
+	sent, err := b.api.Send(msg)
+	if err != nil {
+		logger.Error("Telegram: failed to send message to %d: %v", chatID, err)
+		return nil, err
+	}
+	return &sent, nil
+}
+
+func (b *Bot) editWithMarkup(chatID int64, messageID int, text string, markup tgbotapi.InlineKeyboardMarkup) {
+	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, text, markup)
+	edit.ParseMode = tgbotapi.ModeHTML
+	if _, err := b.api.Send(edit); err != nil {
+		logger.Error("Telegram: failed to edit message %d in chat %d: %v", messageID, chatID, err)
+	}
+}
+
 func splitMessage(text string, limit int) []string {
 	if len(text) <= limit {
 		return []string{text}
