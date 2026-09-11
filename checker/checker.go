@@ -30,6 +30,7 @@ type ProxyChecker struct {
 	downloadMinSize  int64
 	checkMethod      string
 	checkConcurrency int // max proxies checked in parallel per cycle; 0 = unlimited
+	targetManager    *TargetManager
 	mu               sync.RWMutex
 }
 
@@ -208,29 +209,65 @@ func (pc *ProxyChecker) checkByIP(client *http.Client) (bool, string, time.Durat
 	return proxyIP != pc.currentIP, logMessage, ttfb, nil
 }
 
+func (pc *ProxyChecker) SetTargetManager(tm *TargetManager) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.targetManager = tm
+}
+
+func (pc *ProxyChecker) GetTargetManager() *TargetManager {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	return pc.targetManager
+}
+
 func (pc *ProxyChecker) checkByGen(client *http.Client) (bool, string, time.Duration, error) {
-	req, err := http.NewRequest("GET", pc.genMethodURL, nil)
-	if err != nil {
-		return false, "", 0, err
+	targets := []string{pc.genMethodURL}
+	if tm := pc.GetTargetManager(); tm != nil {
+		configured := tm.GetTargets()
+		if len(configured) > 0 {
+			targets = configured
+		}
 	}
 
-	var ttfb time.Duration
-	start := time.Now()
-	trace := &httptrace.ClientTrace{
-		GotFirstResponseByte: func() {
+	var lastErr error
+	for _, targetURL := range targets {
+		req, err := http.NewRequest("GET", targetURL, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		var ttfb time.Duration
+		start := time.Now()
+		trace := &httptrace.ClientTrace{
+			GotFirstResponseByte: func() {
+				ttfb = time.Since(start)
+			},
+		}
+		req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		status := resp.StatusCode
+		resp.Body.Close()
+
+		if ttfb == 0 {
 			ttfb = time.Since(start)
-		},
-	}
-	req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
+		}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, "", 0, err
+		if status >= 200 && status < 400 {
+			logMessage := fmt.Sprintf("Status: %d via %s", status, targetURL)
+			return true, logMessage, ttfb, nil
+		}
+		lastErr = fmt.Errorf("HTTP %d from %s", status, targetURL)
 	}
-	defer resp.Body.Close()
 
-	logMessage := fmt.Sprintf("Status: %d", resp.StatusCode)
-	return resp.StatusCode >= 200 && resp.StatusCode < 300, logMessage, ttfb, nil
+	return false, "", 0, lastErr
 }
 
 func (pc *ProxyChecker) checkByDownload(client *http.Client) (bool, string, time.Duration, error) {
