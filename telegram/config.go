@@ -172,6 +172,33 @@ func (cm *ConfigManager) ToggleHost(server string) (bool, error) {
 	return newState, err
 }
 
+// ToggleProxy toggles the disabled status of a specific proxy by its StableID and persists the change.
+// Returns (newState, error) where newState is true if the proxy is now disabled.
+func (cm *ConfigManager) ToggleProxy(stableID string) (bool, error) {
+	stableID = strings.TrimSpace(stableID)
+	var newState bool
+	err := cm.Update(func(cfg *BotConfig) {
+		found := false
+		var updated []string
+		for _, id := range cfg.DisabledProxies {
+			if id == stableID {
+				found = true
+			} else {
+				updated = append(updated, id)
+			}
+		}
+		if !found {
+			updated = append(updated, stableID)
+			newState = true // now disabled
+		} else {
+			newState = false // now enabled
+		}
+		cfg.DisabledProxies = updated
+	})
+	return newState, err
+}
+
+
 // Update modifies the configuration atomically and persists to disk.
 func (cm *ConfigManager) Update(fn func(*BotConfig)) error {
 	cm.mu.Lock()

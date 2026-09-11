@@ -297,6 +297,74 @@ func TestBot_MenuTextAndSettings(t *testing.T) {
 	if mainMarkup.InlineKeyboard[3][0].CallbackData != "menu:settings" {
 		t.Errorf("expected settings button in row 4, got %s", mainMarkup.InlineKeyboard[3][0].CallbackData)
 	}
+
+	// Verify SettingsMenuMarkup has no digest button and has disabled_proxies button
+	settingsMarkup := SettingsMenuMarkup()
+	for _, row := range settingsMarkup.InlineKeyboard {
+		for _, btn := range row {
+			if btn.CallbackData == "menu:digest:now" {
+				t.Errorf("redundant menu:digest:now button should be removed from SettingsMenuMarkup")
+			}
+		}
+	}
+}
+
+func TestBot_DisabledProxiesView(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "bot_cfg.json")
+	cm, err := NewConfigManager(cfgPath, BotConfig{
+		DisabledProxies: []string{"id-node2"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create config manager: %v", err)
+	}
+
+	ms := &mockSource{
+		metrics: []metrics.ProxyMetric{
+			{Name: "Node-1", StableID: "id-node1", Online: true},
+			{Name: "Node-2", StableID: "id-node2", Online: false},
+			{Name: "Node-3", StableID: "id-node3", Online: true},
+		},
+	}
+
+	b := &Bot{
+		source:    ms,
+		configMgr: cm,
+	}
+
+	viewText, markup := b.getDisabledProxiesView(1)
+	if !strings.Contains(viewText, "🚫 Управление нодами (вкл/выкл)") {
+		t.Errorf("expected view title, got: %s", viewText)
+	}
+	if !strings.Contains(viewText, "Всего нод: <b>3</b> | Отключено: <b>1</b>") {
+		t.Errorf("expected node counts, got: %s", viewText)
+	}
+
+	// Check buttons in markup
+	foundDisabled := false
+	foundEnabled := false
+	for _, row := range markup.InlineKeyboard {
+		for _, btn := range row {
+			if strings.Contains(btn.Text, "Node-2") && strings.Contains(btn.Text, "⏸️") {
+				foundDisabled = true
+			}
+			if strings.Contains(btn.Text, "Node-1") && strings.Contains(btn.Text, "🟢") {
+				foundEnabled = true
+			}
+		}
+	}
+	if !foundDisabled || !foundEnabled {
+		t.Errorf("expected enabled and disabled buttons in markup, got: %v", markup)
+	}
+
+	// Verify menu text immediately reflects disabled node from cfg
+	menuText := b.getMenuText()
+	if !strings.Contains(menuText, "• Текущий статус: <b>2/2 online</b>") {
+		t.Errorf("expected 2/2 online in menu text, got: %s", menuText)
+	}
+	if !strings.Contains(menuText, "1 отключено") {
+		t.Errorf("expected 1 отключено in menu text, got: %s", menuText)
+	}
 }
 
 func TestBot_DisabledHostsView(t *testing.T) {

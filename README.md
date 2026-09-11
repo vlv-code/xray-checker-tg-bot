@@ -8,10 +8,11 @@
 
 > [!NOTE]
 > **This repository is a fork of the original [kutovoys/xray-checker](https://github.com/kutovoys/xray-checker)** featuring a fully integrated Telegram Bot built on the official `mymmrac/telego` library:
-> - ⚡ **Multi-Stage Connection Diagnostics**: Isolated analysis of DNS resolution, TCP ping (RTT), TLS handshake, Xray SOCKS tunnel, and target endpoints.
-> - 🌐 **Check-Host.net External Verification**: Automated external reachability checks from Russia (Moscow, St. Petersburg) and worldwide nodes upon outage, plus targeted `/checkhost` auditing.
+> - ⚡ **Multi-Stage Connection Diagnostics**: Isolated analysis of DNS resolution, TCP ping (RTT), TLS handshake, Xray SOCKS tunnel, and target endpoints (paginated view + Telegram 10.1 rich format).
+> - 🌐 **Check-Host.net Background Audit**: Periodic reachability checks across all subscription hosts with automated Russian blocking alerts (`RUAvailable == false`) and deduplication.
+> - 🚫 **Individual Node Disabling**: Toggle checks for specific proxy connections directly in the bot menu without modifying subscription files.
 > - ⏱️ **Dynamic Runtime Check Interval**: Change check frequency on the fly (`/interval` or menu) without container restarts.
-> - 🔔 **Smart Alert Lifecycle**: Live Mode (updates original outage message with total downtime) and Clean Mode (auto-deletes alerts).
+> - 🔔 **Smart Alert Lifecycle**: Clean Mode (auto-deletes alerts upon recovery) and Live Mode (updates original outage message with total downtime) with persistent state and anti-flapping.
 > - 🌙 **Quiet Night Hours & Digests**: Suppress alert sounds overnight, automatic morning digest, and periodic daytime summaries.
 > - 📈 **Persistent Uptime Statistics**: Sliding incident log and reliability rankings (`/stats`).
 > - 📋 **Dynamic Subscription Management**: Add and remove subscriptions in chat (`/subs`, `/addsub`, `/delsub`).
@@ -40,10 +41,13 @@ All features are accessible via the interactive **`/menu`** or direct chat comma
 
 | Command | Description |
 |---|---|
-| `/menu` or `/start` | Open main interactive menu with inline navigation buttons |
+| `/menu` or `/start` | Open main interactive menu with real-time status summary and navigation |
 | `/status` | Real-time status summary of all configured proxies (online/offline, latency) |
 | `/diag` | Detailed multi-stage diagnostics (DNS, TCP RTT, TLS, Targets + Check-Host) |
+| `/settings` | Bot settings, interval, alert mode, and node disabling |
+| `/togglenode <name\|ID>` | Enable or disable checking for a specific proxy node |
 | `/checkhost <host[:port]>` | Global reachability audit of any host/IP across worldwide Check-Host nodes |
+| `/checkhost_bg [on\|off\|1h\|run]` | Manage background Check-Host auditing and RU reachability alerts |
 | `/interval [seconds]` | View or change proxy check interval dynamically (e.g. `/interval 60`) |
 | `/stats` | Uptime statistics (%), top problematic proxies, and recent outage history |
 | `/quiet` | Configure quiet hours schedule and snooze intervals (1h, 4h, morning) |
@@ -155,14 +159,18 @@ docker compose up -d --build
 | `SUBSCRIPTION_STORE_PATH` | `/app/data/subscriptions.json` | Persistent storage path for `/addsub` subscriptions |
 | `TELEGRAM_BOT_TOKEN` | `""` | Telegram bot token from @BotFather (enables the bot) |
 | `TELEGRAM_CHAT_IDS` | `""` | Comma-separated list of authorized Telegram chat IDs |
-| `TELEGRAM_ALERT_MODE` | `live` | Alert mode: `live` (edits outage alert) or `clean` (auto-deletes) |
-| `TELEGRAM_RICH_MODE`  | `false` | Enable Telegram Bot API 10.1 rich messages for diagnostics (table + collapsible details) |
+| `TELEGRAM_ALERT_MODE` | `clean` | Alert mode: `clean` (auto-deletes) or `live` (edits outage alert) |
+| `TELEGRAM_RICH_MODE`  | `true` | Enable Telegram Bot API 10.1 rich messages for diagnostics (table + collapsible details) |
+| `CHECKHOST_BG_ENABLED` | `true` | Periodic background Reachability audit via Check-Host.net |
+| `CHECKHOST_INTERVAL_HOURS` | `1` | Background Check-Host audit interval in hours (1, 2, 4, 6, 12) |
+| `CHECKHOST_ALERT_ENABLED` | `true` | Send Telegram alert if a node is unreachable from Russia |
+| `ALERT_STORE_PATH` | `/app/data/alerts.json` | Persistent storage path for active alerts (anti-flapping across restarts) |
 | `TELEGRAM_QUIET_HOURS_ENABLED`| `true` | Suppress alert sound pings overnight |
 | `TELEGRAM_QUIET_HOURS_START`  | `23:00` | Start of quiet hours (HH:MM) |
 | `TELEGRAM_QUIET_HOURS_END`    | `08:00` | End of quiet hours (HH:MM) and morning digest trigger |
 | `TELEGRAM_DAY_DIGEST_ENABLED` | `true` | Send periodic daytime health summaries |
 | `STATS_STORE_PATH` | `/app/data/stats.json` | Persistent storage path for outage history and stats |
-| `BOT_CONFIG_STORE_PATH` | `/app/data/bot_config.json` | Persistent storage path for runtime bot settings |
+| `BOT_CONFIG_STORE_PATH` | `/app/data/bot_config.json` | Persistent storage path for runtime bot settings (including disabled nodes) |
 | `PROXY_CHECK_INTERVAL` | `300` | Check interval in seconds (also tunable via `/interval`) |
 | `PROXY_TARGET_URLS` | Cloudflare/Google 204 | Custom fallback endpoints for checking proxy availability |
 | `WEB_ENABLED` | `true` | Enable web dashboard panel (`false` for headless mode) |

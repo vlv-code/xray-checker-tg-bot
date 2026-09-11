@@ -8,5 +8,6 @@ services:
     ports:
       - "${METRICS_PORT:-2112}:${METRICS_PORT:-2112}"
     volumes:
-      # Persistent storage for dynamically added subscriptions (/addsub)
+      # Persistent storage for configs, stats, alerts, and dynamic subscriptions
       - ./data:/app/data
+      - ./geo:/app/geo

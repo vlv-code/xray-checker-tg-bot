@@ -37,7 +37,7 @@ func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 func SettingsMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🚫 Управление хостами (вкл/выкл)", "menu:disabled_hosts:1"),
+			btn("🚫 Отключение нод (вкл/выкл)", "menu:disabled_proxies:1"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🌐 Фоновый Check-Host", "menu:checkhost_cfg"),
@@ -53,7 +53,6 @@ func SettingsMenuMarkup() *telego.InlineKeyboardMarkup {
 		),
 		tu.InlineKeyboardRow(
 			btn("📈 Статистика инцидентов", "menu:stats"),
-			btn("📊 Отправить сводку", "menu:digest:now"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🔙 Главное меню", "menu:main"),
@@ -108,6 +107,64 @@ func CheckHostSettingsMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
+}
+
+// ProxyToggleItem holds display information for a toggleable proxy.
+type ProxyToggleItem struct {
+	StableID string
+	Name     string
+	Protocol string
+	Address  string
+	Disabled bool
+}
+
+// DisabledProxiesMarkup generates paginated toggles for individual proxy connection checks.
+func DisabledProxiesMarkup(items []ProxyToggleItem, page, totalPages int) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+
+	for _, item := range items {
+		statusIcon := "🟢"
+		statusText := "активна"
+		if item.Disabled {
+			statusIcon = "⏸️"
+			statusText = "выключена"
+		}
+		displayName := item.Name
+		if displayName == "" {
+			displayName = item.Address
+		}
+		runes := []rune(displayName)
+		if len(runes) > 28 {
+			displayName = string(runes[:25]) + "..."
+		}
+		btnText := fmt.Sprintf("%s %s (%s)", statusIcon, displayName, statusText)
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn(btnText, fmt.Sprintf("menu:toggle_proxy:%s:%d", item.StableID, page)),
+		))
+	}
+
+	if totalPages > 1 {
+		prevPage := page - 1
+		if prevPage < 1 {
+			prevPage = totalPages
+		}
+		nextPage := page + 1
+		if nextPage > totalPages {
+			nextPage = 1
+		}
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("⬅️ Пред", fmt.Sprintf("menu:disabled_proxies:%d", prevPage)),
+			btn(fmt.Sprintf("%d / %d", page, totalPages), fmt.Sprintf("menu:disabled_proxies:noop:%d:%d", page, totalPages)),
+			btn("След ➡️", fmt.Sprintf("menu:disabled_proxies:%d", nextPage)),
+		))
+	}
+
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("🔙 К настройкам", "menu:settings"),
+		btn("🏠 Главное меню", "menu:main"),
+	))
+
+	return tu.InlineKeyboard(rows...)
 }
 
 // DisabledHostsMarkup generates paginated toggles for host checks.

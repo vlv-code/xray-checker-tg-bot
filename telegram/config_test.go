@@ -71,3 +71,40 @@ func TestConfigManager_DefaultsAndPersist(t *testing.T) {
 		t.Errorf("expected config file to exist at %s", configPath)
 	}
 }
+
+func TestConfigManager_ToggleProxy(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "bot_config.json")
+
+	cm, err := NewConfigManager(configPath, BotConfig{})
+	if err != nil {
+		t.Fatalf("NewConfigManager failed: %v", err)
+	}
+
+	stableID := "abc123stableid"
+
+	// Initial toggle -> should become disabled (true)
+	disabled, err := cm.ToggleProxy(stableID)
+	if err != nil {
+		t.Fatalf("ToggleProxy failed: %v", err)
+	}
+	if !disabled {
+		t.Errorf("expected disabled to be true on first toggle")
+	}
+	if !cm.Get().IsProxyDisabled(stableID) {
+		t.Errorf("expected IsProxyDisabled to be true")
+	}
+
+	// Second toggle -> should become enabled (false)
+	disabled, err = cm.ToggleProxy(stableID)
+	if err != nil {
+		t.Fatalf("ToggleProxy second failed: %v", err)
+	}
+	if disabled {
+		t.Errorf("expected disabled to be false on second toggle")
+	}
+	if cm.Get().IsProxyDisabled(stableID) {
+		t.Errorf("expected IsProxyDisabled to be false")
+	}
+}
+

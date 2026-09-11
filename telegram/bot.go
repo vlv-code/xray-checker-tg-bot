@@ -350,6 +350,8 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		b.replySettings(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/togglehost"):
 		b.handleToggleHostCommand(msg)
+	case strings.HasPrefix(msg.Text, "/togglenode"), strings.HasPrefix(msg.Text, "/disablenode"):
+		b.handleToggleNodeCommand(msg)
 	case strings.HasPrefix(msg.Text, "/digest"):
 		b.replyDigest(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/subs"):
@@ -526,6 +528,37 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				}
 				b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
 			}
+		} else if strings.HasPrefix(cb.Data, "menu:disabled_proxies:") {
+			pageStr := strings.TrimPrefix(cb.Data, "menu:disabled_proxies:")
+			page, _ := strconv.Atoi(pageStr)
+			if page <= 0 {
+				page = 1
+			}
+			text, markup := b.getDisabledProxiesView(page)
+			b.editWithMarkup(chatID, msgID, text, markup)
+		} else if strings.HasPrefix(cb.Data, "menu:toggle_proxy:") {
+			rest := strings.TrimPrefix(cb.Data, "menu:toggle_proxy:")
+			parts := strings.Split(rest, ":")
+			if len(parts) >= 2 {
+				stableID := parts[0]
+				page, _ := strconv.Atoi(parts[1])
+				if page <= 0 {
+					page = 1
+				}
+				if b.configMgr != nil {
+					disabled, _ := b.configMgr.ToggleProxy(stableID)
+					proxyName := b.getProxyNameByStableID(stableID)
+					toast := fmt.Sprintf("🟢 Нода %s включена", proxyName)
+					if disabled {
+						toast = fmt.Sprintf("⏸️ Нода %s выключена", proxyName)
+					}
+					if b.api != nil {
+						_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText(toast))
+					}
+				}
+				text, markup := b.getDisabledProxiesView(page)
+				b.editWithMarkup(chatID, msgID, text, markup)
+			}
 		} else if strings.HasPrefix(cb.Data, "menu:disabled_hosts:") {
 			pageStr := strings.TrimPrefix(cb.Data, "menu:disabled_hosts:")
 			page, _ := strconv.Atoi(pageStr)
@@ -598,14 +631,22 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 }
 
 func (b *Bot) getMenuText() string {
-	snapshot := b.source.MetricsSnapshot()
+	var snapshot []metrics.ProxyMetric
+	if b.source != nil {
+		snapshot = b.source.MetricsSnapshot()
+	}
+	cfg := b.GetConfig()
 	online := 0
 	totalActive := 0
 	disabledCount := 0
 	var downProxies []string
 
 	for _, pm := range snapshot {
-		if pm.Disabled {
+		host, _, err := net.SplitHostPort(pm.Address)
+		if err != nil {
+			host = pm.Address
+		}
+		if pm.Disabled || cfg.IsDisabled(host, pm.StableID) {
 			disabledCount++
 			continue
 		}
@@ -696,6 +737,119 @@ func (b *Bot) getSettingsText() string {
 		"• Отключено хостов/нод: <b>%d</b>\n\n"+
 		"Выберите раздел настроек с помощью кнопок ниже:",
 		intervalStr, chBgStatus, modeName, quietStatus, disabledCount)
+}
+
+func (b *Bot) getProxyNameByStableID(stableID string) string {
+	if b.source != nil {
+		for _, pm := range b.source.MetricsSnapshot() {
+			if pm.StableID == stableID {
+				if pm.Name != "" {
+					return pm.Name
+				}
+				return pm.Address
+			}
+		}
+	}
+	return stableID
+}
+
+func (b *Bot) getDisabledProxiesView(page int) (string, *telego.InlineKeyboardMarkup) {
+	var snapshot []metrics.ProxyMetric
+	if b.source != nil {
+		snapshot = b.source.MetricsSnapshot()
+	}
+	cfg := b.GetConfig()
+
+	var items []ProxyToggleItem
+	disabledCount := 0
+	for _, pm := range snapshot {
+		host, _, err := net.SplitHostPort(pm.Address)
+		if err != nil {
+			host = pm.Address
+		}
+		isDisabled := pm.Disabled || cfg.IsDisabled(host, pm.StableID)
+		if isDisabled {
+			disabledCount++
+		}
+		items = append(items, ProxyToggleItem{
+			StableID: pm.StableID,
+			Name:     pm.Name,
+			Protocol: pm.Protocol,
+			Address:  pm.Address,
+			Disabled: isDisabled,
+		})
+	}
+
+	pageSize := 6
+	totalItems := len(items)
+	totalPages := (totalItems + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if end > totalItems {
+		end = totalItems
+	}
+
+	var pageItems []ProxyToggleItem
+	if start < totalItems {
+		pageItems = items[start:end]
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<b>🚫 Управление нодами (вкл/выкл)</b>\n\n")
+	sb.WriteString("Нажмите на ноду, чтобы включить или отключить её проверку.\n")
+	sb.WriteString("Отключённые ноды не проверяются, не вызывают алертов и сразу исключаются из сводки.\n\n")
+	sb.WriteString(fmt.Sprintf("Всего нод: <b>%d</b> | Отключено: <b>%d</b>\n", totalItems, disabledCount))
+
+	markup := DisabledProxiesMarkup(pageItems, page, totalPages)
+	return sb.String(), markup
+}
+
+func (b *Bot) handleToggleNodeCommand(msg *telego.Message) {
+	arg := strings.TrimSpace(commandArg(msg.Text))
+	if arg == "" {
+		b.send(msg.Chat.ID, "❌ Укажите имя ноды или StableID для переключения.\nПример: <code>/togglenode PL-main</code>")
+		return
+	}
+	if b.configMgr == nil {
+		return
+	}
+
+	var targetStableID string
+	var targetName string
+	if b.source != nil {
+		for _, pm := range b.source.MetricsSnapshot() {
+			if pm.StableID == arg || strings.EqualFold(pm.Name, arg) || strings.Contains(strings.ToLower(pm.Name), strings.ToLower(arg)) {
+				targetStableID = pm.StableID
+				targetName = pm.Name
+				break
+			}
+		}
+	}
+	if targetStableID == "" {
+		targetStableID = arg
+		targetName = arg
+	}
+
+	disabled, err := b.configMgr.ToggleProxy(targetStableID)
+	if err != nil {
+		b.send(msg.Chat.ID, fmt.Sprintf("❌ Ошибка сохранения конфигурации: %v", err))
+		return
+	}
+	if disabled {
+		b.send(msg.Chat.ID, fmt.Sprintf("⏸️ Проверка ноды <b>%s</b> <b>отключена</b>.", escapeHTML(targetName)))
+	} else {
+		b.send(msg.Chat.ID, fmt.Sprintf("🟢 Проверка ноды <b>%s</b> <b>включена</b>.", escapeHTML(targetName)))
+	}
 }
 
 func (b *Bot) getDisabledHostsView(page int) (string, *telego.InlineKeyboardMarkup) {
@@ -1421,7 +1575,8 @@ func (b *Bot) replyHelp(chatID int64) {
 		"/menu — главное интерактивное меню\n" +
 		"/status — статус всех прокси\n" +
 		"/diag — детальный отчёт\n" +
-		"/settings — настройки бота и отключение хостов\n" +
+		"/settings — настройки бота и отключение нод\n" +
+		"/togglenode [имя|ID] — включить/отключить проверку ноды\n" +
 		"/checkhost [хост[:порт]] — глобальная проверка через Check-Host.net\n" +
 		"/checkhost_bg [on|off|1h|run] — фоновая проверка Check-Host\n" +
 		"/stats — статистика аптайма и инцидентов\n" +

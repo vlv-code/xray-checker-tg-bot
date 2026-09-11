@@ -432,6 +432,10 @@ func (pc *ProxyChecker) MetricsSnapshot() []metrics.ProxyMetric {
 			continue
 		}
 		r := v.(proxyResult)
+		disabled := r.disabled
+		if pc.disabledFilter != nil {
+			disabled = pc.IsProxyDisabled(proxy)
+		}
 		out = append(out, metrics.ProxyMetric{
 			Protocol:     key.protocol,
 			Address:      key.address,
@@ -442,7 +446,7 @@ func (pc *ProxyChecker) MetricsSnapshot() []metrics.ProxyMetric {
 			CustomLabels: proxy.MetricsLabels,
 			Online:       r.status,
 			LatencyMs:    float64(r.latency.Milliseconds()),
-			Disabled:     r.disabled,
+			Disabled:     disabled,
 		})
 	}
 	return out

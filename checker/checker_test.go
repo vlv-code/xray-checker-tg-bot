@@ -200,3 +200,50 @@ func TestGetProxyResultByStableID_DuplicateNames(t *testing.T) {
 		t.Errorf("id-down should be offline, got found=%v online=%v", found, online)
 	}
 }
+
+func TestMetricsSnapshot_DisabledDynamic(t *testing.T) {
+	p1 := mkProxy("1.1.1.1", "Proxy1", "id1")
+	p2 := mkProxy("2.2.2.2", "Proxy2", "id2")
+	pc := NewProxyChecker([]*models.ProxyConfig{p1, p2}, 10000, "", 5, "", "", 5, 1, "status", 0)
+
+	recordUp(pc, p1, 100*time.Millisecond)
+	recordUp(pc, p2, 100*time.Millisecond)
+
+	// Initially neither is disabled
+	snap := pc.MetricsSnapshot()
+	if len(snap) != 2 {
+		t.Fatalf("expected 2 snapshots, got %d", len(snap))
+	}
+	for _, m := range snap {
+		if m.Disabled {
+			t.Errorf("expected proxy %s not disabled initially", m.Name)
+		}
+	}
+
+	// Disable p1 dynamically via filter
+	disabledIDs := map[string]bool{"id1": true}
+	pc.SetDisabledFilter(func(server, stableID string) bool {
+		return disabledIDs[stableID]
+	})
+
+	// Snapshot should immediately reflect p1 disabled without new check
+	snap = pc.MetricsSnapshot()
+	for _, m := range snap {
+		if m.StableID == "id1" && !m.Disabled {
+			t.Errorf("expected id1 to be disabled dynamically in snapshot")
+		}
+		if m.StableID == "id2" && m.Disabled {
+			t.Errorf("expected id2 to NOT be disabled in snapshot")
+		}
+	}
+
+	// Re-enable p1
+	delete(disabledIDs, "id1")
+	snap = pc.MetricsSnapshot()
+	for _, m := range snap {
+		if m.Disabled {
+			t.Errorf("expected all proxies re-enabled in snapshot")
+		}
+	}
+}
+
