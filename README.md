@@ -78,28 +78,34 @@ Xray Checker includes a built-in Telegram bot for alerts and live subscription m
 
 ## 🚀 Quick Start
 
-### Docker
-
+### 1. Clone repository
 ```bash
-docker run -d \
-  -e SUBSCRIPTION_URL=https://your-subscription-url/sub \
-  -p 2112:2112 \
-  kutovoys/xray-checker
+git clone https://github.com/vlv-code/xray-checker-tg-bot.git
+cd xray-checker-tg-bot
 ```
 
-### Docker Compose
-
-```yaml
-services:
-  xray-checker:
-    image: kutovoys/xray-checker
-    environment:
-      - SUBSCRIPTION_URL=https://your-subscription-url/sub
-    ports:
-      - "2112:2112"
+### 2. Configure via `.env`
+Copy the template configuration file:
+```bash
+cp .env.example .env
 ```
+Open `.env` in your editor and fill in your settings:
+```bash
+nano .env
+```
+Key settings to configure:
+* `SUBSCRIPTION_URL`: Your proxy subscription URL
+* `TELEGRAM_BOT_TOKEN`: Token from [@BotFather](https://t.me/BotFather)
+* `TELEGRAM_CHAT_IDS`: Your Telegram user ID or group ID
+* `SUBSCRIPTION_STORE_PATH`: Path to persist bot-added subscriptions (default `/app/data/subscriptions.json` inside container)
 
-Detailed installation and configuration documentation is available at [xray-checker.kutovoy.dev](https://xray-checker.kutovoy.dev/intro/quick-start)
+### 3. Launch with Docker Compose
+```bash
+cp docker-compose.example.yml docker-compose.yml
+docker compose up -d --build
+```
+The dashboard and metrics will be accessible at `http://localhost:2112`.
+
 
 ## 📈 Project Statistics
 

@@ -1,0 +1,12 @@
+services:
+  xray-checker:
+    build: .
+    container_name: xray-checker
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${METRICS_PORT:-2112}:${METRICS_PORT:-2112}"
+    volumes:
+      # Persistent storage for dynamically added subscriptions (/addsub)
+      - ./data:/app/data
