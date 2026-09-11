@@ -124,8 +124,29 @@ func main() {
 	// /delsub handlers (wired in via telegramSubscriptionManager) need
 	// reloadSubscriptions, which itself calls runCheckIteration.
 	var tgBot *telegram.Bot
+	var checkScheduler *gocron.Scheduler
+	var checkSchedulerMu sync.Mutex
 
-	runCheckIteration := func() {
+	var runCheckIteration func()
+
+	rescheduleChecks := func(seconds int) {
+		checkSchedulerMu.Lock()
+		defer checkSchedulerMu.Unlock()
+
+		if seconds < 10 {
+			seconds = 10
+		}
+		config.CLIConfig.Proxy.CheckInterval = seconds
+		logger.Info("Rescheduling proxy checks with interval %ds", seconds)
+		if checkScheduler != nil {
+			checkScheduler.Clear()
+			checkScheduler.Every(seconds).Seconds().SingletonMode().Do(func() {
+				runCheckIteration()
+			})
+		}
+	}
+
+	runCheckIteration = func() {
 		logger.Info("Starting proxy check iteration")
 		start := time.Now()
 		proxyChecker.CheckAllProxies()
@@ -233,17 +254,21 @@ func main() {
 				DayDigestIntervalHours: config.CLIConfig.Telegram.DayDigestIntervalHours,
 				AlertMode:              config.CLIConfig.Telegram.AlertMode,
 				TargetURLs:             targetMgr.GetTargets(),
+				CheckIntervalSec:       config.CLIConfig.Proxy.CheckInterval,
 			}
 
 			botCfgMgr, err := telegram.NewConfigManager(config.CLIConfig.Telegram.BotConfigStorePath, defaultBotCfg)
 			if err != nil {
 				logger.Warn("Failed to initialize bot config manager: %v", err)
 			} else {
-				savedTargets := botCfgMgr.Get().TargetURLs
-				if len(savedTargets) > 0 {
-					for _, t := range savedTargets {
+				savedCfg := botCfgMgr.Get()
+				if len(savedCfg.TargetURLs) > 0 {
+					for _, t := range savedCfg.TargetURLs {
 						_ = targetMgr.AddTarget(t)
 					}
+				}
+				if savedCfg.CheckIntervalSec > 0 {
+					config.CLIConfig.Proxy.CheckInterval = savedCfg.CheckIntervalSec
 				}
 			}
 
@@ -269,6 +294,7 @@ func main() {
 					bot.SetStatsStore(statsStore)
 				}
 				bot.SetDiagnosticsSource(proxyChecker)
+				bot.SetIntervalHandler(rescheduleChecks)
 
 				tgBot = bot
 				tgBot.StartCommands()
@@ -283,7 +309,8 @@ func main() {
 		return
 	}
 
-	checkScheduler := gocron.NewScheduler(time.UTC)
+	checkSchedulerMu.Lock()
+	checkScheduler = gocron.NewScheduler(time.UTC)
 	// SingletonMode: if a check cycle overruns the interval, the next tick is skipped
 	// instead of starting a second concurrent cycle. Without a concurrency limit a
 	// cycle is bounded by PROXY_TIMEOUT so this rarely triggers, but with
@@ -293,6 +320,7 @@ func main() {
 		runCheckIteration()
 	})
 	checkScheduler.StartAsync()
+	checkSchedulerMu.Unlock()
 
 	if config.CLIConfig.Subscription.Update {
 		updateScheduler := gocron.NewScheduler(time.UTC)

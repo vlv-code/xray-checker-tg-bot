@@ -40,6 +40,7 @@ func TestConfigManager_DefaultsAndPersist(t *testing.T) {
 		c.AlertMode = AlertModeClean
 		c.QuietSnoozeUntil = snoozeUntil
 		c.TargetURLs = append(c.TargetURLs, "https://www.gstatic.com/generate_204")
+		c.CheckIntervalSec = 60
 	})
 	if err != nil {
 		t.Fatalf("Update failed: %v", err)
@@ -60,6 +61,9 @@ func TestConfigManager_DefaultsAndPersist(t *testing.T) {
 	}
 	if len(cfg2.TargetURLs) != 2 {
 		t.Errorf("expected 2 target URLs after reload, got %d", len(cfg2.TargetURLs))
+	}
+	if cfg2.CheckIntervalSec != 60 {
+		t.Errorf("expected CheckIntervalSec 60, got %d", cfg2.CheckIntervalSec)
 	}
 
 	// Verify file actually exists

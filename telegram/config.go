@@ -24,6 +24,7 @@ type BotConfig struct {
 	DayDigestIntervalHours int      `json:"day_digest_interval_hours"` // e.g. 6
 	AlertMode              string   `json:"alert_mode"` // AlertModeLive or AlertModeClean
 	TargetURLs             []string `json:"target_urls"`
+	CheckIntervalSec       int      `json:"check_interval_sec,omitempty"`
 }
 
 // ConfigManager handles thread-safe access and persistence for BotConfig.

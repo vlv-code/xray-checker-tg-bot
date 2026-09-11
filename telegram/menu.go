@@ -24,11 +24,14 @@ func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("📋 Подписки", "menu:subs"),
 		),
 		tu.InlineKeyboardRow(
+			btn("⏱️ Интервал проверок", "menu:interval"),
 			btn("🎯 Сайты проверки", "menu:targets"),
-			btn("🌙 Тихий режим", "menu:quiet"),
 		),
 		tu.InlineKeyboardRow(
+			btn("🌙 Тихий режим", "menu:quiet"),
 			btn("⚙️ Режим алертов", "menu:alert_mode"),
+		),
+		tu.InlineKeyboardRow(
 			btn("📑 Сводка сейчас", "menu:digest:now"),
 		),
 	)
@@ -127,6 +130,34 @@ func TargetsMenuMarkup() *telego.InlineKeyboardMarkup {
 // BackToMenuMarkup provides a simple button returning to main menu.
 func BackToMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("🔙 Главное меню", "menu:main"),
+		),
+	)
+}
+
+// IntervalMenuMarkup returns keyboard for selecting proxy check interval.
+func IntervalMenuMarkup(currentInterval int) *telego.InlineKeyboardMarkup {
+	mark := func(sec int, label string) string {
+		if currentInterval == sec {
+			return "🟢 " + label
+		}
+		return "⚪ " + label
+	}
+
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn(mark(30, "30 сек"), "menu:interval:set:30"),
+			btn(mark(60, "1 мин"), "menu:interval:set:60"),
+		),
+		tu.InlineKeyboardRow(
+			btn(mark(120, "2 мин"), "menu:interval:set:120"),
+			btn(mark(300, "5 мин"), "menu:interval:set:300"),
+		),
+		tu.InlineKeyboardRow(
+			btn(mark(600, "10 мин"), "menu:interval:set:600"),
+			btn(mark(900, "15 мин"), "menu:interval:set:900"),
+		),
 		tu.InlineKeyboardRow(
 			btn("🔙 Главное меню", "menu:main"),
 		),

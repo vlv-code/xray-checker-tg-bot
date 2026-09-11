@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -44,11 +45,12 @@ type Bot struct {
 	notifyOnRecovery bool
 	commandsEnabled  bool
 
-	configMgr   *ConfigManager
-	statsStore  *StatsStore
-	tracker     *AlertTracker
-	eventBuffer *EventBuffer
-	diagSource  DiagnosticsSource
+	configMgr       *ConfigManager
+	statsStore      *StatsStore
+	tracker         *AlertTracker
+	eventBuffer     *EventBuffer
+	diagSource      DiagnosticsSource
+	intervalHandler func(seconds int)
 
 	mu            sync.Mutex
 	lastSeen      map[string]bool // stable_id -> last known online status
@@ -110,6 +112,33 @@ func (b *Bot) SetStatsStore(ss *StatsStore) {
 // SetDiagnosticsSource attaches multi-target diagnostic capability.
 func (b *Bot) SetDiagnosticsSource(ds DiagnosticsSource) {
 	b.diagSource = ds
+}
+
+// SetIntervalHandler attaches a dynamic check interval rescheduling callback.
+func (b *Bot) SetIntervalHandler(h func(seconds int)) {
+	b.intervalHandler = h
+}
+
+func (b *Bot) getIntervalSec() int {
+	cfg := b.GetConfig()
+	if cfg.CheckIntervalSec > 0 {
+		return cfg.CheckIntervalSec
+	}
+	return 300
+}
+
+func (b *Bot) updateCheckInterval(sec int) {
+	if sec < 10 {
+		sec = 10
+	}
+	if b.configMgr != nil {
+		_ = b.configMgr.Update(func(c *BotConfig) {
+			c.CheckIntervalSec = sec
+		})
+	}
+	if b.intervalHandler != nil {
+		b.intervalHandler(sec)
+	}
 }
 
 // GetConfig returns the active configuration or sensible defaults.
@@ -231,6 +260,8 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		b.replyQuiet(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/targets"):
 		b.replyTargets(msg.Chat.ID)
+	case strings.HasPrefix(msg.Text, "/interval"):
+		b.handleIntervalCommand(msg)
 	case strings.HasPrefix(msg.Text, "/digest"):
 		b.replyDigest(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/subs"):
@@ -337,10 +368,20 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		b.editWithMarkup(chatID, msgID, b.getAlertModeText(), AlertModeMarkup(b.GetConfig()))
 	case "menu:targets":
 		b.editWithMarkup(chatID, msgID, b.getTargetsText(), TargetsMenuMarkup())
+	case "menu:interval":
+		b.editWithMarkup(chatID, msgID, b.getIntervalText(), IntervalMenuMarkup(b.getIntervalSec()))
 	case "menu:subs":
 		b.editWithMarkup(chatID, msgID, b.getSubsText(), BackToMenuMarkup())
 	case "menu:digest:now":
 		b.replyDigest(chatID)
+	default:
+		if strings.HasPrefix(cb.Data, "menu:interval:set:") {
+			secStr := strings.TrimPrefix(cb.Data, "menu:interval:set:")
+			if sec, err := strconv.Atoi(secStr); err == nil && sec >= 10 {
+				b.updateCheckInterval(sec)
+			}
+			b.editWithMarkup(chatID, msgID, b.getIntervalText(), IntervalMenuMarkup(b.getIntervalSec()))
+		}
 	}
 }
 
@@ -360,10 +401,45 @@ func (b *Bot) getMenuText() string {
 		quietStatus = fmt.Sprintf("пауза ещё %s", FormatDowntime(rem))
 	}
 
+	intervalSec := b.getIntervalSec()
+	intervalStr := fmt.Sprintf("%d сек (%s)", intervalSec, FormatDowntime(time.Duration(intervalSec)*time.Second))
+
 	return fmt.Sprintf("<b>📱 Главное меню Xray Checker</b>\n\n"+
+		"• Интервал проверок: <b>%s</b>\n"+
 		"• Режим алертов: <b>%s</b>\n"+
 		"• Тихий режим: <b>%s</b>\n\n"+
-		"Выберите нужный раздел с помощью кнопок ниже:", modeName, quietStatus)
+		"Выберите нужный раздел с помощью кнопок ниже:", intervalStr, modeName, quietStatus)
+}
+
+func (b *Bot) handleIntervalCommand(msg *telego.Message) {
+	arg := commandArg(msg.Text)
+	if arg == "" {
+		b.replyInterval(msg.Chat.ID)
+		return
+	}
+
+	sec, err := strconv.Atoi(arg)
+	if err != nil || sec < 10 {
+		b.send(msg.Chat.ID, "❌ Укажите корректный интервал в секундах (минимум 10 сек).\nПример: <code>/interval 60</code>")
+		return
+	}
+
+	b.updateCheckInterval(sec)
+	b.sendWithMarkup(msg.Chat.ID, fmt.Sprintf("✅ Интервал проверки прокси установлен на <b>%d сек (%s)</b>.",
+		sec, FormatDowntime(time.Duration(sec)*time.Second)), IntervalMenuMarkup(sec))
+}
+
+func (b *Bot) replyInterval(chatID int64) {
+	b.sendWithMarkup(chatID, b.getIntervalText(), IntervalMenuMarkup(b.getIntervalSec()))
+}
+
+func (b *Bot) getIntervalText() string {
+	sec := b.getIntervalSec()
+	return fmt.Sprintf("<b>⏱️ Интервал проверок прокси</b>\n\n"+
+		"• Текущий интервал: <b>%d сек (%s)</b>\n\n"+
+		"Выберите готовый пресет или отправьте команду с произвольным числом секунд:\n"+
+		"<code>/interval &lt;секунды&gt;</code> (например, <code>/interval 45</code>)",
+		sec, FormatDowntime(time.Duration(sec)*time.Second))
 }
 
 func (b *Bot) replyMenu(chatID int64) {
@@ -709,6 +785,7 @@ func (b *Bot) replyHelp(chatID int64) {
 		"/status — статус всех прокси\n" +
 		"/diag — экспресс-проверка по сайтам\n" +
 		"/stats — статистика аптайма и инцидентов\n" +
+		"/interval [сек] — интервал проверок прокси\n" +
 		"/quiet — настройки тихого режима (сна)\n" +
 		"/targets — список целевых серверов проверки\n"
 	if b.subs != nil {

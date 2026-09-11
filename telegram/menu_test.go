@@ -27,4 +27,9 @@ func TestMenuMarkups(t *testing.T) {
 	if len(alertMenu.InlineKeyboard) < 2 {
 		t.Errorf("expected at least 2 rows in alert menu, got %d", len(alertMenu.InlineKeyboard))
 	}
+
+	intervalMenu := IntervalMenuMarkup(300)
+	if len(intervalMenu.InlineKeyboard) < 3 {
+		t.Errorf("expected at least 3 rows in interval menu, got %d", len(intervalMenu.InlineKeyboard))
+	}
 }
