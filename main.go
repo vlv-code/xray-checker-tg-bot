@@ -296,7 +296,11 @@ func main() {
 				}
 				bot.SetDiagnosticsSource(proxyChecker)
 				bot.SetIntervalHandler(rescheduleChecks)
-				bot.SetRichMode(config.CLIConfig.Telegram.RichMode)
+				if config.CLIConfig.Telegram.RichMode {
+					bot.SetRichMode(true)
+				} else if botCfgMgr == nil {
+					bot.SetRichMode(false)
+				}
 
 				tgBot = bot
 				tgBot.StartCommands()

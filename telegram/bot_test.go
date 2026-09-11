@@ -110,6 +110,28 @@ func TestBot_DiagnosticsPaginationAndRichMessage(t *testing.T) {
 	}
 	b.SetRichMode(false)
 
+	// Test with ConfigManager
+	tmpDir := t.TempDir()
+	cm, err := NewConfigManager(filepath.Join(tmpDir, "bot_config.json"), BotConfig{})
+	if err != nil {
+		t.Fatalf("failed to create config manager: %v", err)
+	}
+	b.SetConfigManager(cm)
+	if b.isRichMode() {
+		t.Errorf("expected richMode to be false initially with empty configMgr")
+	}
+	b.SetRichMode(true)
+	if !b.isRichMode() {
+		t.Errorf("expected richMode to be true after SetRichMode(true) with configMgr")
+	}
+	if !cm.Get().RichMode {
+		t.Errorf("expected configMgr.RichMode to be persisted as true")
+	}
+	b.SetRichMode(false)
+	if b.isRichMode() {
+		t.Errorf("expected richMode to be false after SetRichMode(false) with configMgr")
+	}
+
 	// 2. Empty reports
 	emptyText, emptyPages := b.getDiagnosticsPageText(nil, 1)
 	if emptyPages != 1 || !strings.Contains(emptyText, "Нет доступных прокси") {

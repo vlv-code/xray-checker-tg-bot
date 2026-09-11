@@ -132,6 +132,11 @@ func (b *Bot) SetIntervalHandler(h func(seconds int)) {
 // SetRichMode sets default reporting format.
 func (b *Bot) SetRichMode(enabled bool) {
 	b.richMode = enabled
+	if b.configMgr != nil {
+		_ = b.configMgr.Update(func(cfg *BotConfig) {
+			cfg.RichMode = enabled
+		})
+	}
 }
 
 func (b *Bot) isRichMode() bool {
