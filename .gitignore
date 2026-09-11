@@ -33,6 +33,11 @@ geo/
 .claude/
 TODO.md
 
-# Subscription store
+# Subscription store & runtime data
 subscriptions.json
+bot_config.json
+stats.json
+alerts.json
+data/
+*.log
 *.json.tmp
