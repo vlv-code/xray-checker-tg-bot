@@ -305,7 +305,12 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		b.editWithMarkup(chatID, msgID, "⏳ <b>Выполняется экспресс-диагностика всех прокси...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
 		go func() {
 			reportText := b.getDiagnosticsText()
-			b.editWithMarkup(chatID, msgID, reportText, StatusMenuMarkup())
+			if len(reportText) > maxMessageLen {
+				b.editWithMarkup(chatID, msgID, "⚡ <b>Результаты детальной диагностики:</b>\nОтчет отправлен отдельным сообщением ниже ⬇️", StatusMenuMarkup())
+				b.send(chatID, reportText)
+			} else {
+				b.editWithMarkup(chatID, msgID, reportText, StatusMenuMarkup())
+			}
 		}()
 	case "menu:stats":
 		b.editWithMarkup(chatID, msgID, b.getStatsOverviewText(), StatsMenuMarkup())
@@ -1046,6 +1051,18 @@ func (b *Bot) editWithMarkup(chatID int64, messageID int, text string, markup *t
 		ReplyMarkup: markup,
 	}
 	if _, err := b.api.EditMessageText(b.ctx, params); err != nil {
+		if strings.Contains(err.Error(), "MESSAGE_TOO_LONG") {
+			fallbackParams := &telego.EditMessageTextParams{
+				ChatID:      tu.ID(chatID),
+				MessageID:   messageID,
+				Text:        "📄 <b>Текст превышает лимит одного сообщения.</b>\nПолное содержимое отправлено отдельным сообщением ниже ⬇️",
+				ParseMode:   telego.ModeHTML,
+				ReplyMarkup: markup,
+			}
+			_, _ = b.api.EditMessageText(b.ctx, fallbackParams)
+			b.send(chatID, text)
+			return
+		}
 		logger.Error("Telegram: failed to edit message %d in chat %d: %v", messageID, chatID, err)
 	}
 }
