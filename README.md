@@ -32,6 +32,7 @@ Xray Checker is a tool for monitoring proxy server availability with support for
 ## 🚀 Key Features
 
 - 🔍 Monitoring of Xray proxy servers (VLESS, VMess, Trojan, Shadowsocks)
+- 🤖 Integrated Telegram Bot: real-time outage & recovery alerts, /status and dynamic subscription management (/subs, /addsub, /delsub)
 - 🔄 Automatic configuration updates from subscription (multiple subscriptions supported)
 - 📊 Prometheus metrics export with Pushgateway support
 - 🌐 REST API with OpenAPI/Swagger documentation
@@ -49,6 +50,31 @@ Xray Checker is a tool for monitoring proxy server availability with support for
   - Folders with configurations
 
 Full list of features available in the [documentation](https://xray-checker.kutovoy.dev/intro/features).
+
+## 🤖 Telegram Bot
+
+Xray Checker includes a built-in Telegram bot for alerts and live subscription management:
+
+### Features
+* **Alerting**: Instant notification when a proxy goes offline and when it recovers (with latency measurements). Initial state is seeded silently on startup to prevent alert spam.
+* **Interactive Commands** (restricted to allowed chat IDs):
+  * `/status` — View online/offline status and latency of all proxies
+  * `/subs` — List all active subscriptions (🔒 static from env/flags, ➕ dynamic from bot)
+  * `/addsub <URL>` — Validate a new subscription, save it, immediately reload Xray configs and re-check proxies
+  * `/delsub <URL>` — Remove a dynamically added subscription and reload
+  * `/help` — Display bot commands and help
+
+### Configuration
+
+| Environment Variable | CLI Flag | Default | Description |
+|---|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | `--telegram-bot-token` | `""` | Telegram bot token from [@BotFather](https://t.me/BotFather) (enables the bot when set) |
+| `TELEGRAM_CHAT_IDS` | `--telegram-chat-id` | `""` | Chat ID(s) allowed to use the bot and receive alerts (repeatable flag / comma-separated env) |
+| `TELEGRAM_NOTIFY_ON_RECOVERY` | `--telegram-notify-on-recovery` | `true` | Send notification when a proxy comes back online |
+| `TELEGRAM_COMMANDS_ENABLED` | `--telegram-commands` | `true` | Enable interactive commands (`/status`, `/help`, etc.) |
+| `TELEGRAM_MANAGE_SUBSCRIPTIONS` | `--telegram-manage-subscriptions` | `true` | Allow managing subscriptions via `/addsub`, `/delsub`, `/subs` |
+| `SUBSCRIPTION_STORE_PATH` | `--subscription-store-path` | `subscriptions.json` | Path to JSON file where bot-added subscriptions are persisted across restarts |
+
 
 ## 🚀 Quick Start
 

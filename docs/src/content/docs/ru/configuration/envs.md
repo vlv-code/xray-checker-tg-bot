@@ -69,7 +69,16 @@ URL, строка Base64 или путь к файлу для конфигура
 - **CLI**: повторяйте `--subscription-header` для каждого заголовка
 - **Переменная окружения**: разделяйте пары запятыми: `SUBSCRIPTION_HEADERS="X-Token: abc, X-Region: eu"`
 
+### SUBSCRIPTION_STORE_PATH
+
+- CLI: `--subscription-store-path`
+- Обязательно: Нет
+- По умолчанию: `subscriptions.json`
+
+Путь к JSON-файлу, в котором сохраняются подписки, добавленные через Telegram-бота (`/addsub`), чтобы они сохранялись между перезапусками приложения. Пустая строка отключает персистентность.
+
 ## Proxy
+
 
 ### PROXY_CHECK_INTERVAL
 
@@ -315,7 +324,50 @@ URL Prometheus Pushgateway для отправки метрик. Формат: `
 
 URL-путь, по которому будут доступны метрики и страница для их мониторинга. Формат: `/vpn/metrics`. Мониторинг будет доступен по адресу `http://localhost:port/metrics-base-path`
 
+## Telegram
+
+### TELEGRAM_BOT_TOKEN
+
+- CLI: `--telegram-bot-token`
+- Обязательно: Нет
+- По умолчанию: Нет
+
+Токен Telegram-бота, полученный у [@BotFather](https://t.me/BotFather). Установка токена активирует Telegram-бота.
+
+### TELEGRAM_CHAT_IDS
+
+- CLI: `--telegram-chat-id`
+- Обязательно: Да (если задан `TELEGRAM_BOT_TOKEN`)
+- По умолчанию: Нет
+
+ID чата или чатов, которым разрешено взаимодействовать с ботом и получать оповещения. Можно указывать несколько раз в CLI или через запятую в переменной окружения.
+
+### TELEGRAM_NOTIFY_ON_RECOVERY
+
+- CLI: `--telegram-notify-on-recovery`
+- Обязательно: Нет
+- По умолчанию: `true`
+
+Отправлять уведомление, когда прокси снова становится доступным (с замером задержки).
+
+### TELEGRAM_COMMANDS_ENABLED
+
+- CLI: `--telegram-commands`
+- Обязательно: Нет
+- По умолчанию: `true`
+
+Включает интерактивные команды бота (`/status`, `/help`, `/start`).
+
+### TELEGRAM_MANAGE_SUBSCRIPTIONS
+
+- CLI: `--telegram-manage-subscriptions`
+- Обязательно: Нет
+- По умолчанию: `true`
+
+Разрешает динамическое управление подписками (`/subs`, `/addsub`, `/delsub`) из авторизованных чатов.
+
 ## Other
+
 
 ### LOG_LEVEL
 

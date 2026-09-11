@@ -69,7 +69,16 @@ Extra HTTP headers sent with every subscription request, each as a `Key: Value` 
 - **CLI**: repeat `--subscription-header` for each header
 - **Environment**: separate pairs with commas: `SUBSCRIPTION_HEADERS="X-Token: abc, X-Region: eu"`
 
+### SUBSCRIPTION_STORE_PATH
+
+- CLI: `--subscription-store-path`
+- Required: No
+- Default: `subscriptions.json`
+
+Path to JSON file where subscriptions added dynamically via the Telegram bot (`/addsub`) are stored to persist across restarts. An empty string disables persistence.
+
 ## Proxy
+
 
 ### PROXY_CHECK_INTERVAL
 
@@ -316,7 +325,50 @@ Prometheus Pushgateway URL for metric pushing. Format: `https://user:pass@host:p
 
 URL path for host metrics and monitoring. Format: `/vpn/metrics`. Monitoring page could be available on `http://localhost:port/metrics-base-path`
 
+## Telegram
+
+### TELEGRAM_BOT_TOKEN
+
+- CLI: `--telegram-bot-token`
+- Required: No
+- Default: None
+
+Telegram bot token obtained from [@BotFather](https://t.me/BotFather). Setting this token activates the Telegram bot.
+
+### TELEGRAM_CHAT_IDS
+
+- CLI: `--telegram-chat-id`
+- Required: Yes (when `TELEGRAM_BOT_TOKEN` is set)
+- Default: None
+
+Chat ID(s) allowed to receive alerts and execute interactive commands. Can be specified multiple times via CLI or as comma-separated values in the environment variable.
+
+### TELEGRAM_NOTIFY_ON_RECOVERY
+
+- CLI: `--telegram-notify-on-recovery`
+- Required: No
+- Default: `true`
+
+Sends a message when a proxy comes back online, including its measured latency.
+
+### TELEGRAM_COMMANDS_ENABLED
+
+- CLI: `--telegram-commands`
+- Required: No
+- Default: `true`
+
+Enables interactive bot commands such as `/status`, `/help`, and `/start`.
+
+### TELEGRAM_MANAGE_SUBSCRIPTIONS
+
+- CLI: `--telegram-manage-subscriptions`
+- Required: No
+- Default: `true`
+
+Enables dynamic subscription management commands (`/subs`, `/addsub`, `/delsub`) from authorized chats.
+
 ## Other
+
 
 ### LOG_LEVEL
 
