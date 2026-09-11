@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	tgbotapi "github.com/kirugan/telegram-bot-api/v5"
+	"github.com/mymmrac/telego"
 )
 
 // SubscriptionManager lets the bot inspect and change the set of subscription
@@ -27,7 +27,7 @@ type SubscriptionManager interface {
 	RemoveSubscription(url string) (found bool, proxyCount int, err error)
 }
 
-func (b *Bot) handleAddSub(msg *tgbotapi.Message) {
+func (b *Bot) handleAddSub(msg *telego.Message) {
 	chatID := msg.Chat.ID
 	url := commandArg(msg.Text)
 	if url == "" {
@@ -48,7 +48,7 @@ func (b *Bot) handleAddSub(msg *tgbotapi.Message) {
 	b.send(chatID, fmt.Sprintf("✅ Подписка добавлена. Всего прокси: %d", count))
 }
 
-func (b *Bot) handleDelSub(msg *tgbotapi.Message) {
+func (b *Bot) handleDelSub(msg *telego.Message) {
 	chatID := msg.Chat.ID
 	url := commandArg(msg.Text)
 	if url == "" {

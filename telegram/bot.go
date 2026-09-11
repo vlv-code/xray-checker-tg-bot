@@ -5,13 +5,15 @@
 package telegram
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	tgbotapi "github.com/kirugan/telegram-bot-api/v5"
+	"github.com/mymmrac/telego"
+	tu "github.com/mymmrac/telego/telegoutil"
 
 	"xray-checker/checker"
 	"xray-checker/logger"
@@ -31,7 +33,9 @@ type DiagnosticsSource interface {
 // Bot sends proxy-status notifications to Telegram and answers interactive commands
 // and inline button queries from a fixed set of allowed chats.
 type Bot struct {
-	api            *tgbotapi.BotAPI
+	api            *telego.Bot
+	ctx            context.Context
+	cancel         context.CancelFunc
 	chatIDs        []int64
 	allowedChatIDs map[int64]bool
 	source         metrics.MetricsSource
@@ -56,9 +60,17 @@ type Bot struct {
 
 // New creates a Bot and verifies the token against the Telegram API.
 func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRecovery, commandsEnabled bool, subs SubscriptionManager) (*Bot, error) {
-	api, err := tgbotapi.NewBotAPI(token)
+	api, err := telego.NewBot(token, telego.WithDiscardLogger())
 	if err != nil {
 		return nil, fmt.Errorf("telegram: %w", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	user, err := api.GetMe(ctx)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("telegram: getMe failed: %w", err)
 	}
 
 	allowed := make(map[int64]bool, len(chatIDs))
@@ -66,10 +78,12 @@ func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRe
 		allowed[id] = true
 	}
 
-	logger.Info("Telegram bot authorized as @%s", api.Self.UserName)
+	logger.Info("Telegram bot authorized as @%s", user.Username)
 
 	return &Bot{
 		api:              api,
+		ctx:              ctx,
+		cancel:           cancel,
 		chatIDs:          chatIDs,
 		allowedChatIDs:   allowed,
 		source:           source,
@@ -121,9 +135,13 @@ func (b *Bot) StartCommands() {
 
 	b.startScheduler()
 
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-	updates := b.api.GetUpdatesChan(u)
+	updates, err := b.api.UpdatesViaLongPolling(b.ctx, &telego.GetUpdatesParams{
+		Timeout: 60,
+	})
+	if err != nil {
+		logger.Error("Telegram: failed to start long polling: %v", err)
+		return
+	}
 
 	go func() {
 		for update := range updates {
@@ -143,7 +161,9 @@ func (b *Bot) Stop() {
 	default:
 		close(b.stopChan)
 	}
-	b.api.StopReceivingUpdates()
+	if b.cancel != nil {
+		b.cancel()
+	}
 }
 
 func (b *Bot) startScheduler() {
@@ -192,9 +212,9 @@ func (b *Bot) checkSchedules(now time.Time) {
 	}
 }
 
-func (b *Bot) handleMessage(msg *tgbotapi.Message) {
+func (b *Bot) handleMessage(msg *telego.Message) {
 	if !b.allowedChatIDs[msg.Chat.ID] {
-		logger.Warn("Telegram: ignoring message from unauthorized chat %d (%s)", msg.Chat.ID, msg.Chat.UserName)
+		logger.Warn("Telegram: ignoring message from unauthorized chat %d (%s)", msg.Chat.ID, msg.Chat.Username)
 		return
 	}
 
@@ -224,16 +244,19 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 	}
 }
 
-func (b *Bot) handleCallbackQuery(cb *tgbotapi.CallbackQuery) {
-	chatID := cb.Message.Chat.ID
+func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
+	if cb.Message == nil {
+		return
+	}
+	chatID := cb.Message.GetChat().ID
 	if !b.allowedChatIDs[chatID] {
 		return
 	}
 
 	// Acknowledge callback immediately to dismiss spinner
-	b.api.Send(tgbotapi.NewCallback(cb.ID, ""))
+	_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID))
 
-	msgID := cb.Message.MessageID
+	msgID := cb.Message.GetMessageID()
 
 	switch cb.Data {
 	case "menu:main":
@@ -778,7 +801,10 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 					if cfg.AlertMode == AlertModeClean {
 						// Delete outage alert
 						if hadAlert {
-							b.api.Send(tgbotapi.NewDeleteMessage(chatID, alert.MessageID))
+							_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+								ChatID:    tu.ID(chatID),
+								MessageID: alert.MessageID,
+							})
 						}
 						if b.notifyOnRecovery {
 							recoveryText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms", escapeHTML(pm.Name), pm.LatencyMs)
@@ -789,7 +815,10 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 								// Delete recovery confirmation after 2 minutes
 								go func(cID int64, mID int) {
 									time.Sleep(2 * time.Minute)
-									b.api.Send(tgbotapi.NewDeleteMessage(cID, mID))
+									_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+										ChatID:    tu.ID(cID),
+										MessageID: mID,
+									})
 								}(chatID, sent.MessageID)
 							}
 						}
@@ -797,9 +826,13 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 						if hadAlert {
 							liveText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms (был оффлайн %s)",
 								escapeHTML(pm.Name), pm.LatencyMs, FormatDowntime(downtime))
-							edit := tgbotapi.NewEditMessageText(chatID, alert.MessageID, liveText)
-							edit.ParseMode = tgbotapi.ModeHTML
-							b.api.Send(edit)
+							params := &telego.EditMessageTextParams{
+								ChatID:    tu.ID(chatID),
+								MessageID: alert.MessageID,
+								Text:      liveText,
+								ParseMode: telego.ModeHTML,
+							}
+							_, _ = b.api.EditMessageText(b.ctx, params)
 						} else if b.notifyOnRecovery {
 							recoveryText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms", escapeHTML(pm.Name), pm.LatencyMs)
 							b.send(chatID, recoveryText)
@@ -826,41 +859,42 @@ func (b *Bot) broadcast(text string) {
 
 func (b *Bot) send(chatID int64, text string) {
 	for _, chunk := range splitMessage(text, maxMessageLen) {
-		msg := tgbotapi.NewMessage(chatID, chunk)
-		msg.ParseMode = tgbotapi.ModeHTML
-		if _, err := b.api.Send(msg); err != nil {
+		params := tu.Message(tu.ID(chatID), chunk).WithParseMode(telego.ModeHTML)
+		if _, err := b.api.SendMessage(b.ctx, params); err != nil {
 			logger.Error("Telegram: failed to send message to %d: %v", chatID, err)
 		}
 	}
 }
 
-func (b *Bot) sendAndReturn(chatID int64, text string) (*tgbotapi.Message, error) {
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ParseMode = tgbotapi.ModeHTML
-	sent, err := b.api.Send(msg)
+func (b *Bot) sendAndReturn(chatID int64, text string) (*telego.Message, error) {
+	params := tu.Message(tu.ID(chatID), text).WithParseMode(telego.ModeHTML)
+	sent, err := b.api.SendMessage(b.ctx, params)
 	if err != nil {
 		logger.Error("Telegram: failed to send message to %d: %v", chatID, err)
 		return nil, err
 	}
-	return &sent, nil
+	return sent, nil
 }
 
-func (b *Bot) sendWithMarkup(chatID int64, text string, markup tgbotapi.InlineKeyboardMarkup) (*tgbotapi.Message, error) {
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ParseMode = tgbotapi.ModeHTML
-	msg.ReplyMarkup = markup
-	sent, err := b.api.Send(msg)
+func (b *Bot) sendWithMarkup(chatID int64, text string, markup *telego.InlineKeyboardMarkup) (*telego.Message, error) {
+	params := tu.Message(tu.ID(chatID), text).WithParseMode(telego.ModeHTML).WithReplyMarkup(markup)
+	sent, err := b.api.SendMessage(b.ctx, params)
 	if err != nil {
 		logger.Error("Telegram: failed to send message to %d: %v", chatID, err)
 		return nil, err
 	}
-	return &sent, nil
+	return sent, nil
 }
 
-func (b *Bot) editWithMarkup(chatID int64, messageID int, text string, markup tgbotapi.InlineKeyboardMarkup) {
-	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, text, markup)
-	edit.ParseMode = tgbotapi.ModeHTML
-	if _, err := b.api.Send(edit); err != nil {
+func (b *Bot) editWithMarkup(chatID int64, messageID int, text string, markup *telego.InlineKeyboardMarkup) {
+	params := &telego.EditMessageTextParams{
+		ChatID:      tu.ID(chatID),
+		MessageID:   messageID,
+		Text:        text,
+		ParseMode:   telego.ModeHTML,
+		ReplyMarkup: markup,
+	}
+	if _, err := b.api.EditMessageText(b.ctx, params); err != nil {
 		logger.Error("Telegram: failed to edit message %d in chat %d: %v", messageID, chatID, err)
 	}
 }
