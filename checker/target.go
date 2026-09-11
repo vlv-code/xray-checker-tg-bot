@@ -45,8 +45,9 @@ type ProxyDiagReport struct {
 	NodeHealth NodeHealth         `json:"node_health"`
 	CheckHost  *CheckHostSummary  `json:"check_host,omitempty"`
 	Targets    []TargetDiagResult `json:"targets"`
-	Status     string             `json:"status"` // "online", "degraded", "offline"
+	Status     string             `json:"status"` // "online", "degraded", "offline", "disabled"
 	Verdict    string             `json:"verdict"`
+	Disabled   bool               `json:"disabled,omitempty"`
 }
 
 // TargetManager manages the list of target endpoints to test proxies against.
@@ -382,6 +383,20 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 		wg.Add(1)
 		go func(idx int, proxy *models.ProxyConfig) {
 			defer wg.Done()
+
+			if pc.IsProxyDisabled(proxy) {
+				results[idx] = ProxyDiagReport{
+					ProxyName: proxy.Name,
+					Protocol:  proxy.Protocol,
+					Server:    proxy.Server,
+					Port:      proxy.Port,
+					StableID:  proxy.StableID,
+					Status:    "disabled",
+					Verdict:   "Проверка отключена в настройках бота",
+					Disabled:  true,
+				}
+				return
+			}
 
 			proxyURL := fmt.Sprintf("socks5://127.0.0.1:%d", pc.startPort+proxy.Index)
 			proxyURLParsed, err := url.Parse(proxyURL)

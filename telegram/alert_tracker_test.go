@@ -41,6 +41,39 @@ func TestAlertTracker_TrackAndResolve(t *testing.T) {
 	}
 }
 
+func TestAlertTracker_PersistenceAndAntiFlapping(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := tmpDir + "/alerts.json"
+
+	tracker := NewAlertTracker(path)
+	if tracker.HasAlert(111, "proxy-1") {
+		t.Errorf("expected no alert initially")
+	}
+
+	down := time.Now()
+	tracker.Track(111, 201, "proxy-1", "Proxy 1", down, "Offline")
+	if !tracker.HasAlert(111, "proxy-1") {
+		t.Errorf("expected alert to be tracked")
+	}
+
+	// Reload from disk
+	tracker2 := NewAlertTracker(path)
+	if !tracker2.HasAlert(111, "proxy-1") {
+		t.Fatalf("expected reloaded tracker to have alert")
+	}
+
+	alert, ok := tracker2.Resolve(111, "proxy-1")
+	if !ok || alert.MessageID != 201 {
+		t.Fatalf("expected to resolve alert 201, got %v", alert)
+	}
+
+	// Verify persistence after resolve
+	tracker3 := NewAlertTracker(path)
+	if tracker3.HasAlert(111, "proxy-1") {
+		t.Errorf("expected alert to be resolved in persisted state")
+	}
+}
+
 func TestFormatDowntime(t *testing.T) {
 	cases := []struct {
 		d        time.Duration

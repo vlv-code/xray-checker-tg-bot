@@ -224,4 +224,121 @@ func TestBot_DiagnosticsPaginationAndRichMessage(t *testing.T) {
 	}
 }
 
+type mockSource struct {
+	metrics []metrics.ProxyMetric
+}
+
+func (m *mockSource) MetricsSnapshot() []metrics.ProxyMetric {
+	return m.metrics
+}
+
+type mockDiagSource struct {
+	reports []checker.ProxyDiagReport
+	hosts   []string
+}
+
+func (m *mockDiagSource) RunDiagnostics(targets []string) []checker.ProxyDiagReport {
+	return m.reports
+}
+
+func (m *mockDiagSource) GetTargetManager() *checker.TargetManager {
+	return nil
+}
+
+func (m *mockDiagSource) GetUniqueHosts() []string {
+	return m.hosts
+}
+
+func TestBot_MenuTextAndSettings(t *testing.T) {
+	ms := &mockSource{
+		metrics: []metrics.ProxyMetric{
+			{Name: "Node-1", Online: true},
+			{Name: "Node-2", Online: false},
+			{Name: "Node-3", Online: true, Disabled: true},
+		},
+	}
+
+	b := &Bot{
+		source: ms,
+	}
+
+	menuText := b.getMenuText()
+	if !strings.Contains(menuText, "📊 Сводка Xray Checker") {
+		t.Errorf("expected header '📊 Сводка Xray Checker', got: %s", menuText)
+	}
+	if !strings.Contains(menuText, "• Текущий статус: <b>1/2 online</b>") {
+		t.Errorf("expected 1/2 online with disabled excluded, got: %s", menuText)
+	}
+	if !strings.Contains(menuText, "1 отключено") {
+		t.Errorf("expected mention of 1 disabled node, got: %s", menuText)
+	}
+	if !strings.Contains(menuText, "🔴 Требуют внимания:") || !strings.Contains(menuText, "Node-2") {
+		t.Errorf("expected offline Node-2 in menu summary, got: %s", menuText)
+	}
+
+	// Test MainMenuMarkup
+	mainMarkup := MainMenuMarkup()
+	if len(mainMarkup.InlineKeyboard) != 4 {
+		t.Errorf("expected 4 rows in MainMenuMarkup, got %d", len(mainMarkup.InlineKeyboard))
+	}
+	if mainMarkup.InlineKeyboard[0][0].CallbackData != "menu:main" && mainMarkup.InlineKeyboard[0][0].CallbackData != "menu:main:refresh" {
+		t.Errorf("expected refresh button in row 1, got %s", mainMarkup.InlineKeyboard[0][0].CallbackData)
+	}
+	if mainMarkup.InlineKeyboard[1][0].CallbackData != "menu:diag" {
+		t.Errorf("expected diag button in row 2, got %s", mainMarkup.InlineKeyboard[1][0].CallbackData)
+	}
+	if mainMarkup.InlineKeyboard[2][0].CallbackData != "menu:checkhost" {
+		t.Errorf("expected checkhost button in row 3, got %s", mainMarkup.InlineKeyboard[2][0].CallbackData)
+	}
+	if mainMarkup.InlineKeyboard[3][0].CallbackData != "menu:settings" {
+		t.Errorf("expected settings button in row 4, got %s", mainMarkup.InlineKeyboard[3][0].CallbackData)
+	}
+}
+
+func TestBot_DisabledHostsView(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "bot_cfg.json")
+	cm, err := NewConfigManager(cfgPath, BotConfig{
+		DisabledHosts: []string{"node2.example.com"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create config manager: %v", err)
+	}
+
+	ds := &mockDiagSource{
+		hosts: []string{"node1.example.com", "node2.example.com", "node3.example.com"},
+	}
+
+	b := &Bot{
+		configMgr:  cm,
+		diagSource: ds,
+	}
+
+	viewText, markup := b.getDisabledHostsView(1)
+	if !strings.Contains(viewText, "🚫 Управление проверками хостов") {
+		t.Errorf("expected view title, got: %s", viewText)
+	}
+	if !strings.Contains(viewText, "Всего обнаружено хостов: <b>3</b> | Отключено: <b>1</b>") {
+		t.Errorf("expected host counts, got: %s", viewText)
+	}
+
+	// Check buttons in markup
+	foundDisabled := false
+	foundEnabled := false
+	for _, row := range markup.InlineKeyboard {
+		for _, btn := range row {
+			if strings.Contains(btn.Text, "node2.example.com") && strings.Contains(btn.Text, "⏸️") {
+				foundDisabled = true
+			}
+			if strings.Contains(btn.Text, "node1.example.com") && strings.Contains(btn.Text, "🟢") {
+				foundEnabled = true
+			}
+		}
+	}
+	if !foundDisabled || !foundEnabled {
+		t.Errorf("expected enabled and disabled buttons in markup, got: %v", markup)
+	}
+}
+
+
 

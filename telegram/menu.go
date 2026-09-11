@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mymmrac/telego"
@@ -18,12 +19,25 @@ func btn(text, data string) telego.InlineKeyboardButton {
 func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("📊 Статус", "menu:status"),
-			btn("⚡ Проверить сейчас", "menu:diag"),
+			btn("🔄 Обновить", "menu:main"),
 		),
 		tu.InlineKeyboardRow(
-			btn("📈 Статистика", "menu:stats"),
-			btn("📋 Подписки", "menu:subs"),
+			btn("📋 Детальный отчёт", "menu:diag"),
+		),
+		tu.InlineKeyboardRow(
+			btn("🌐 Проверка Check-Host.net", "menu:checkhost"),
+		),
+		tu.InlineKeyboardRow(
+			btn("⚙️ Настройки", "menu:settings"),
+		),
+	)
+}
+
+// SettingsMenuMarkup returns buttons for the settings view.
+func SettingsMenuMarkup() *telego.InlineKeyboardMarkup {
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("🚫 Управление хостами (вкл/выкл)", "menu:disabled_hosts:1"),
 		),
 		tu.InlineKeyboardRow(
 			btn("⏱️ Интервал проверок", "menu:interval"),
@@ -31,13 +45,60 @@ func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 		),
 		tu.InlineKeyboardRow(
 			btn("🌙 Тихий режим", "menu:quiet"),
-			btn("⚙️ Режим алертов", "menu:alert_mode"),
+			btn("🧹 Режим алертов", "menu:alert_mode"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🌐 Check-Host", "menu:checkhost"),
-			btn("📑 Сводка сейчас", "menu:digest:now"),
+			btn("📋 Подписки", "menu:subs"),
+			btn("📈 Статистика инцидентов", "menu:stats"),
+		),
+		tu.InlineKeyboardRow(
+			btn("📊 Отправить сводку", "menu:digest:now"),
+		),
+		tu.InlineKeyboardRow(
+			btn("🔙 Главное меню", "menu:main"),
 		),
 	)
+}
+
+// DisabledHostsMarkup generates paginated toggles for host checks.
+func DisabledHostsMarkup(hosts []string, disabledMap map[string]bool, page, totalPages int) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+
+	for _, host := range hosts {
+		statusIcon := "🟢"
+		statusText := "активен"
+		if disabledMap[strings.ToLower(host)] {
+			statusIcon = "⏸️"
+			statusText = "выключен"
+		}
+		btnText := fmt.Sprintf("%s %s (%s)", statusIcon, host, statusText)
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn(btnText, fmt.Sprintf("menu:toggle_host:%s:%d", host, page)),
+		))
+	}
+
+	if totalPages > 1 {
+		prevPage := page - 1
+		if prevPage < 1 {
+			prevPage = totalPages
+		}
+		nextPage := page + 1
+		if nextPage > totalPages {
+			nextPage = 1
+		}
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("⬅️ Пред", fmt.Sprintf("menu:disabled_hosts:%d", prevPage)),
+			btn(fmt.Sprintf("%d / %d", page, totalPages), fmt.Sprintf("menu:disabled_hosts:noop:%d:%d", page, totalPages)),
+			btn("След ➡️", fmt.Sprintf("menu:disabled_hosts:%d", nextPage)),
+		))
+	}
+
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("🔙 К настройкам", "menu:settings"),
+		btn("🏠 Главное меню", "menu:main"),
+	))
+
+	return tu.InlineKeyboard(rows...)
 }
 
 // StatusMenuMarkup returns controls under the /status view.
@@ -45,7 +106,7 @@ func StatusMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
 			btn("🔄 Обновить", "menu:status"),
-			btn("⚡ Экспресс-проверка", "menu:diag"),
+			btn("📋 Детальный отчёт", "menu:diag"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🔙 Главное меню", "menu:main"),
@@ -61,7 +122,8 @@ func StatsMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("🔝 Топ проблемных", "menu:stats:top"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🔙 Главное меню", "menu:main"),
+			btn("🔙 К настройкам", "menu:settings"),
+			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
 }
@@ -93,7 +155,8 @@ func QuietHoursMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 	}
 
 	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔙 Главное меню", "menu:main"),
+		btn("🔙 К настройкам", "menu:settings"),
+		btn("🏠 Главное меню", "menu:main"),
 	))
 
 	return tu.InlineKeyboard(rows...)
@@ -115,7 +178,8 @@ func AlertModeMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 			btn(fmt.Sprintf("%s 🧹 Чистый чат", cleanIcon), "menu:alert_mode:clean"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🔙 Главное меню", "menu:main"),
+			btn("🔙 К настройкам", "menu:settings"),
+			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
 }
@@ -124,8 +188,11 @@ func AlertModeMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 func TargetsMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("⚡ Проверить сейчас", "menu:diag"),
-			btn("🔙 Главное меню", "menu:main"),
+			btn("📋 Детальный отчёт", "menu:diag"),
+		),
+		tu.InlineKeyboardRow(
+			btn("🔙 К настройкам", "menu:settings"),
+			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
 }
@@ -135,6 +202,16 @@ func BackToMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
 			btn("🔙 Главное меню", "menu:main"),
+		),
+	)
+}
+
+// BackToSettingsMarkup provides buttons returning to settings or main menu.
+func BackToSettingsMarkup() *telego.InlineKeyboardMarkup {
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("🔙 К настройкам", "menu:settings"),
+			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
 }
@@ -162,7 +239,8 @@ func IntervalMenuMarkup(currentInterval int) *telego.InlineKeyboardMarkup {
 			btn(mark(900, "15 мин"), "menu:interval:set:900"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🔙 Главное меню", "menu:main"),
+			btn("🔙 К настройкам", "menu:settings"),
+			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
 }

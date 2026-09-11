@@ -1,39 +1,99 @@
 package telegram
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
 
 // ActiveAlert represents an alert message sent for an offline proxy.
 type ActiveAlert struct {
-	ChatID    int64
-	MessageID int
-	StableID  string
-	ProxyName string
-	DownAt    time.Time
-	Reason    string
+	ChatID    int64     `json:"chat_id"`
+	MessageID int       `json:"message_id"`
+	StableID  string    `json:"stable_id"`
+	ProxyName string    `json:"proxy_name"`
+	DownAt    time.Time `json:"down_at"`
+	Reason    string    `json:"reason"`
 }
 
-// AlertTracker manages active outage alert messages in memory.
+// AlertTracker manages active outage alert messages with optional disk persistence.
 type AlertTracker struct {
 	mu     sync.Mutex
+	path   string
 	alerts map[string]*ActiveAlert // key: "chatID:stableID"
 }
 
-// NewAlertTracker creates a new AlertTracker.
-func NewAlertTracker() *AlertTracker {
-	return &AlertTracker{
+// NewAlertTracker creates a new AlertTracker, optionally with disk persistence.
+func NewAlertTracker(paths ...string) *AlertTracker {
+	at := &AlertTracker{
 		alerts: make(map[string]*ActiveAlert),
 	}
+	if len(paths) > 0 && paths[0] != "" {
+		at.path = paths[0]
+		_ = at.load()
+	}
+	return at
+}
+
+func (at *AlertTracker) load() error {
+	if at.path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(at.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var loaded map[string]*ActiveAlert
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return err
+	}
+	if loaded != nil {
+		at.alerts = loaded
+	}
+	return nil
+}
+
+func (at *AlertTracker) saveLocked() error {
+	if at.path == "" {
+		return nil
+	}
+	dir := filepath.Dir(at.path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+	}
+	data, err := json.MarshalIndent(at.alerts, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := at.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, at.path)
 }
 
 func alertKey(chatID int64, stableID string) string {
 	return fmt.Sprintf("%d:%s", chatID, stableID)
 }
 
-// Track stores an active outage alert message.
+// HasAlert returns true if there is an active alert for the given chat and proxy.
+func (at *AlertTracker) HasAlert(chatID int64, stableID string) bool {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+
+	_, found := at.alerts[alertKey(chatID, stableID)]
+	return found
+}
+
+// Track stores an active outage alert message and persists if path is configured.
 func (at *AlertTracker) Track(chatID int64, messageID int, stableID, proxyName string, downAt time.Time, reason string) {
 	at.mu.Lock()
 	defer at.mu.Unlock()
@@ -47,9 +107,10 @@ func (at *AlertTracker) Track(chatID int64, messageID int, stableID, proxyName s
 		DownAt:    downAt,
 		Reason:    reason,
 	}
+	_ = at.saveLocked()
 }
 
-// Resolve removes and returns the active alert for a specific chat and proxy.
+// Resolve removes, persists, and returns the active alert for a specific chat and proxy.
 func (at *AlertTracker) Resolve(chatID int64, stableID string) (*ActiveAlert, bool) {
 	at.mu.Lock()
 	defer at.mu.Unlock()
@@ -58,6 +119,7 @@ func (at *AlertTracker) Resolve(chatID int64, stableID string) (*ActiveAlert, bo
 	alert, found := at.alerts[key]
 	if found {
 		delete(at.alerts, key)
+		_ = at.saveLocked()
 	}
 	return alert, found
 }

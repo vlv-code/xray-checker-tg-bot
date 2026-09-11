@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -26,6 +27,34 @@ type BotConfig struct {
 	TargetURLs             []string `json:"target_urls"`
 	CheckIntervalSec       int      `json:"check_interval_sec,omitempty"`
 	RichMode               bool     `json:"rich_mode"`
+	DisabledHosts          []string `json:"disabled_hosts,omitempty"`
+	DisabledProxies        []string `json:"disabled_proxies,omitempty"`
+}
+
+// IsHostDisabled checks if a server address/hostname is in the disabled list.
+func (c BotConfig) IsHostDisabled(server string) bool {
+	server = strings.ToLower(strings.TrimSpace(server))
+	for _, h := range c.DisabledHosts {
+		if strings.ToLower(strings.TrimSpace(h)) == server {
+			return true
+		}
+	}
+	return false
+}
+
+// IsProxyDisabled checks if a stable ID is in the disabled list.
+func (c BotConfig) IsProxyDisabled(stableID string) bool {
+	for _, id := range c.DisabledProxies {
+		if id == stableID {
+			return true
+		}
+	}
+	return false
+}
+
+// IsDisabled checks if either the host or the proxy ID is disabled.
+func (c BotConfig) IsDisabled(server, stableID string) bool {
+	return c.IsHostDisabled(server) || c.IsProxyDisabled(stableID)
 }
 
 // ConfigManager handles thread-safe access and persistence for BotConfig.
@@ -68,7 +97,7 @@ func (cm *ConfigManager) load() error {
 	}
 
 	if loaded.AlertMode == "" {
-		loaded.AlertMode = AlertModeLive
+		loaded.AlertMode = AlertModeClean
 	}
 	if loaded.QuietHoursStart == "" {
 		loaded.QuietHoursStart = "23:00"
@@ -94,7 +123,41 @@ func (cm *ConfigManager) Get() BotConfig {
 		c.TargetURLs = make([]string, len(cm.cfg.TargetURLs))
 		copy(c.TargetURLs, cm.cfg.TargetURLs)
 	}
+	if len(cm.cfg.DisabledHosts) > 0 {
+		c.DisabledHosts = make([]string, len(cm.cfg.DisabledHosts))
+		copy(c.DisabledHosts, cm.cfg.DisabledHosts)
+	}
+	if len(cm.cfg.DisabledProxies) > 0 {
+		c.DisabledProxies = make([]string, len(cm.cfg.DisabledProxies))
+		copy(c.DisabledProxies, cm.cfg.DisabledProxies)
+	}
 	return c
+}
+
+// ToggleHost toggles the disabled status of a host and persists the change.
+// Returns (newState, error) where newState is true if the host is now disabled.
+func (cm *ConfigManager) ToggleHost(server string) (bool, error) {
+	server = strings.ToLower(strings.TrimSpace(server))
+	var newState bool
+	err := cm.Update(func(cfg *BotConfig) {
+		found := false
+		var updated []string
+		for _, h := range cfg.DisabledHosts {
+			if strings.ToLower(strings.TrimSpace(h)) == server {
+				found = true
+			} else {
+				updated = append(updated, h)
+			}
+		}
+		if !found {
+			updated = append(updated, server)
+			newState = true // now disabled
+		} else {
+			newState = false // now enabled
+		}
+		cfg.DisabledHosts = updated
+	})
+	return newState, err
 }
 
 // Update modifies the configuration atomically and persists to disk.

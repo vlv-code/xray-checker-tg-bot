@@ -77,7 +77,7 @@ type CLI struct {
 		NotifyOnRecovery    bool    `name:"telegram-notify-on-recovery" help:"Send a message when a proxy comes back online, not just when it goes down" default:"true" env:"TELEGRAM_NOTIFY_ON_RECOVERY"`
 		Commands            bool     `name:"telegram-commands" help:"Enable interactive bot commands (/status, /help)" default:"true" env:"TELEGRAM_COMMANDS_ENABLED"`
 		ManageSubscriptions bool     `name:"telegram-manage-subscriptions" help:"Allow /addsub, /delsub and /subs so allowed chats can add or remove subscriptions at runtime" default:"true" env:"TELEGRAM_MANAGE_SUBSCRIPTIONS"`
-		AlertMode           string   `name:"telegram-alert-mode" help:"Alert mode: 'live' (edits outage message) or 'clean' (auto-deletes)" default:"live" env:"TELEGRAM_ALERT_MODE"`
+		AlertMode           string   `name:"telegram-alert-mode" help:"Alert mode: 'live' (edits outage message) or 'clean' (auto-deletes)" default:"clean" env:"TELEGRAM_ALERT_MODE"`
 		QuietHoursEnabled   bool     `name:"telegram-quiet-hours" help:"Enable quiet hours" default:"true" env:"TELEGRAM_QUIET_HOURS_ENABLED"`
 		QuietHoursStart     string   `name:"telegram-quiet-hours-start" help:"Quiet hours start time (HH:MM)" default:"23:00" env:"TELEGRAM_QUIET_HOURS_START"`
 		QuietHoursEnd       string   `name:"telegram-quiet-hours-end" help:"Quiet hours end time (HH:MM)" default:"08:00" env:"TELEGRAM_QUIET_HOURS_END"`
@@ -85,6 +85,7 @@ type CLI struct {
 		DayDigestIntervalHours int   `name:"telegram-day-digest-interval" help:"Interval in hours between daytime digests" default:"6" env:"TELEGRAM_DAY_DIGEST_INTERVAL_HOURS"`
 		StatsStorePath      string   `name:"telegram-stats-store-path" help:"Path to JSON file storing outage statistics" default:"stats.json" env:"STATS_STORE_PATH"`
 		BotConfigStorePath  string   `name:"telegram-config-store-path" help:"Path to JSON file storing runtime bot configuration" default:"bot_config.json" env:"BOT_CONFIG_STORE_PATH"`
+		AlertStorePath      string   `name:"telegram-alert-store-path" help:"Path to JSON file storing active outage alerts" default:"alerts.json" env:"ALERT_STORE_PATH"`
 		TargetURLs          []string `name:"proxy-target-url" help:"Target URLs to check proxies against (can be specified multiple times)" env:"PROXY_TARGET_URLS"`
 		RichMode            bool     `name:"telegram-rich-mode" help:"Render reports as Telegram Bot API Rich Messages" default:"false" env:"TELEGRAM_RICH_MODE"`
 	} `embed:"" prefix:""`

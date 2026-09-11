@@ -31,6 +31,7 @@ type ProxyChecker struct {
 	checkMethod      string
 	checkConcurrency int // max proxies checked in parallel per cycle; 0 = unlimited
 	targetManager    *TargetManager
+	disabledFilter   func(server, stableID string) bool
 	mu               sync.RWMutex
 }
 
@@ -42,6 +43,39 @@ type proxyResult struct {
 	status    bool
 	latency   time.Duration
 	lastCheck time.Time
+	disabled  bool
+}
+
+// SetDisabledFilter sets a predicate to check if a proxy or host is disabled from checking.
+func (pc *ProxyChecker) SetDisabledFilter(f func(server, stableID string) bool) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	pc.disabledFilter = f
+}
+
+// IsProxyDisabled returns true if the proxy is configured to be skipped from checks.
+func (pc *ProxyChecker) IsProxyDisabled(proxy *models.ProxyConfig) bool {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	if pc.disabledFilter != nil {
+		return pc.disabledFilter(proxy.Server, proxy.StableID)
+	}
+	return false
+}
+
+// GetUniqueHosts returns a sorted list of unique server hosts from all configured proxies.
+func (pc *ProxyChecker) GetUniqueHosts() []string {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	seen := make(map[string]bool)
+	var hosts []string
+	for _, p := range pc.proxies {
+		if p.Server != "" && !seen[p.Server] {
+			seen[p.Server] = true
+			hosts = append(hosts, p.Server)
+		}
+	}
+	return hosts
 }
 
 func NewProxyChecker(proxies []*models.ProxyConfig, startPort int, ipCheckURL string, ipCheckTimeout int, genMethodURL string, downloadURL string, downloadTimeout int, downloadMinSize int64, checkMethod string, checkConcurrency int) *ProxyChecker {
@@ -116,6 +150,17 @@ func (pc *ProxyChecker) checkProxyInternal(proxy *models.ProxyConfig) {
 	}
 
 	metricKey := proxyMetricKey(proxy)
+
+	if pc.IsProxyDisabled(proxy) {
+		logger.Debug("%s (%s) is disabled from checks, skipping", proxy.Name, proxy.Server)
+		pc.results.Store(metricKey, proxyResult{
+			status:    true,
+			latency:   0,
+			lastCheck: time.Now(),
+			disabled:  true,
+		})
+		return
+	}
 
 	storeResult := func(status bool, latency time.Duration) {
 		pc.results.Store(metricKey, proxyResult{
@@ -397,6 +442,7 @@ func (pc *ProxyChecker) MetricsSnapshot() []metrics.ProxyMetric {
 			CustomLabels: proxy.MetricsLabels,
 			Online:       r.status,
 			LatencyMs:    float64(r.latency.Milliseconds()),
+			Disabled:     r.disabled,
 		})
 	}
 	return out

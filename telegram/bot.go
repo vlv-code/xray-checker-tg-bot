@@ -31,6 +31,7 @@ const maxMessageLen = 3500
 type DiagnosticsSource interface {
 	RunDiagnostics(targets []string) []checker.ProxyDiagReport
 	GetTargetManager() *checker.TargetManager
+	GetUniqueHosts() []string
 }
 
 // Bot sends proxy-status notifications to Telegram and answers interactive commands
@@ -129,6 +130,13 @@ func (b *Bot) SetIntervalHandler(h func(seconds int)) {
 	b.intervalHandler = h
 }
 
+// SetAlertTracker attaches a custom or persistent alert tracker.
+func (b *Bot) SetAlertTracker(tracker *AlertTracker) {
+	if tracker != nil {
+		b.tracker = tracker
+	}
+}
+
 // SetRichMode sets default reporting format.
 func (b *Bot) SetRichMode(enabled bool) {
 	b.richMode = enabled
@@ -173,13 +181,17 @@ func (b *Bot) GetConfig() BotConfig {
 	if b.configMgr != nil {
 		return b.configMgr.Get()
 	}
+	return DefaultBotConfig()
+}
+
+func DefaultBotConfig() BotConfig {
 	return BotConfig{
 		QuietHoursEnabled:      false,
 		QuietHoursStart:        "23:00",
 		QuietHoursEnd:          "08:00",
 		DayDigestEnabled:       false,
 		DayDigestIntervalHours: 6,
-		AlertMode:              AlertModeLive,
+		AlertMode:              AlertModeClean,
 	}
 }
 
@@ -189,6 +201,7 @@ func (b *Bot) StartCommands() {
 		return
 	}
 
+	b.setupBotMenuButton()
 	b.startScheduler()
 
 	updates, err := b.api.UpdatesViaLongPolling(b.ctx, &telego.GetUpdatesParams{
@@ -220,6 +233,24 @@ func (b *Bot) Stop() {
 	if b.cancel != nil {
 		b.cancel()
 	}
+}
+
+func (b *Bot) setupBotMenuButton() {
+	commands := []telego.BotCommand{
+		{Command: "menu", Description: "Главное меню и сводка"},
+		{Command: "diag", Description: "Детальный отчёт"},
+		{Command: "checkhost", Description: "Проверка Check-Host"},
+		{Command: "settings", Description: "Настройки бота"},
+		{Command: "status", Description: "Статус нод"},
+	}
+	_ = b.api.SetMyCommands(b.ctx, &telego.SetMyCommandsParams{
+		Commands: commands,
+	})
+	_ = b.api.SetChatMenuButton(b.ctx, &telego.SetChatMenuButtonParams{
+		MenuButton: &telego.MenuButtonCommands{
+			Type: telego.ButtonTypeCommands,
+		},
+	})
 }
 
 func (b *Bot) startScheduler() {
@@ -291,6 +322,10 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		b.handleIntervalCommand(msg)
 	case strings.HasPrefix(msg.Text, "/checkhost"):
 		go b.handleCheckHostCommand(msg)
+	case strings.HasPrefix(msg.Text, "/settings"):
+		b.replySettings(msg.Chat.ID)
+	case strings.HasPrefix(msg.Text, "/togglehost"):
+		b.handleToggleHostCommand(msg)
 	case strings.HasPrefix(msg.Text, "/digest"):
 		b.replyDigest(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/subs"):
@@ -334,12 +369,14 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID))
 
 	switch cb.Data {
-	case "menu:main":
+	case "menu:main", "menu:main:refresh":
 		b.editWithMarkup(chatID, msgID, b.getMenuText(), MainMenuMarkup())
+	case "menu:settings":
+		b.editWithMarkup(chatID, msgID, b.getSettingsText(), SettingsMenuMarkup())
 	case "menu:status":
 		b.editWithMarkup(chatID, msgID, b.getStatusText(), StatusMenuMarkup())
 	case "menu:diag":
-		b.editWithMarkup(chatID, msgID, "⏳ <b>Выполняется экспресс-диагностика всех прокси...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
+		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
 		go func() {
 			reports := b.getDiagnosticsReports(true)
 			if b.isRichMode() {
@@ -351,7 +388,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(1, totalPages))
 		}()
 	case "menu:diag:rich":
-		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование Rich-отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
+		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
 		go func() {
 			reports := b.getDiagnosticsReports(false)
 			rich := b.buildDiagnosticsRichMessage(reports)
@@ -360,9 +397,9 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:stats":
 		b.editWithMarkup(chatID, msgID, b.getStatsOverviewText(), StatsMenuMarkup())
 	case "menu:stats:incidents":
-		b.editWithMarkup(chatID, msgID, b.getIncidentsText(), BackToMenuMarkup())
+		b.editWithMarkup(chatID, msgID, b.getIncidentsText(), BackToSettingsMarkup())
 	case "menu:stats:top":
-		b.editWithMarkup(chatID, msgID, b.getTopProblematicText(), BackToMenuMarkup())
+		b.editWithMarkup(chatID, msgID, b.getTopProblematicText(), BackToSettingsMarkup())
 	case "menu:quiet":
 		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
 	case "menu:quiet:toggle":
@@ -395,8 +432,9 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			if !now.Before(next8) {
 				next8 = next8.Add(24 * time.Hour)
 			}
+			until := next8.Unix()
 			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.QuietSnoozeUntil = next8.Unix()
+				c.QuietSnoozeUntil = until
 			})
 		}
 		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
@@ -428,14 +466,42 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:interval":
 		b.editWithMarkup(chatID, msgID, b.getIntervalText(), IntervalMenuMarkup(b.getIntervalSec()))
 	case "menu:subs":
-		b.editWithMarkup(chatID, msgID, b.getSubsText(), BackToMenuMarkup())
+		b.editWithMarkup(chatID, msgID, b.getSubsText(), BackToSettingsMarkup())
 	case "menu:digest:now":
 		b.replyDigest(chatID)
 	case "menu:checkhost":
 		snapshot := b.source.MetricsSnapshot()
 		b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(), CheckHostMenuMarkup(snapshot))
 	default:
-		if strings.HasPrefix(cb.Data, "menu:diag:p:") {
+		if strings.HasPrefix(cb.Data, "menu:disabled_hosts:") {
+			pageStr := strings.TrimPrefix(cb.Data, "menu:disabled_hosts:")
+			page, _ := strconv.Atoi(pageStr)
+			if page <= 0 {
+				page = 1
+			}
+			text, markup := b.getDisabledHostsView(page)
+			b.editWithMarkup(chatID, msgID, text, markup)
+		} else if strings.HasPrefix(cb.Data, "menu:toggle_host:") {
+			rest := strings.TrimPrefix(cb.Data, "menu:toggle_host:")
+			parts := strings.Split(rest, ":")
+			if len(parts) >= 2 {
+				host := parts[0]
+				page, _ := strconv.Atoi(parts[1])
+				if page <= 0 {
+					page = 1
+				}
+				if b.configMgr != nil {
+					disabled, _ := b.configMgr.ToggleHost(host)
+					toast := fmt.Sprintf("🟢 Хост %s включён", host)
+					if disabled {
+						toast = fmt.Sprintf("⏸️ Хост %s выключен", host)
+					}
+					_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText(toast))
+				}
+				text, markup := b.getDisabledHostsView(page)
+				b.editWithMarkup(chatID, msgID, text, markup)
+			}
+		} else if strings.HasPrefix(cb.Data, "menu:diag:p:") {
 			pageStr := strings.TrimPrefix(cb.Data, "menu:diag:p:")
 			page, _ := strconv.Atoi(pageStr)
 			if page <= 0 {
@@ -447,7 +513,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		} else if strings.HasPrefix(cb.Data, "menu:diag:refresh:") {
 			arg := strings.TrimPrefix(cb.Data, "menu:diag:refresh:")
 			if arg == "rich" {
-				b.editWithMarkup(chatID, msgID, "⏳ <b>Обновление данных диагностики...</b>", BackToMenuMarkup())
+				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>", BackToMenuMarkup())
 				go func() {
 					reports := b.getDiagnosticsReports(true)
 					rich := b.buildDiagnosticsRichMessage(reports)
@@ -458,7 +524,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				if page <= 0 {
 					page = 1
 				}
-				b.editWithMarkup(chatID, msgID, "⏳ <b>Обновление данных диагностики...</b>", BackToMenuMarkup())
+				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>", BackToMenuMarkup())
 				go func() {
 					reports := b.getDiagnosticsReports(true)
 					pageText, totalPages := b.getDiagnosticsPageText(reports, page)
@@ -479,6 +545,66 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 }
 
 func (b *Bot) getMenuText() string {
+	snapshot := b.source.MetricsSnapshot()
+	online := 0
+	totalActive := 0
+	disabledCount := 0
+	var downProxies []string
+
+	for _, pm := range snapshot {
+		if pm.Disabled {
+			disabledCount++
+			continue
+		}
+		totalActive++
+		if pm.Online {
+			online++
+		} else {
+			downProxies = append(downProxies, pm.Name)
+		}
+	}
+
+	var statusLine string
+	if disabledCount > 0 {
+		statusLine = fmt.Sprintf("• Текущий статус: <b>%d/%d online</b> <i>(⏸️ %d отключено)</i>\n", online, totalActive, disabledCount)
+	} else {
+		statusLine = fmt.Sprintf("• Текущий статус: <b>%d/%d online</b>\n", online, len(snapshot))
+	}
+
+	nowStr := time.Now().Format("15:04:05 02.01.2006")
+	var uptimeStr string
+	if b.statsStore != nil {
+		uptimeStr = fmt.Sprintf("• Средний аптайм: <b>%.1f%%</b>\n", b.statsStore.GetUptimePercent(""))
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<b>📊 Сводка Xray Checker</b>\n\n")
+	sb.WriteString(statusLine)
+	sb.WriteString(fmt.Sprintf("• Время: <b>%s</b>\n", nowStr))
+	if uptimeStr != "" {
+		sb.WriteString(uptimeStr)
+	}
+
+	if len(downProxies) > 0 {
+		sb.WriteString("\n<b>🔴 Требуют внимания:</b>\n")
+		limit := 5
+		if len(downProxies) < limit {
+			limit = len(downProxies)
+		}
+		for i := 0; i < limit; i++ {
+			sb.WriteString(fmt.Sprintf("• %s\n", escapeHTML(downProxies[i])))
+		}
+		if len(downProxies) > limit {
+			sb.WriteString(fmt.Sprintf("<i>...и ещё %d оффлайн</i>\n", len(downProxies)-limit))
+		}
+	} else if totalActive > 0 {
+		sb.WriteString("\n🟢 <i>Все активные серверы доступны и работают стабильно.</i>\n")
+	}
+
+	return sb.String()
+}
+
+func (b *Bot) getSettingsText() string {
 	cfg := b.GetConfig()
 	modeName := "🔄 Live (редактирование)"
 	if cfg.AlertMode == AlertModeClean {
@@ -497,11 +623,84 @@ func (b *Bot) getMenuText() string {
 	intervalSec := b.getIntervalSec()
 	intervalStr := fmt.Sprintf("%d сек (%s)", intervalSec, FormatDowntime(time.Duration(intervalSec)*time.Second))
 
-	return fmt.Sprintf("<b>📱 Главное меню Xray Checker</b>\n\n"+
+	disabledCount := len(cfg.DisabledHosts) + len(cfg.DisabledProxies)
+
+	return fmt.Sprintf("<b>⚙️ Настройки Xray Checker</b>\n\n"+
 		"• Интервал проверок: <b>%s</b>\n"+
 		"• Режим алертов: <b>%s</b>\n"+
-		"• Тихий режим: <b>%s</b>\n\n"+
-		"Выберите нужный раздел с помощью кнопок ниже:", intervalStr, modeName, quietStatus)
+		"• Тихий режим: <b>%s</b>\n"+
+		"• Отключено хостов/нод: <b>%d</b>\n\n"+
+		"Выберите раздел настроек с помощью кнопок ниже:",
+		intervalStr, modeName, quietStatus, disabledCount)
+}
+
+func (b *Bot) getDisabledHostsView(page int) (string, *telego.InlineKeyboardMarkup) {
+	var allHosts []string
+	if b.diagSource != nil {
+		allHosts = b.diagSource.GetUniqueHosts()
+	}
+	cfg := b.GetConfig()
+	disabledMap := make(map[string]bool)
+	for _, h := range cfg.DisabledHosts {
+		disabledMap[strings.ToLower(h)] = true
+	}
+
+	pageSize := 6
+	totalHosts := len(allHosts)
+	totalPages := (totalHosts + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if end > totalHosts {
+		end = totalHosts
+	}
+
+	var pageHosts []string
+	if start < totalHosts {
+		pageHosts = allHosts[start:end]
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<b>🚫 Управление проверками хостов</b>\n\n")
+	sb.WriteString("Нажмите на хост, чтобы включить или отключить его проверку во всех подписках.\n")
+	sb.WriteString("Отключённые хосты не пингуются, не вызывают алертов и не влияют на статус.\n\n")
+	sb.WriteString(fmt.Sprintf("Всего обнаружено хостов: <b>%d</b> | Отключено: <b>%d</b>\n", totalHosts, len(cfg.DisabledHosts)))
+
+	markup := DisabledHostsMarkup(pageHosts, disabledMap, page, totalPages)
+	return sb.String(), markup
+}
+
+func (b *Bot) replySettings(chatID int64) {
+	b.sendWithMarkup(chatID, b.getSettingsText(), SettingsMenuMarkup())
+}
+
+func (b *Bot) handleToggleHostCommand(msg *telego.Message) {
+	arg := strings.TrimSpace(commandArg(msg.Text))
+	if arg == "" {
+		b.send(msg.Chat.ID, "❌ Укажите хост для переключения.\nПример: <code>/togglehost example.com</code>")
+		return
+	}
+	if b.configMgr != nil {
+		disabled, err := b.configMgr.ToggleHost(arg)
+		if err != nil {
+			b.send(msg.Chat.ID, fmt.Sprintf("❌ Ошибка сохранения конфигурации: %v", err))
+			return
+		}
+		if disabled {
+			b.send(msg.Chat.ID, fmt.Sprintf("⏸️ Проверка хоста <code>%s</code> <b>отключена</b> во всех подписках.", escapeHTML(arg)))
+		} else {
+			b.send(msg.Chat.ID, fmt.Sprintf("🟢 Проверка хоста <code>%s</code> <b>включена</b>.", escapeHTML(arg)))
+		}
+	}
 }
 
 func (b *Bot) handleIntervalCommand(msg *telego.Message) {
@@ -775,17 +974,22 @@ func (b *Bot) getDiagnosticsReports(force bool) []checker.ProxyDiagReport {
 }
 
 func formatSingleProxyDiag(sb *strings.Builder, rep checker.ProxyDiagReport) {
+	proto := strings.ToUpper(rep.Protocol)
+	if proto == "" {
+		proto = "PROXY"
+	}
+
+	if rep.Disabled || rep.Status == "disabled" {
+		fmt.Fprintf(sb, "⏸️ <b>%s</b> <i>(%s)</i> — <i>проверка отключена</i>\n\n", escapeHTML(rep.ProxyName), proto)
+		return
+	}
+
 	icon := "🟢"
 	switch rep.Status {
 	case "offline":
 		icon = "🔴"
 	case "degraded":
 		icon = "🟡"
-	}
-
-	proto := strings.ToUpper(rep.Protocol)
-	if proto == "" {
-		proto = "PROXY"
 	}
 
 	fmt.Fprintf(sb, "%s <b>%s</b> <i>(%s)</i>\n", icon, escapeHTML(rep.ProxyName), proto)
@@ -889,7 +1093,7 @@ func (b *Bot) getDiagnosticsPageText(reports []checker.ProxyDiagReport, page int
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("⚡ <b>Экспресс-диагностика</b> (Стр. %d из %d, всего %d прокси):\n\n", page, totalPages, len(reports)))
+	sb.WriteString(fmt.Sprintf("📋 <b>Детальный отчёт</b> (Стр. %d из %d, всего %d прокси):\n\n", page, totalPages, len(reports)))
 
 	for _, rep := range reports[start:end] {
 		formatSingleProxyDiag(&sb, rep)
@@ -908,7 +1112,7 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 
 	// 1. Heading
 	blocks = append(blocks, tu.RichBlockSectionHeading(
-		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("⚡ Результаты детальной диагностики (%d прокси)", len(reports)))),
+		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("📋 Результаты детального отчёта (%d прокси)", len(reports)))),
 		2,
 	))
 
@@ -938,6 +1142,9 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 			statusText = "🔴 Оффлайн"
 		case "degraded":
 			statusText = "🟡 Сбоит"
+		case "disabled":
+			statusText = "⏸️ Отключён"
+			latencyText = "—"
 		}
 
 		proto := strings.ToUpper(rep.Protocol)
@@ -960,7 +1167,7 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 	// 3. Collapsible details for degraded/offline proxies
 	hasProblems := false
 	for _, rep := range reports {
-		if rep.Status == "online" {
+		if rep.Status == "online" || rep.Status == "disabled" || rep.Disabled {
 			continue
 		}
 		hasProblems = true
@@ -1032,7 +1239,7 @@ func simplifyTargetName(targetURL string) string {
 }
 
 func (b *Bot) replyDiagnostics(chatID int64, arg string) {
-	sent, _ := b.sendAndReturn(chatID, "⏳ <b>Выполняется экспресс-диагностика всех прокси...</b>\nПожалуйста, подождите...")
+	sent, _ := b.sendAndReturn(chatID, "⏳ <b>Формирование детального отчёта...</b>\nПожалуйста, подождите несколько секунд...")
 	reports := b.getDiagnosticsReports(true)
 	msgID := 0
 	if sent != nil {
@@ -1056,7 +1263,12 @@ func (b *Bot) replyDiagnostics(chatID int64, arg string) {
 func (b *Bot) replyDigest(chatID int64) {
 	snapshot := b.source.MetricsSnapshot()
 	online := 0
+	totalActive := 0
 	for _, pm := range snapshot {
+		if pm.Disabled {
+			continue
+		}
+		totalActive++
 		if pm.Online {
 			online++
 		}
@@ -1064,7 +1276,7 @@ func (b *Bot) replyDigest(chatID int64) {
 
 	text := fmt.Sprintf("<b>📊 Сводка Xray Checker</b>\n\n"+
 		"• Текущий статус: <b>%d/%d online</b>\n"+
-		"• Время: <b>%s</b>\n", online, len(snapshot), time.Now().Format("15:04:05 02.01.2006"))
+		"• Время: <b>%s</b>\n", online, totalActive, time.Now().Format("15:04:05 02.01.2006"))
 
 	if b.statsStore != nil {
 		text += fmt.Sprintf("• Средний аптайм: <b>%.1f%%</b>\n", b.statsStore.GetUptimePercent(""))
@@ -1076,7 +1288,12 @@ func (b *Bot) replyDigest(chatID int64) {
 func (b *Bot) sendMorningDigest(now time.Time) {
 	snapshot := b.source.MetricsSnapshot()
 	online := 0
+	totalActive := 0
 	for _, pm := range snapshot {
+		if pm.Disabled {
+			continue
+		}
+		totalActive++
 		if pm.Online {
 			online++
 		}
@@ -1086,7 +1303,7 @@ func (b *Bot) sendMorningDigest(now time.Time) {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "<b>🌅 Утренняя сводка Xray Checker</b>\n\n"+
 		"• Статус прокси: <b>%d/%d online</b>\n"+
-		"• Время: <b>%s</b>\n\n", online, len(snapshot), now.Format("15:04"))
+		"• Время: <b>%s</b>\n\n", online, totalActive, now.Format("15:04"))
 
 	if len(events) == 0 {
 		sb.WriteString("🌙 <i>За ночь аварий не зафиксировано, все серверы работали стабильно.</i>")
@@ -1106,9 +1323,23 @@ func (b *Bot) sendMorningDigest(now time.Time) {
 }
 
 func (b *Bot) sendDaytimeDigest(now time.Time) {
+	if b.isRichMode() {
+		reports := b.getDiagnosticsReports(false)
+		rich := b.buildDiagnosticsRichMessage(reports)
+		for chatID := range b.allowedChatIDs {
+			b.showRichReport(chatID, 0, rich)
+		}
+		return
+	}
+
 	snapshot := b.source.MetricsSnapshot()
 	online := 0
+	totalActive := 0
 	for _, pm := range snapshot {
+		if pm.Disabled {
+			continue
+		}
+		totalActive++
 		if pm.Online {
 			online++
 		}
@@ -1116,7 +1347,7 @@ func (b *Bot) sendDaytimeDigest(now time.Time) {
 
 	text := fmt.Sprintf("<b>📊 Дневная сводка Xray Checker</b>\n\n"+
 		"• Доступность: <b>%d/%d онлайн</b>\n"+
-		"• Время: <b>%s</b>", online, len(snapshot), now.Format("15:04"))
+		"• Время: <b>%s</b>", online, totalActive, now.Format("15:04"))
 
 	b.broadcast(text)
 }
@@ -1125,7 +1356,8 @@ func (b *Bot) replyHelp(chatID int64) {
 	text := "<b>Xray Checker Bot</b>\n\n" +
 		"/menu — главное интерактивное меню\n" +
 		"/status — статус всех прокси\n" +
-		"/diag — экспресс-проверка по сайтам\n" +
+		"/diag — детальный отчёт\n" +
+		"/settings — настройки бота и отключение хостов\n" +
 		"/checkhost [хост[:порт]] — глобальная проверка через Check-Host.net\n" +
 		"/stats — статистика аптайма и инцидентов\n" +
 		"/interval [сек] — интервал проверок прокси\n" +
@@ -1153,6 +1385,9 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 
 	if !b.seeded {
 		for _, pm := range snapshot {
+			if pm.Disabled {
+				continue
+			}
 			b.lastSeen[pm.StableID] = pm.Online
 			if b.statsStore != nil {
 				b.statsStore.RecordCheck(pm.StableID, pm.Name, pm.Online, pm.LatencyMs)
@@ -1167,6 +1402,20 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 
 	seenNow := make(map[string]bool, len(snapshot))
 	for _, pm := range snapshot {
+		if pm.Disabled {
+			// Proxy is disabled: resolve/clean any active alerts and ignore
+			for _, chatID := range b.chatIDs {
+				if alert, hadAlert := b.tracker.Resolve(chatID, pm.StableID); hadAlert {
+					_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+						ChatID:    tu.ID(chatID),
+						MessageID: alert.MessageID,
+					})
+				}
+			}
+			delete(b.lastSeen, pm.StableID)
+			continue
+		}
+
 		seenNow[pm.StableID] = true
 
 		if b.statsStore != nil {
@@ -1195,6 +1444,9 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 			} else {
 				outageText := fmt.Sprintf("🔴 <b>%s</b> недоступен\n%s", escapeHTML(pm.Name), escapeHTML(pm.Address))
 				for _, chatID := range b.chatIDs {
+					if b.tracker.HasAlert(chatID, pm.StableID) {
+						continue
+					}
 					if sent, err := b.sendAndReturn(chatID, outageText); err == nil {
 						b.tracker.Track(chatID, sent.MessageID, pm.StableID, pm.Name, now, "Offline")
 					}
@@ -1229,9 +1481,9 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 								MessageID: alert.MessageID,
 							})
 						}
-						if b.notifyOnRecovery {
+						if b.notifyOnRecovery && hadAlert {
 							recoveryText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms", escapeHTML(pm.Name), pm.LatencyMs)
-							if hadAlert && downtime > 0 {
+							if downtime > 0 {
 								recoveryText += fmt.Sprintf(" (был оффлайн %s)", FormatDowntime(downtime))
 							}
 							if sent, err := b.sendAndReturn(chatID, recoveryText); err == nil {

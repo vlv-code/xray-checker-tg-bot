@@ -40,6 +40,7 @@ type ProxyMetric struct {
 	CustomLabels map[string]string
 	Online       bool
 	LatencyMs    float64
+	Disabled     bool
 }
 
 // MetricsSource supplies the current proxy snapshot to the Collector. The checker

@@ -273,9 +273,20 @@ func main() {
 				}
 			}
 
+			if botCfgMgr != nil {
+				proxyChecker.SetDisabledFilter(func(server, stableID string) bool {
+					return botCfgMgr.Get().IsDisabled(server, stableID)
+				})
+			}
+
 			statsStore, err := telegram.NewStatsStore(config.CLIConfig.Telegram.StatsStorePath)
 			if err != nil {
 				logger.Warn("Failed to initialize stats store: %v", err)
+			}
+
+			var alertTracker *telegram.AlertTracker
+			if config.CLIConfig.Telegram.AlertStorePath != "" {
+				alertTracker = telegram.NewAlertTracker(config.CLIConfig.Telegram.AlertStorePath)
 			}
 
 			if bot, err := telegram.New(
@@ -293,6 +304,9 @@ func main() {
 				}
 				if statsStore != nil {
 					bot.SetStatsStore(statsStore)
+				}
+				if alertTracker != nil {
+					bot.SetAlertTracker(alertTracker)
 				}
 				bot.SetDiagnosticsSource(proxyChecker)
 				bot.SetIntervalHandler(rescheduleChecks)
