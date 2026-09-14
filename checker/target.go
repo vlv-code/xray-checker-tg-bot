@@ -3,6 +3,7 @@ package checker
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"xray-checker/models"
@@ -31,6 +33,8 @@ type NodeHealth struct {
 	DNSLatency time.Duration `json:"dns_latency,omitempty"`
 	TCPPing    time.Duration `json:"tcp_ping,omitempty"`
 	TCPErr     string        `json:"tcp_err,omitempty"`
+	UDPPing    time.Duration `json:"udp_ping,omitempty"`
+	UDPErr     string        `json:"udp_err,omitempty"`
 	TLSErr     string        `json:"tls_err,omitempty"`
 	TLSLatency time.Duration `json:"tls_latency,omitempty"`
 }
@@ -237,9 +241,41 @@ func ProbeNodeHealth(server string, port int, protocol string, security string, 
 		targetIP = health.ResolvedIP
 	}
 
-	// For UDP-based protocols (Hysteria, Hysteria2, TUIC, Wireguard), raw TCP ping
-	// will always fail with Connection Refused or Timeout because the node does not listen on TCP.
+	// For UDP-based protocols (Hysteria, Hysteria2, TUIC, Wireguard), test UDP reachability
+	// directly since the node listens on UDP/QUIC rather than TCP.
 	if IsUDPProto(protocol) {
+		udpAddr := net.JoinHostPort(targetIP, fmt.Sprintf("%d", port))
+		udpStart := time.Now()
+		conn, err := net.DialTimeout("udp", udpAddr, 2500*time.Millisecond)
+		if err != nil {
+			health.UDPErr = simplifyError(err)
+			return health
+		}
+		defer conn.Close()
+
+		_ = conn.SetDeadline(time.Now().Add(1000 * time.Millisecond))
+		_, err = conn.Write([]byte{0x00})
+		if err != nil {
+			health.UDPErr = simplifyError(err)
+			return health
+		}
+
+		// Check if remote actively rejects via ICMP port unreachable or responds
+		buf := make([]byte, 512)
+		n, rErr := conn.Read(buf)
+		health.UDPPing = time.Since(udpStart)
+		if health.UDPPing == 0 {
+			health.UDPPing = time.Microsecond
+		}
+		if rErr != nil {
+			errMsg := strings.ToLower(rErr.Error())
+			if errors.Is(rErr, syscall.ECONNREFUSED) || strings.Contains(errMsg, "refused") {
+				health.UDPErr = "connection refused (ICMP unreachable)"
+				return health
+			}
+		} else if n > 0 {
+			health.UDPPing = time.Since(udpStart)
+		}
 		return health
 	}
 
@@ -316,6 +352,13 @@ func DetermineVerdict(proto string, health NodeHealth, targets []TargetDiagResul
 	// 3. If no targets succeeded, investigate the root cause using low-level probes:
 	if health.DNSErr != "" {
 		return "offline", fmt.Sprintf("Сбой DNS домена ноды (%s)", health.DNSErr)
+	}
+
+	if IsUDPProto(proto) && health.UDPErr != "" {
+		if strings.Contains(strings.ToLower(health.UDPErr), "refused") || strings.Contains(strings.ToLower(health.UDPErr), "unreachable") {
+			return "offline", "UDP-порт недоступен (ICMP Port Unreachable / сервис остановлен)"
+		}
+		return "offline", fmt.Sprintf("Сбой UDP подключения (%s)", health.UDPErr)
 	}
 
 	if !IsUDPProto(proto) && health.TCPErr != "" {
@@ -450,13 +493,19 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 			status, verdict := DetermineVerdict(proxy.Protocol, health, targetResults)
 
 			var checkHostSummary *CheckHostSummary
-			// Only run Check-Host if the node has connectivity issues AND it's a TCP protocol
-			if status == "offline" && proxy.Server != "" && proxy.Port > 0 && !IsUDPProto(proxy.Protocol) {
+			// Run Check-Host if the node has connectivity issues
+			if status == "offline" && proxy.Server != "" {
 				chClient := NewCheckHostClient("", 1500*time.Millisecond)
 				chCtx, chCancel := context.WithTimeout(context.Background(), 7*time.Second)
-				targetHost := fmt.Sprintf("%s:%d", proxy.Server, proxy.Port)
 				fastNodes := append(DefaultFastRUNodes, DefaultFastWorldNodes...)
-				chSummary, chErr := chClient.CheckTCP(chCtx, targetHost, fastNodes)
+				var chSummary *CheckHostSummary
+				var chErr error
+				if IsUDPProto(proxy.Protocol) {
+					chSummary, chErr = chClient.CheckPing(chCtx, proxy.Server, fastNodes)
+				} else if proxy.Port > 0 {
+					targetHost := fmt.Sprintf("%s:%d", proxy.Server, proxy.Port)
+					chSummary, chErr = chClient.CheckTCP(chCtx, targetHost, fastNodes)
+				}
 				chCancel()
 				if chErr == nil && chSummary != nil {
 					checkHostSummary = chSummary

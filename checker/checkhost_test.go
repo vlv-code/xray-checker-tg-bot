@@ -188,4 +188,3 @@ func TestCheckHostClient_CheckPing(t *testing.T) {
 		t.Errorf("expected WorldAvailable=true for de1 ping OK, got false")
 	}
 }
-

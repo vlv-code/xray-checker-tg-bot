@@ -31,16 +31,27 @@ var baseLabels = []string{"protocol", "address", "name", "sub_name", "stable_id"
 // instead of pushing into a fixed-label vector lets custom label keys appear and
 // disappear across subscription updates without resetting any other series to 0.
 type ProxyMetric struct {
-	Protocol     string
-	Address      string
-	Name         string
-	SubName      string
-	StableID     string
-	GroupName    string
-	CustomLabels map[string]string
-	Online       bool
-	LatencyMs    float64
-	Disabled     bool
+	Protocol           string
+	Address            string
+	Name               string
+	SubName            string
+	StableID           string
+	GroupName          string
+	Transport          string
+	Security           string
+	CustomLabels       map[string]string
+	Online             bool
+	CanConnect         bool
+	CanTransfer        bool
+	LatencyMs          float64
+	Disabled           bool
+	LastErrorCategory  int
+	LastErrorMsg       string
+	TLSHandshakeMs     int64
+	TTFBMs             int64
+	DirectProbeSuccess bool
+	DirectProbeRTTMs   int64
+	DirectProbeErr     string
 }
 
 // MetricsSource supplies the current proxy snapshot to the Collector. The checker

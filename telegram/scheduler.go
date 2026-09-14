@@ -58,6 +58,10 @@ func IsQuietTime(now time.Time, cfg BotConfig) bool {
 		return false
 	}
 
+	if cfg.Timezone != "" && !strings.EqualFold(cfg.Timezone, "local") {
+		now = now.In(cfg.Location())
+	}
+
 	startHour, startMin, err1 := parseTimeOfDay(cfg.QuietHoursStart)
 	endHour, endMin, err2 := parseTimeOfDay(cfg.QuietHoursEnd)
 	if err1 != nil || err2 != nil {

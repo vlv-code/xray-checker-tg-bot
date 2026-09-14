@@ -15,13 +15,13 @@ import (
 
 // CheckHostNodeResult holds individual node check results
 type CheckHostNodeResult struct {
-	Node     string        `json:"node"`
-	Country  string        `json:"country"`
-	City     string        `json:"city"`
-	IP       string        `json:"ip"`
-	Success  bool          `json:"success"`
-	Latency  time.Duration `json:"latency"`
-	Error    string        `json:"error"`
+	Node    string        `json:"node"`
+	Country string        `json:"country"`
+	City    string        `json:"city"`
+	IP      string        `json:"ip"`
+	Success bool          `json:"success"`
+	Latency time.Duration `json:"latency"`
+	Error   string        `json:"error"`
 }
 
 // CheckHostSummary contains the aggregate check result for a host
@@ -33,6 +33,48 @@ type CheckHostSummary struct {
 	RUAvailable    bool                  `json:"ru_available"`
 	WorldAvailable bool                  `json:"world_available"`
 	Verdict        string                `json:"verdict"`
+}
+
+// RUStats returns the total, successful, and average latency for RU nodes.
+func (s *CheckHostSummary) RUStats() (total int, success int, avgLatency time.Duration) {
+	if s == nil {
+		return 0, 0, 0
+	}
+	var latSum time.Duration
+	for _, r := range s.Results {
+		if strings.EqualFold(r.Country, "ru") {
+			total++
+			if r.Success {
+				success++
+				latSum += r.Latency
+			}
+		}
+	}
+	if success > 0 {
+		avgLatency = latSum / time.Duration(success)
+	}
+	return
+}
+
+// WorldStats returns the total, successful, and average latency for non-RU nodes.
+func (s *CheckHostSummary) WorldStats() (total int, success int, avgLatency time.Duration) {
+	if s == nil {
+		return 0, 0, 0
+	}
+	var latSum time.Duration
+	for _, r := range s.Results {
+		if !strings.EqualFold(r.Country, "ru") {
+			total++
+			if r.Success {
+				success++
+				latSum += r.Latency
+			}
+		}
+	}
+	if success > 0 {
+		avgLatency = latSum / time.Duration(success)
+	}
+	return
 }
 
 var (

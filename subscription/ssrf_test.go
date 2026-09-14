@@ -85,4 +85,3 @@ func TestIsEnvironmentProxy(t *testing.T) {
 		t.Errorf("attacker.com should not be recognized as environment proxy")
 	}
 }
-

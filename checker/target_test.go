@@ -201,3 +201,32 @@ func TestEnrichVerdictWithCheckHost(t *testing.T) {
 	}
 }
 
+func TestProbeNodeHealth_UDP(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen packet: %v", err)
+	}
+	defer pc.Close()
+
+	addr := pc.LocalAddr().(*net.UDPAddr)
+
+	// Echo listener
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, clientAddr, rErr := pc.ReadFrom(buf)
+			if rErr != nil {
+				return
+			}
+			_, _ = pc.WriteTo(buf[:n], clientAddr)
+		}
+	}()
+
+	health := ProbeNodeHealth("127.0.0.1", addr.Port, "hysteria2", "", "", false)
+	if health.UDPErr != "" {
+		t.Errorf("expected no UDP error for active UDP listener, got %s", health.UDPErr)
+	}
+	if health.UDPPing <= 0 {
+		t.Errorf("expected positive UDPPing, got %v", health.UDPPing)
+	}
+}

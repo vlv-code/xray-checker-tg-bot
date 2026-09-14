@@ -1,6 +1,7 @@
 package checker
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -247,3 +248,61 @@ func TestMetricsSnapshot_DisabledDynamic(t *testing.T) {
 	}
 }
 
+func TestProxyChecker_DiagnosticsSnapshot(t *testing.T) {
+	p1 := mkProxy("1.1.1.1", "Proxy1", "id1")
+	pc := NewProxyChecker([]*models.ProxyConfig{p1}, 10000, "", 5, "", "", 5, 1, "status", 0)
+
+	pc.results.Store(proxyMetricKey(p1), proxyResult{
+		status:             false,
+		latency:            150 * time.Millisecond,
+		lastCheck:          time.Now(),
+		canConnect:         true,
+		canTransfer:        false,
+		tlsHandshakeMs:     45,
+		ttfbMs:             120,
+		lastErrorCategory:  CatTimeout,
+		lastErrorMsg:       "context deadline exceeded",
+		directProbeSuccess: true,
+		directProbeRTTMs:   25,
+	})
+
+	snap := pc.MetricsSnapshot()
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 metric, got %d", len(snap))
+	}
+	m := snap[0]
+	if m.Online {
+		t.Errorf("expected Online=false")
+	}
+	if !m.CanConnect {
+		t.Errorf("expected CanConnect=true")
+	}
+	if m.CanTransfer {
+		t.Errorf("expected CanTransfer=false")
+	}
+	if m.LastErrorCategory != int(CatTimeout) {
+		t.Errorf("expected LastErrorCategory=%d, got %d", CatTimeout, m.LastErrorCategory)
+	}
+	if m.TLSHandshakeMs != 45 {
+		t.Errorf("expected TLSHandshakeMs=45, got %d", m.TLSHandshakeMs)
+	}
+	if m.TTFBMs != 120 {
+		t.Errorf("expected TTFBMs=120, got %d", m.TTFBMs)
+	}
+	if !m.DirectProbeSuccess || m.DirectProbeRTTMs != 25 {
+		t.Errorf("expected DirectProbeSuccess=true, RTT=25, got success=%v, rtt=%d", m.DirectProbeSuccess, m.DirectProbeRTTMs)
+	}
+}
+
+func TestDetermineVerdict_UDP(t *testing.T) {
+	health := NodeHealth{
+		UDPErr: "connection refused (ICMP unreachable)",
+	}
+	status, verdict := DetermineVerdict("hysteria2", health, nil)
+	if status != "offline" {
+		t.Errorf("expected offline for UDP refused, got %s", status)
+	}
+	if !strings.Contains(verdict, "UDP-порт недоступен") {
+		t.Errorf("expected UDP error verdict, got %s", verdict)
+	}
+}

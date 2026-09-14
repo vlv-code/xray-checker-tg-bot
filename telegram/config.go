@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
+	_ "time/tzdata"
 )
 
 const (
@@ -18,12 +20,12 @@ const (
 // and are persisted across restarts.
 type BotConfig struct {
 	QuietHoursEnabled      bool     `json:"quiet_hours_enabled"`
-	QuietHoursStart        string   `json:"quiet_hours_start"` // e.g. "23:00"
-	QuietHoursEnd          string   `json:"quiet_hours_end"`   // e.g. "08:00"
+	QuietHoursStart        string   `json:"quiet_hours_start"`  // e.g. "23:00"
+	QuietHoursEnd          string   `json:"quiet_hours_end"`    // e.g. "08:00"
 	QuietSnoozeUntil       int64    `json:"quiet_snooze_until"` // Unix timestamp
 	DayDigestEnabled       bool     `json:"day_digest_enabled"`
 	DayDigestIntervalHours int      `json:"day_digest_interval_hours"` // e.g. 6
-	AlertMode              string   `json:"alert_mode"` // AlertModeLive or AlertModeClean
+	AlertMode              string   `json:"alert_mode"`                // AlertModeLive or AlertModeClean
 	TargetURLs             []string `json:"target_urls"`
 	CheckIntervalSec       int      `json:"check_interval_sec,omitempty"`
 	RichMode               bool     `json:"rich_mode"`
@@ -32,6 +34,18 @@ type BotConfig struct {
 	CheckHostBgEnabled     bool     `json:"checkhost_bg_enabled"`
 	CheckHostIntervalHours int      `json:"checkhost_interval_hours"`
 	CheckHostAlertEnabled  bool     `json:"checkhost_alert_enabled"`
+	Timezone               string   `json:"timezone,omitempty"`
+}
+
+// Location returns the parsed *time.Location for the configured Timezone,
+// or time.Local if unset or unrecognized.
+func (c BotConfig) Location() *time.Location {
+	if c.Timezone != "" && strings.ToLower(c.Timezone) != "local" {
+		if loc, err := time.LoadLocation(c.Timezone); err == nil {
+			return loc
+		}
+	}
+	return time.Local
 }
 
 // IsHostDisabled checks if a server address/hostname is in the disabled list.
@@ -197,7 +211,6 @@ func (cm *ConfigManager) ToggleProxy(stableID string) (bool, error) {
 	})
 	return newState, err
 }
-
 
 // Update modifies the configuration atomically and persists to disk.
 func (cm *ConfigManager) Update(fn func(*BotConfig)) error {

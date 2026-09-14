@@ -108,3 +108,50 @@ func TestConfigManager_ToggleProxy(t *testing.T) {
 	}
 }
 
+func TestConfigManager_Timezone(t *testing.T) {
+	// 1. Default empty timezone -> Location() is not nil (falls back to time.Local)
+	cfg := BotConfig{}
+	if cfg.Location() == nil {
+		t.Fatalf("expected non-nil Location for empty timezone")
+	}
+
+	// 2. Specific timezone
+	cfg.Timezone = "Europe/Moscow"
+	loc := cfg.Location()
+	if loc.String() != "Europe/Moscow" {
+		t.Errorf("expected Europe/Moscow, got %s", loc.String())
+	}
+
+	// 3. Fallback for invalid timezone
+	cfg.Timezone = "Invalid/NonExistentZone_123"
+	locFallback := cfg.Location()
+	if locFallback == nil {
+		t.Errorf("expected fallback Location for invalid timezone")
+	}
+
+	// 4. Persistence test
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "bot_config.json")
+	cm, err := NewConfigManager(configPath, BotConfig{Timezone: "UTC"})
+	if err != nil {
+		t.Fatalf("NewConfigManager failed: %v", err)
+	}
+	if cm.Get().Timezone != "UTC" {
+		t.Errorf("expected UTC, got %s", cm.Get().Timezone)
+	}
+
+	err = cm.Update(func(c *BotConfig) {
+		c.Timezone = "Asia/Yekaterinburg"
+	})
+	if err != nil {
+		t.Fatalf("Update timezone failed: %v", err)
+	}
+
+	cm2, err := NewConfigManager(configPath, BotConfig{})
+	if err != nil {
+		t.Fatalf("Reload failed: %v", err)
+	}
+	if cm2.Get().Timezone != "Asia/Yekaterinburg" {
+		t.Errorf("expected Asia/Yekaterinburg after reload, got %s", cm2.Get().Timezone)
+	}
+}

@@ -2,6 +2,7 @@ package checker
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,10 +41,30 @@ type ProxyChecker struct {
 // in sync and no series to delete — the metrics collector simply reflects whatever
 // results exist for the current proxy set.
 type proxyResult struct {
-	status    bool
-	latency   time.Duration
-	lastCheck time.Time
-	disabled  bool
+	status             bool
+	latency            time.Duration
+	lastCheck          time.Time
+	disabled           bool
+	canConnect         bool
+	canTransfer        bool
+	tlsHandshakeMs     int64
+	ttfbMs             int64
+	lastErrorCategory  ErrorCategory
+	lastErrorMsg       string
+	directProbeSuccess bool
+	directProbeRTTMs   int64
+	directProbeErr     string
+}
+
+type checkOutcome struct {
+	success        bool
+	canConnect     bool
+	canTransfer    bool
+	logMessage     string
+	latency        time.Duration
+	tlsHandshakeMs int64
+	ttfbMs         int64
+	err            error
 }
 
 // SetDisabledFilter sets a predicate to check if a proxy or host is disabled from checking.
@@ -191,67 +212,152 @@ func (pc *ProxyChecker) checkProxyInternal(proxy *models.ProxyConfig) {
 		Timeout: time.Second * time.Duration(pc.ipCheckTimeout),
 	}
 
-	var checkSuccess bool
-	var checkErr error
-	var logMessage string
-	var latency time.Duration
-
+	var outcome checkOutcome
 	if pc.checkMethod == "ip" {
-		checkSuccess, logMessage, latency, checkErr = pc.checkByIP(client)
+		outcome = pc.checkByIP(client)
 	} else if pc.checkMethod == "status" {
-		checkSuccess, logMessage, latency, checkErr = pc.checkByGen(client)
+		outcome = pc.checkByGen(client)
 	} else if pc.checkMethod == "download" {
-		checkSuccess, logMessage, latency, checkErr = pc.checkByDownload(client)
+		outcome = pc.checkByDownload(client)
 	} else {
 		logger.Error("Invalid check method: %s", pc.checkMethod)
 		return
 	}
 
-	if checkErr != nil {
-		logger.Error("%s | %v", proxy.Name, checkErr)
-		setFailed()
+	if outcome.err != nil || !outcome.success {
+		if outcome.err != nil {
+			logger.Error("%s | %v", proxy.Name, outcome.err)
+		} else {
+			logger.Error("%s | Failed | %s | Latency: %s", proxy.Name, outcome.logMessage, outcome.latency)
+		}
 
-		return
-	}
+		var errCat ErrorCategory
+		var errMsg string
+		if outcome.err != nil {
+			errCat = ClassifyError(outcome.err, 0)
+			errMsg = outcome.err.Error()
+		} else {
+			errCat = ClassifyError(nil, 500)
+			errMsg = outcome.logMessage
+		}
 
-	if !checkSuccess {
-		logger.Error("%s | Failed | %s | Latency: %s", proxy.Name, logMessage, latency)
-		setFailed()
+		// Forced direct node probe to distinguish host network vs proxy service failure
+		health := ProbeNodeHealth(proxy.Server, proxy.Port, proxy.Protocol, proxy.Security, proxy.SNI, proxy.AllowInsecure)
+		var directSuccess bool
+		var directRTT int64
+		var directErr string
+		if IsUDPProto(proxy.Protocol) {
+			if health.UDPErr == "" && health.UDPPing > 0 {
+				directSuccess = true
+				directRTT = health.UDPPing.Milliseconds()
+			} else {
+				directErr = health.UDPErr
+			}
+		} else {
+			if health.TCPErr == "" && health.TCPPing > 0 {
+				directSuccess = true
+				directRTT = health.TCPPing.Milliseconds()
+			} else {
+				directErr = health.TCPErr
+			}
+		}
+
+		pc.results.Store(metricKey, proxyResult{
+			status:             false,
+			latency:            outcome.latency,
+			lastCheck:          time.Now(),
+			canConnect:         outcome.canConnect,
+			canTransfer:        outcome.canTransfer,
+			tlsHandshakeMs:     outcome.tlsHandshakeMs,
+			ttfbMs:             outcome.ttfbMs,
+			lastErrorCategory:  errCat,
+			lastErrorMsg:       errMsg,
+			directProbeSuccess: directSuccess,
+			directProbeRTTMs:   directRTT,
+			directProbeErr:     directErr,
+		})
 	} else {
-		logger.Result("%s | Success | %s | Latency: %s", proxy.Name, logMessage, latency)
-		storeResult(true, latency)
+		logger.Result("%s | Success | %s | Latency: %s", proxy.Name, outcome.logMessage, outcome.latency)
+		pc.results.Store(metricKey, proxyResult{
+			status:            true,
+			latency:           outcome.latency,
+			lastCheck:         time.Now(),
+			canConnect:        true,
+			canTransfer:       true,
+			tlsHandshakeMs:    outcome.tlsHandshakeMs,
+			ttfbMs:            outcome.ttfbMs,
+			lastErrorCategory: CatNone,
+		})
 	}
 }
 
-func (pc *ProxyChecker) checkByIP(client *http.Client) (bool, string, time.Duration, error) {
+func (pc *ProxyChecker) checkByIP(client *http.Client) checkOutcome {
 	req, err := http.NewRequest("GET", pc.ipCheck, nil)
 	if err != nil {
-		return false, "", 0, err
+		return checkOutcome{err: err}
 	}
 
-	var ttfb time.Duration
+	var tlsStart, tlsDone time.Time
+	var gotFirstByte time.Time
 	start := time.Now()
 	trace := &httptrace.ClientTrace{
+		TLSHandshakeStart: func() { tlsStart = time.Now() },
+		TLSHandshakeDone:  func(_ tls.ConnectionState, _ error) { tlsDone = time.Now() },
 		GotFirstResponseByte: func() {
-			ttfb = time.Since(start)
+			gotFirstByte = time.Now()
 		},
 	}
 	req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
 
 	resp, err := client.Do(req)
+	var tlsHandshakeMs, ttfbMs int64
+	if !tlsStart.IsZero() && !tlsDone.IsZero() {
+		tlsHandshakeMs = tlsDone.Sub(tlsStart).Milliseconds()
+	}
+	if !gotFirstByte.IsZero() {
+		ttfbMs = gotFirstByte.Sub(start).Milliseconds()
+	}
+
 	if err != nil {
-		return false, "", 0, err
+		canConnect := !tlsDone.IsZero() || !gotFirstByte.IsZero()
+		return checkOutcome{
+			canConnect:     canConnect,
+			canTransfer:    false,
+			tlsHandshakeMs: tlsHandshakeMs,
+			ttfbMs:         ttfbMs,
+			err:            err,
+		}
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, "", ttfb, err
+		return checkOutcome{
+			canConnect:     true,
+			canTransfer:    false,
+			latency:        time.Duration(ttfbMs) * time.Millisecond,
+			tlsHandshakeMs: tlsHandshakeMs,
+			ttfbMs:         ttfbMs,
+			err:            err,
+		}
 	}
 
 	proxyIP := string(body)
 	logMessage := fmt.Sprintf("Source IP: %s | Proxy IP: %s", pc.currentIP, proxyIP)
-	return proxyIP != pc.currentIP, logMessage, ttfb, nil
+	success := proxyIP != pc.currentIP
+	latency := time.Duration(ttfbMs) * time.Millisecond
+	if latency == 0 {
+		latency = time.Since(start)
+	}
+	return checkOutcome{
+		success:        success,
+		canConnect:     true,
+		canTransfer:    success,
+		logMessage:     logMessage,
+		latency:        latency,
+		tlsHandshakeMs: tlsHandshakeMs,
+		ttfbMs:         ttfbMs,
+	}
 }
 
 func (pc *ProxyChecker) SetTargetManager(tm *TargetManager) {
@@ -266,7 +372,7 @@ func (pc *ProxyChecker) GetTargetManager() *TargetManager {
 	return pc.targetManager
 }
 
-func (pc *ProxyChecker) checkByGen(client *http.Client) (bool, string, time.Duration, error) {
+func (pc *ProxyChecker) checkByGen(client *http.Client) checkOutcome {
 	targets := []string{pc.genMethodURL}
 	if tm := pc.GetTargetManager(); tm != nil {
 		configured := tm.GetTargets()
@@ -275,61 +381,103 @@ func (pc *ProxyChecker) checkByGen(client *http.Client) (bool, string, time.Dura
 		}
 	}
 
-	var lastErr error
+	var lastOutcome checkOutcome
 	for _, targetURL := range targets {
 		req, err := http.NewRequest("GET", targetURL, nil)
 		if err != nil {
-			lastErr = err
+			lastOutcome = checkOutcome{err: err}
 			continue
 		}
 
-		var ttfb time.Duration
+		var tlsStart, tlsDone time.Time
+		var gotFirstByte time.Time
 		start := time.Now()
 		trace := &httptrace.ClientTrace{
+			TLSHandshakeStart: func() { tlsStart = time.Now() },
+			TLSHandshakeDone:  func(_ tls.ConnectionState, _ error) { tlsDone = time.Now() },
 			GotFirstResponseByte: func() {
-				ttfb = time.Since(start)
+				gotFirstByte = time.Now()
 			},
 		}
 		req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
 
 		resp, err := client.Do(req)
+		var tlsHandshakeMs, ttfbMs int64
+		if !tlsStart.IsZero() && !tlsDone.IsZero() {
+			tlsHandshakeMs = tlsDone.Sub(tlsStart).Milliseconds()
+		}
+		if !gotFirstByte.IsZero() {
+			ttfbMs = gotFirstByte.Sub(start).Milliseconds()
+		}
+
 		if err != nil {
-			lastErr = err
+			canConnect := !tlsDone.IsZero() || !gotFirstByte.IsZero()
+			lastOutcome = checkOutcome{
+				canConnect:     canConnect,
+				canTransfer:    false,
+				tlsHandshakeMs: tlsHandshakeMs,
+				ttfbMs:         ttfbMs,
+				err:            err,
+			}
 			continue
 		}
 
 		status := resp.StatusCode
 		resp.Body.Close()
 
-		if ttfb == 0 {
-			ttfb = time.Since(start)
+		latency := time.Duration(ttfbMs) * time.Millisecond
+		if latency == 0 {
+			latency = time.Since(start)
 		}
 
 		if status >= 200 && status < 400 {
 			logMessage := fmt.Sprintf("Status: %d via %s", status, targetURL)
-			return true, logMessage, ttfb, nil
+			return checkOutcome{
+				success:        true,
+				canConnect:     true,
+				canTransfer:    true,
+				logMessage:     logMessage,
+				latency:        latency,
+				tlsHandshakeMs: tlsHandshakeMs,
+				ttfbMs:         ttfbMs,
+			}
 		}
-		lastErr = fmt.Errorf("HTTP %d from %s", status, targetURL)
+		lastOutcome = checkOutcome{
+			success:        false,
+			canConnect:     true,
+			canTransfer:    false,
+			logMessage:     fmt.Sprintf("HTTP %d from %s", status, targetURL),
+			latency:        latency,
+			tlsHandshakeMs: tlsHandshakeMs,
+			ttfbMs:         ttfbMs,
+			err:            fmt.Errorf("HTTP %d from %s", status, targetURL),
+		}
 	}
 
-	return false, "", 0, lastErr
+	return lastOutcome
 }
 
-func (pc *ProxyChecker) checkByDownload(client *http.Client) (bool, string, time.Duration, error) {
+func (pc *ProxyChecker) checkByDownload(client *http.Client) checkOutcome {
 	if pc.downloadURL == "" {
-		return false, "Download URL not configured", 0, fmt.Errorf("download URL not configured")
+		return checkOutcome{
+			logMessage: "Download URL not configured",
+			err:        fmt.Errorf("download URL not configured"),
+		}
 	}
 
 	req, err := http.NewRequest("GET", pc.downloadURL, nil)
 	if err != nil {
-		return false, "", 0, err
+		return checkOutcome{err: err}
 	}
 
-	var ttfb time.Duration
+	var tlsStart, tlsDone time.Time
+	var gotFirstByte time.Time
 	start := time.Now()
 	trace := &httptrace.ClientTrace{
+		TLSHandshakeStart: func() { tlsStart = time.Now() },
+		TLSHandshakeDone:  func(_ tls.ConnectionState, _ error) { tlsDone = time.Now() },
 		GotFirstResponseByte: func() {
-			ttfb = time.Since(start)
+			gotFirstByte = time.Now()
 		},
 	}
 	req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
@@ -340,13 +488,36 @@ func (pc *ProxyChecker) checkByDownload(client *http.Client) (bool, string, time
 	}
 
 	resp, err := downloadClient.Do(req)
+	var tlsHandshakeMs, ttfbMs int64
+	if !tlsStart.IsZero() && !tlsDone.IsZero() {
+		tlsHandshakeMs = tlsDone.Sub(tlsStart).Milliseconds()
+	}
+	if !gotFirstByte.IsZero() {
+		ttfbMs = gotFirstByte.Sub(start).Milliseconds()
+	}
+
 	if err != nil {
-		return false, "", 0, err
+		canConnect := !tlsDone.IsZero() || !gotFirstByte.IsZero()
+		return checkOutcome{
+			canConnect:     canConnect,
+			canTransfer:    false,
+			tlsHandshakeMs: tlsHandshakeMs,
+			ttfbMs:         ttfbMs,
+			err:            err,
+		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return false, fmt.Sprintf("HTTP status: %d", resp.StatusCode), ttfb, nil
+		return checkOutcome{
+			canConnect:     true,
+			canTransfer:    false,
+			logMessage:     fmt.Sprintf("HTTP status: %d", resp.StatusCode),
+			latency:        time.Duration(ttfbMs) * time.Millisecond,
+			tlsHandshakeMs: tlsHandshakeMs,
+			ttfbMs:         ttfbMs,
+			err:            fmt.Errorf("HTTP status: %d", resp.StatusCode),
+		}
 	}
 
 	totalBytes := int64(0)
@@ -366,14 +537,34 @@ func (pc *ProxyChecker) checkByDownload(client *http.Client) (bool, string, time
 			break
 		}
 		if err != nil {
-			return false, fmt.Sprintf("Download error after %d bytes: %v", totalBytes, err), ttfb, nil
+			return checkOutcome{
+				canConnect:     true,
+				canTransfer:    false,
+				logMessage:     fmt.Sprintf("Download error after %d bytes: %v", totalBytes, err),
+				latency:        time.Duration(ttfbMs) * time.Millisecond,
+				tlsHandshakeMs: tlsHandshakeMs,
+				ttfbMs:         ttfbMs,
+				err:            err,
+			}
 		}
 	}
 
 	success := totalBytes >= pc.downloadMinSize
 	logMessage := fmt.Sprintf("Downloaded: %d bytes (min: %d)", totalBytes, pc.downloadMinSize)
+	latency := time.Duration(ttfbMs) * time.Millisecond
+	if latency == 0 {
+		latency = time.Since(start)
+	}
 
-	return success, logMessage, ttfb, nil
+	return checkOutcome{
+		success:        success,
+		canConnect:     true,
+		canTransfer:    success,
+		logMessage:     logMessage,
+		latency:        latency,
+		tlsHandshakeMs: tlsHandshakeMs,
+		ttfbMs:         ttfbMs,
+	}
 }
 
 // UpdateProxies swaps in a new proxy set. Metrics are rendered from the current
@@ -437,16 +628,27 @@ func (pc *ProxyChecker) MetricsSnapshot() []metrics.ProxyMetric {
 			disabled = pc.IsProxyDisabled(proxy)
 		}
 		out = append(out, metrics.ProxyMetric{
-			Protocol:     key.protocol,
-			Address:      key.address,
-			Name:         key.name,
-			SubName:      key.subName,
-			StableID:     key.stableID,
-			GroupName:    key.groupName,
-			CustomLabels: proxy.MetricsLabels,
-			Online:       r.status,
-			LatencyMs:    float64(r.latency.Milliseconds()),
-			Disabled:     disabled,
+			Protocol:           key.protocol,
+			Address:            key.address,
+			Name:               key.name,
+			SubName:            key.subName,
+			StableID:           key.stableID,
+			GroupName:          key.groupName,
+			Transport:          proxy.GetTransportType(),
+			Security:           proxy.GetSecurityType(),
+			CustomLabels:       proxy.MetricsLabels,
+			Online:             r.status,
+			CanConnect:         r.canConnect,
+			CanTransfer:        r.canTransfer,
+			LatencyMs:          float64(r.latency.Milliseconds()),
+			Disabled:           disabled,
+			LastErrorCategory:  int(r.lastErrorCategory),
+			LastErrorMsg:       r.lastErrorMsg,
+			TLSHandshakeMs:     r.tlsHandshakeMs,
+			TTFBMs:             r.ttfbMs,
+			DirectProbeSuccess: r.directProbeSuccess,
+			DirectProbeRTTMs:   r.directProbeRTTMs,
+			DirectProbeErr:     r.directProbeErr,
 		})
 	}
 	return out

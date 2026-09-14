@@ -68,14 +68,20 @@ func InitializeConfiguration(configFile string, version string, urls []string) (
 }
 
 func ReadFromMultipleSources(urls []string) ([]*models.ProxyConfig, error) {
+	configs, _, err := ReadFromMultipleSourcesDetailed(urls)
+	return configs, err
+}
+
+func ReadFromMultipleSourcesDetailed(urls []string) ([]*models.ProxyConfig, map[string]int, error) {
 	if len(urls) == 0 {
-		return nil, fmt.Errorf("no subscription URLs provided")
+		return nil, nil, fmt.Errorf("no subscription URLs provided")
 	}
 
+	counts := make(map[string]int)
 	if len(urls) == 1 {
 		configs, name, err := ReadFromSource(urls[0])
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, cfg := range configs {
 			cfg.SubName = name
@@ -83,7 +89,8 @@ func ReadFromMultipleSources(urls []string) ([]*models.ProxyConfig, error) {
 		if name != "" {
 			SetSubscriptionName(name)
 		}
-		return configs, nil
+		counts[urls[0]] = len(configs)
+		return configs, counts, nil
 	}
 
 	logger.Debug("Fetching %d subscriptions in parallel", len(urls))
@@ -126,6 +133,7 @@ func ReadFromMultipleSources(urls []string) ([]*models.ProxyConfig, error) {
 			continue
 		}
 		logger.Debug("Fetched %d proxies from %s (name: %s)", len(result.Configs), result.URL, result.Name)
+		counts[url] = len(result.Configs)
 		allConfigs = append(allConfigs, result.Configs...)
 		if firstName == "" && result.Name != "" {
 			firstName = result.Name
@@ -134,7 +142,7 @@ func ReadFromMultipleSources(urls []string) ([]*models.ProxyConfig, error) {
 	}
 
 	if successCount == 0 {
-		return nil, fmt.Errorf("failed to fetch any subscription: %v", errors)
+		return nil, nil, fmt.Errorf("failed to fetch any subscription: %v", errors)
 	}
 
 	if firstName != "" {
@@ -146,7 +154,7 @@ func ReadFromMultipleSources(urls []string) ([]*models.ProxyConfig, error) {
 	}
 
 	logger.Debug("Total: %d proxies from %d/%d subscriptions", len(allConfigs), successCount, len(urls))
-	return allConfigs, nil
+	return allConfigs, counts, nil
 }
 
 func ReadFromSource(source string) ([]*models.ProxyConfig, string, error) {

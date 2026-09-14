@@ -51,6 +51,18 @@ func TestIsQuietTime(t *testing.T) {
 	if !IsQuietTime(t5, cfgDisabled) {
 		t.Errorf("expected 14:00 to be quiet due to snooze")
 	}
+
+	// 7. Timezone conversion: UTC 18:30 is 23:30 in Asia/Yekaterinburg (UTC+5)
+	cfgTz := BotConfig{
+		QuietHoursEnabled: true,
+		QuietHoursStart:   "23:00",
+		QuietHoursEnd:     "08:00",
+		Timezone:          "Asia/Yekaterinburg",
+	}
+	tUtc := time.Date(2026, 9, 11, 18, 30, 0, 0, time.UTC)
+	if !IsQuietTime(tUtc, cfgTz) {
+		t.Errorf("expected 18:30 UTC to be quiet in Asia/Yekaterinburg (23:30 YEKT)")
+	}
 }
 
 func TestEventBuffer(t *testing.T) {

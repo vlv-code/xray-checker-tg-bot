@@ -172,5 +172,28 @@ func TestBot_SendOrUpdateMenu_TracksLastMessage(t *testing.T) {
 	}
 }
 
+func TestBot_TimezoneDisplay(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "cfg.json")
+	cm, err := NewConfigManager(cfgPath, BotConfig{Timezone: "Asia/Yekaterinburg"})
+	if err != nil {
+		t.Fatalf("NewConfigManager failed: %v", err)
+	}
 
+	b := &Bot{
+		configMgr: cm,
+	}
 
+	loc := b.loc()
+	if loc.String() != "Asia/Yekaterinburg" {
+		t.Errorf("expected b.loc() to be Asia/Yekaterinburg, got %s", loc.String())
+	}
+
+	tzText := b.getTimezoneText()
+	if !strings.Contains(tzText, "Asia/Yekaterinburg") {
+		t.Errorf("expected tzText to contain Asia/Yekaterinburg, got:\n%s", tzText)
+	}
+	if !strings.Contains(tzText, "UTC+5") {
+		t.Errorf("expected tzText to contain UTC+5, got:\n%s", tzText)
+	}
+}

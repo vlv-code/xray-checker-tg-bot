@@ -3,9 +3,19 @@ package telegram
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mymmrac/telego"
 )
+
+// SubFreshness holds update metadata for a subscription URL.
+type SubFreshness struct {
+	LastUpdate time.Time
+	Count      int
+	PrevCount  int
+	Added      int
+	Removed    int
+}
 
 // SubscriptionManager lets the bot inspect and change the set of subscription
 // URLs the checker fetches from. It's implemented in main, wrapping a

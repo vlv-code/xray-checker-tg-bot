@@ -1687,4 +1687,3 @@ func newSafeTransport() *http.Transport {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 }
-

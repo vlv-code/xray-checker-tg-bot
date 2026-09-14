@@ -75,6 +75,11 @@ type Bot struct {
 
 	lastMenuMu  sync.Mutex
 	lastMenuMsg map[int64]int
+
+	freshMu      sync.RWMutex
+	subFreshness map[string]SubFreshness
+
+	nowFunc func() time.Time
 }
 
 // New creates a Bot and verifies the token against the Telegram API.
@@ -117,6 +122,7 @@ func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRe
 		eventBuffer:      NewEventBuffer(),
 		lastSeen:         make(map[string]bool),
 		lastMenuMsg:      make(map[int64]int),
+		subFreshness:     make(map[string]SubFreshness),
 		stopChan:         make(chan struct{}),
 	}, nil
 }
@@ -129,6 +135,33 @@ func (b *Bot) SetConfigManager(cm *ConfigManager) {
 // SetStatsStore attaches outage statistics tracking.
 func (b *Bot) SetStatsStore(ss *StatsStore) {
 	b.statsStore = ss
+}
+
+// SetSubFreshness records metadata for a subscription URL.
+func (b *Bot) SetSubFreshness(url string, count, prevCount, added, removed int, t time.Time) {
+	b.freshMu.Lock()
+	defer b.freshMu.Unlock()
+	if b.subFreshness == nil {
+		b.subFreshness = make(map[string]SubFreshness)
+	}
+	b.subFreshness[url] = SubFreshness{
+		LastUpdate: t,
+		Count:      count,
+		PrevCount:  prevCount,
+		Added:      added,
+		Removed:    removed,
+	}
+}
+
+// GetSubFreshness retrieves freshness info for a subscription URL.
+func (b *Bot) GetSubFreshness(url string) (SubFreshness, bool) {
+	b.freshMu.RLock()
+	defer b.freshMu.RUnlock()
+	if b.subFreshness == nil {
+		return SubFreshness{}, false
+	}
+	sf, ok := b.subFreshness[url]
+	return sf, ok
 }
 
 // SetDiagnosticsSource attaches multi-target diagnostic capability.
@@ -356,6 +389,8 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		b.replyQuiet(msg.Chat.ID)
 	case strings.HasPrefix(msg.Text, "/targets"):
 		b.replyTargets(msg.Chat.ID)
+	case strings.HasPrefix(msg.Text, "/tz"), strings.HasPrefix(msg.Text, "/timezone"):
+		b.handleTimezoneCommand(msg)
 	case strings.HasPrefix(msg.Text, "/interval"):
 		b.handleIntervalCommand(msg)
 	case strings.HasPrefix(msg.Text, "/checkhost_bg"):
@@ -433,7 +468,8 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				return
 			}
 			pageText, totalPages := b.getDiagnosticsPageText(reports, 1)
-			b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(1, totalPages))
+			deepLinks := getDeepLinksForPage(reports, 1)
+			b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(1, totalPages, deepLinks...))
 		}()
 	case "menu:diag:rich":
 		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
@@ -445,9 +481,15 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:stats":
 		b.editWithMarkup(chatID, msgID, b.getStatsOverviewText(), StatsMenuMarkup())
 	case "menu:stats:incidents":
-		b.editWithMarkup(chatID, msgID, b.getIncidentsText(), BackToSettingsMarkup())
+		b.editWithMarkup(chatID, msgID, b.getIncidentsText(), BackToStatsMarkup())
 	case "menu:stats:top":
-		b.editWithMarkup(chatID, msgID, b.getTopProblematicText(), BackToSettingsMarkup())
+		b.editWithMarkup(chatID, msgID, b.getTopProblematicText(), BackToStatsMarkup())
+	case "menu:stats:protocols":
+		b.editWithMarkup(chatID, msgID, b.getProtocolsStatsText(), BackToStatsMarkup())
+	case "menu:stats:heatmap":
+		b.editWithMarkup(chatID, msgID, b.getHeatmapText(), BackToStatsMarkup())
+	case "menu:timezone":
+		b.editWithMarkup(chatID, msgID, b.getTimezoneText(), TimezoneMarkup(b.GetConfig().Timezone))
 	case "menu:quiet":
 		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
 	case "menu:quiet:toggle":
@@ -479,8 +521,8 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			if err != nil {
 				endHour, endMin = 8, 0
 			}
-			now := time.Now()
-			nextMorning := time.Date(now.Year(), now.Month(), now.Day(), endHour, endMin, 0, 0, now.Location())
+			now := b.now()
+			nextMorning := time.Date(now.Year(), now.Month(), now.Day(), endHour, endMin, 0, 0, b.loc())
 			if !now.Before(nextMorning) {
 				nextMorning = nextMorning.Add(24 * time.Hour)
 			}
@@ -544,7 +586,15 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🚀 Запуск фоновой проверки Check-Host..."))
 		go b.RunCheckHostAudit()
 	default:
-		if strings.HasPrefix(cb.Data, "menu:checkhost:int:") {
+		if strings.HasPrefix(cb.Data, "menu:tz:") {
+			tz := strings.TrimPrefix(cb.Data, "menu:tz:")
+			if b.configMgr != nil {
+				_ = b.configMgr.Update(func(c *BotConfig) {
+					c.Timezone = tz
+				})
+			}
+			b.editWithMarkup(chatID, msgID, b.getTimezoneText(), TimezoneMarkup(b.GetConfig().Timezone))
+		} else if strings.HasPrefix(cb.Data, "menu:checkhost:int:") {
 			intStr := strings.TrimPrefix(cb.Data, "menu:checkhost:int:")
 			if hours, err := strconv.Atoi(intStr); err == nil && hours > 0 {
 				if b.configMgr != nil {
@@ -621,7 +671,11 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			}
 			reports := b.getDiagnosticsReports(false)
 			pageText, totalPages := b.getDiagnosticsPageText(reports, page)
-			b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages))
+			deepLinks := getDeepLinksForPage(reports, page)
+			b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages, deepLinks...))
+		} else if strings.HasPrefix(cb.Data, "menu:diag:deep:") {
+			stableID := strings.TrimPrefix(cb.Data, "menu:diag:deep:")
+			b.handleDeepDiagnostics(chatID, msgID, stableID)
 		} else if strings.HasPrefix(cb.Data, "menu:diag:refresh:") {
 			arg := strings.TrimPrefix(cb.Data, "menu:diag:refresh:")
 			if arg == "rich" {
@@ -640,7 +694,8 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				go func() {
 					reports := b.getDiagnosticsReports(true)
 					pageText, totalPages := b.getDiagnosticsPageText(reports, page)
-					b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages))
+					deepLinks := getDeepLinksForPage(reports, page)
+					b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages, deepLinks...))
 				}()
 			}
 		} else if strings.HasPrefix(cb.Data, "menu:checkhost:run:") {
@@ -691,7 +746,7 @@ func (b *Bot) getMenuText() string {
 		statusLine = fmt.Sprintf("• Текущий статус: <b>%d/%d онлайн</b>\n", online, len(snapshot))
 	}
 
-	nowStr := time.Now().Format("15:04:05 02.01.2006")
+	nowStr := b.now().Format("15:04:05 02.01.2006")
 	var uptimeStr string
 	if avg, ok := b.getAverageUptimePercent(); ok {
 		uptimeStr = fmt.Sprintf("• Средний аптайм: <b>%.1f%%</b>\n", avg)
@@ -1112,35 +1167,318 @@ func (b *Bot) getStatsOverviewText() string {
 		return "Статистика недоступна."
 	}
 
-	snapshot := b.source.MetricsSnapshot()
+	var snapshot []metrics.ProxyMetric
+	if b.source != nil {
+		snapshot = b.source.MetricsSnapshot()
+	}
 	totalProxies := len(snapshot)
+	now := b.now()
 
-	var totalUptime float64
+	activeIDs := make([]string, 0, totalProxies)
 	for _, pm := range snapshot {
-		totalUptime += b.statsStore.GetUptimePercent(pm.StableID)
+		if !pm.Disabled {
+			activeIDs = append(activeIDs, pm.StableID)
+		}
 	}
-	avgUptime := 100.0
-	if totalProxies > 0 {
-		avgUptime = totalUptime / float64(totalProxies)
+	var uptime24h float64 = 100.0
+	var avg7d float64 = 100.0
+	if b.statsStore != nil && b.statsStore.GetRollingStats() != nil {
+		uptime24h = b.statsStore.GetRollingStats().UptimePercent24hAll(now, activeIDs)
+		var total7d float64
+		for _, id := range activeIDs {
+			total7d += b.statsStore.GetRollingStats().UptimePercent7d(id, now)
+		}
+		if len(activeIDs) > 0 {
+			avg7d = total7d / float64(len(activeIDs))
+		}
 	}
+
+	var sb strings.Builder
+	sb.WriteString("<b>📈 Статистика аптайма</b>\n\n")
+	fmt.Fprintf(&sb, "• Прокси-хостов в мониторинге: <b>%d</b>\n", totalProxies)
+	fmt.Fprintf(&sb, "• Средний аптайм: <b>24ч: %.1f%%</b> (7д: %.1f%%)\n", uptime24h, avg7d)
 
 	incidents := b.statsStore.GetRecentIncidents(1)
-	lastIncidentText := "Нет зарегистрированных инцидентов"
 	if len(incidents) > 0 {
 		inc := incidents[0]
-		downTime := time.Unix(inc.DownAt, 0).Format("15:04 02.01")
+		downTime := time.Unix(inc.DownAt, 0).In(b.loc()).Format("15:04 02.01")
 		durText := "ещё не восстановлен"
 		if inc.UpAt > 0 {
 			durText = FormatDowntime(time.Duration(inc.DurationSec) * time.Second)
 		}
-		lastIncidentText = fmt.Sprintf("%s: %s (простой: %s)", escapeHTML(inc.ProxyName), downTime, durText)
+		fmt.Fprintf(&sb, "• Последний инцидент: <i>%s: %s (простой: %s)</i>\n", escapeHTML(inc.ProxyName), downTime, durText)
 	}
 
-	return fmt.Sprintf("<b>📈 Статистика аптайма</b>\n\n"+
-		"• Прокси-хостов в мониторинге: <b>%d</b>\n"+
-		"• Средний аптайм пула: <b>%.1f%%</b>\n"+
-		"• Последний инцидент: <i>%s</i>\n\n"+
-		"Выберите детализацию:", totalProxies, avgUptime, lastIncidentText)
+	// Top unstable (flapping / drops in 24h)
+	type proxyFlap struct {
+		name      string
+		flaps     int
+		uptime24h float64
+	}
+	var flapsList []proxyFlap
+	for _, pm := range snapshot {
+		if pm.Disabled {
+			continue
+		}
+		flaps := b.statsStore.GetFlapCount24h(pm.StableID, now)
+		if flaps > 0 {
+			u := 100.0
+			if b.statsStore.GetRollingStats() != nil {
+				u = b.statsStore.GetRollingStats().UptimePercent24h(pm.StableID, now)
+			}
+			flapsList = append(flapsList, proxyFlap{
+				name:      pm.Name,
+				flaps:     flaps,
+				uptime24h: u,
+			})
+		}
+	}
+	sort.Slice(flapsList, func(i, j int) bool {
+		return flapsList[i].flaps > flapsList[j].flaps
+	})
+
+	if len(flapsList) > 0 {
+		sb.WriteString("\n🔝 <b>Топ нестабильных (переходов за 24ч):</b>\n")
+		showCount := 3
+		if len(flapsList) < showCount {
+			showCount = len(flapsList)
+		}
+		for i := 0; i < showCount; i++ {
+			f := flapsList[i]
+			fmt.Fprintf(&sb, "  %d. %s — %d переходов, %.1f%% аптайм\n", i+1, escapeHTML(f.name), f.flaps, f.uptime24h)
+		}
+	}
+
+	// Monospace table for proxies (up to 15)
+	if totalProxies > 0 {
+		sb.WriteString("\n<pre>")
+		sb.WriteString(fmt.Sprintf("%-11s %5s %5s %5s %5s %4s %4s\n", "ПРОКСИ", "24Ч", "7Д", "P50", "P95", "Σ", "ПАД."))
+
+		sortedSnap := make([]metrics.ProxyMetric, len(snapshot))
+		copy(sortedSnap, snapshot)
+		sort.Slice(sortedSnap, func(i, j int) bool {
+			flapsI := b.statsStore.GetFlapCount24h(sortedSnap[i].StableID, now)
+			flapsJ := b.statsStore.GetFlapCount24h(sortedSnap[j].StableID, now)
+			if flapsI != flapsJ {
+				return flapsI > flapsJ
+			}
+			return sortedSnap[i].Name < sortedSnap[j].Name
+		})
+
+		maxRows := 15
+		if len(sortedSnap) < maxRows {
+			maxRows = len(sortedSnap)
+		}
+		for i := 0; i < maxRows; i++ {
+			pm := sortedSnap[i]
+			pName := pm.Name
+			if len(pName) > 11 {
+				pName = pName[:10] + "…"
+			}
+			var u24, u7d float64 = 100.0, 100.0
+			if b.statsStore.GetRollingStats() != nil {
+				u24 = b.statsStore.GetRollingStats().UptimePercent24h(pm.StableID, now)
+				u7d = b.statsStore.GetRollingStats().UptimePercent7d(pm.StableID, now)
+			}
+			ls := b.statsStore.GetLatencySamples(pm.StableID)
+			p50 := ls.Percentile(0.50)
+			p95 := ls.Percentile(0.95)
+			jitter := ls.StdDev()
+			flaps := b.statsStore.GetFlapCount24h(pm.StableID, now)
+
+			p50Str := fmt.Sprintf("%.0fms", p50)
+			p95Str := fmt.Sprintf("%.0fms", p95)
+			if ls.Count() < 5 {
+				p50Str = "-"
+				p95Str = "-"
+			}
+			flapWarning := ""
+			if flaps > 10 {
+				flapWarning = "⚠️"
+			}
+			sb.WriteString(fmt.Sprintf("%-11s %4.1f%% %4.1f%% %5s %5s %4.0f %3d%s\n",
+				pName, u24, u7d, p50Str, p95Str, jitter, flaps, flapWarning))
+		}
+		if len(sortedSnap) > maxRows {
+			sb.WriteString(fmt.Sprintf("... и ещё %d прокси-хостов\n", len(sortedSnap)-maxRows))
+		}
+		sb.WriteString("</pre>")
+	}
+
+	sb.WriteString("\nВыберите раздел ниже:")
+	return sb.String()
+}
+
+func (b *Bot) getProtocolsStatsText() string {
+	if b.source == nil {
+		return "📈 <b>Статистика по протоколам</b>\n\nНет данных о прокси-хостах."
+	}
+	snapshot := b.source.MetricsSnapshot()
+	if len(snapshot) == 0 {
+		return "📈 <b>Статистика по протоколам</b>\n\nНет данных о прокси-хостах."
+	}
+
+	type groupData struct {
+		name    string
+		proxies []metrics.ProxyMetric
+	}
+
+	groupsMap := make(map[string]*groupData)
+	var groupOrder []string
+
+	for _, pm := range snapshot {
+		key := formatProtocolTransport(pm.Protocol, pm.Transport, pm.Security)
+		gd, ok := groupsMap[key]
+		if !ok {
+			gd = &groupData{name: key}
+			groupsMap[key] = gd
+			groupOrder = append(groupOrder, key)
+		}
+		gd.proxies = append(gd.proxies, pm)
+	}
+
+	sort.Slice(groupOrder, func(i, j int) bool {
+		cntI := len(groupsMap[groupOrder[i]].proxies)
+		cntJ := len(groupsMap[groupOrder[j]].proxies)
+		if cntI != cntJ {
+			return cntI > cntJ
+		}
+		return groupOrder[i] < groupOrder[j]
+	})
+
+	now := b.now()
+	var sb strings.Builder
+	sb.WriteString("📈 <b>Статистика по протоколам</b>\n\n")
+
+	for _, key := range groupOrder {
+		gd := groupsMap[key]
+		n := len(gd.proxies)
+
+		if n < 3 {
+			fmt.Fprintf(&sb, "<b>%s</b> (n=%d)\n  ⚠️ Слишком мало данных (n<3) для надёжной статистики\n\n", escapeHTML(gd.name), n)
+			continue
+		}
+
+		var totalUptime float64
+		var samples []float64
+
+		for _, p := range gd.proxies {
+			if b.statsStore != nil && b.statsStore.GetRollingStats() != nil {
+				totalUptime += b.statsStore.GetRollingStats().UptimePercent24h(p.StableID, now)
+				ls := b.statsStore.GetLatencySamples(p.StableID)
+				if ls.Count() > 0 {
+					ls.mu.Lock()
+					samples = append(samples, ls.samples[:ls.count]...)
+					ls.mu.Unlock()
+				} else if p.LatencyMs > 0 {
+					samples = append(samples, p.LatencyMs)
+				}
+			} else {
+				if p.Online {
+					totalUptime += 100.0
+				}
+				if p.LatencyMs > 0 {
+					samples = append(samples, p.LatencyMs)
+				}
+			}
+		}
+
+		avgUptime := totalUptime / float64(n)
+		var p50, p95 float64
+		if len(samples) > 0 {
+			sort.Float64s(samples)
+			p50 = samples[int(float64(len(samples)-1)*0.5)]
+			p95 = samples[int(float64(len(samples)-1)*0.95)]
+		}
+
+		fmt.Fprintf(&sb, "<b>%s</b> (n=%d)\n  Аптайм 24ч: %.1f%%   Латенси p50: %.0f мс, p95: %.0f мс\n\n",
+			escapeHTML(gd.name), n, avgUptime, p50, p95)
+	}
+
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+func formatProtocolTransport(protocol, transport, security string) string {
+	protoName := strings.ToUpper(protocol)
+	switch strings.ToLower(protocol) {
+	case "vless":
+		protoName = "VLESS"
+	case "vmess":
+		protoName = "VMess"
+	case "trojan":
+		protoName = "Trojan"
+	case "shadowsocks":
+		protoName = "Shadowsocks"
+	case "hysteria2":
+		protoName = "Hysteria2"
+	case "wireguard":
+		protoName = "WireGuard"
+	}
+
+	var transportName string
+	secLower := strings.ToLower(security)
+	transLower := strings.ToLower(transport)
+
+	if secLower == "reality" {
+		transportName = "Reality"
+	} else if transLower != "" {
+		switch transLower {
+		case "ws":
+			transportName = "WebSocket"
+		case "tcp":
+			if secLower == "tls" {
+				transportName = "TLS"
+			} else {
+				transportName = "TCP"
+			}
+		case "grpc":
+			transportName = "gRPC"
+		case "httpupgrade":
+			transportName = "HTTPUpgrade"
+		case "splithttp", "xhttp":
+			transportName = "xHTTP"
+		default:
+			transportName = strings.ToUpper(transport)
+		}
+	} else if secLower != "" && secLower != "none" {
+		transportName = strings.ToUpper(security)
+	}
+
+	if transportName != "" {
+		return protoName + " / " + transportName
+	}
+	return protoName
+}
+
+func (b *Bot) getHeatmapText() string {
+	if b.statsStore == nil {
+		return "Статистика недоступна."
+	}
+	now := b.now()
+	loc := b.loc()
+	matrix, peakHour, maxDrops := b.statsStore.GetHeatmap7d(now, loc)
+
+	var sb strings.Builder
+	sb.WriteString("🌡️ <b>Карта падений за 7 дней</b>\n\n<pre>")
+	sb.WriteString("       Пн  Вт  Ср  Чт  Пт  Сб  Вс\n")
+	for h := 0; h < 24; h++ {
+		fmt.Fprintf(&sb, "%02dч  ", h)
+		for d := 0; d < 7; d++ {
+			fmt.Fprintf(&sb, "%4d", matrix[h][d])
+		}
+		if h == peakHour && maxDrops > 0 {
+			sb.WriteString("   ← пик")
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("</pre>")
+
+	if maxDrops > 0 {
+		fmt.Fprintf(&sb, "\nПик падений: %02dч (%d сбоев, вероятно перегрузка канала)\n", peakHour, maxDrops)
+	} else {
+		sb.WriteString("\nЗа последние 7 дней падений не зафиксировано.\n")
+	}
+	return sb.String()
 }
 
 func (b *Bot) replyStats(chatID int64) {
@@ -1159,7 +1497,7 @@ func (b *Bot) getIncidentsText() string {
 	var sb strings.Builder
 	sb.WriteString("<b>📋 Последние инциденты:</b>\n\n")
 	for _, inc := range incidents {
-		downTime := time.Unix(inc.DownAt, 0).Format("15:04 02.01")
+		downTime := time.Unix(inc.DownAt, 0).In(b.loc()).Format("15:04 02.01")
 		if inc.UpAt == 0 {
 			fmt.Fprintf(&sb, "🔴 <b>%s</b> — авария %s (<i>сейчас недоступен</i>)\nПричина: %s\n\n",
 				escapeHTML(inc.ProxyName), downTime, escapeHTML(inc.Reason))
@@ -1203,11 +1541,17 @@ func (b *Bot) getQuietHoursText() string {
 		snoozeStatus = fmt.Sprintf("Активен (осталось %s)", FormatDowntime(rem))
 	}
 
+	tzName := cfg.Timezone
+	if tzName == "" {
+		tzName = "Local"
+	}
+
 	return fmt.Sprintf("<b>🌙 Тихий режим</b>\n\n"+
 		"В тихом режиме звуковые алерты об авариях не приходят в чат, а копятся для утренней сводки.\n\n"+
 		"• Расписание сна: <b>%s</b>\n"+
-		"• Ручная пауза: <b>%s</b>\n\n"+
-		"Управляйте режимом с помощью кнопок:", status, snoozeStatus)
+		"• Ручная пауза: <b>%s</b>\n"+
+		"• Часовой пояс: <b>%s</b>\n\n"+
+		"Управляйте режимом с помощью кнопок:", status, snoozeStatus, escapeHTML(tzName))
 }
 
 func (b *Bot) replyQuiet(chatID int64) {
@@ -1254,6 +1598,78 @@ func (b *Bot) replyTargets(chatID int64) {
 	b.sendOrUpdateMenu(chatID, b.getTargetsText(), TargetsMenuMarkup())
 }
 
+func (b *Bot) loc() *time.Location {
+	return b.GetConfig().Location()
+}
+
+func (b *Bot) now() time.Time {
+	if b.nowFunc != nil {
+		return b.nowFunc().In(b.loc())
+	}
+	return time.Now().In(b.loc())
+}
+
+func (b *Bot) getTimezoneText() string {
+	cfg := b.GetConfig()
+	loc := b.loc()
+	now := time.Now().In(loc)
+	tzName := cfg.Timezone
+	if tzName == "" {
+		tzName = "Local"
+	}
+
+	zoneName, offset := now.Zone()
+	offsetHours := offset / 3600
+	offsetSign := "+"
+	if offsetHours < 0 {
+		offsetSign = "-"
+		offsetHours = -offsetHours
+	}
+
+	return fmt.Sprintf(
+		"🕒 <b>Настройка часового пояса</b>\n\n"+
+			"• Текущий пояс: <b>%s</b> (%s, UTC%s%d)\n"+
+			"• Локальное время бота: <b>%s</b>\n\n"+
+			"Часовой пояс применяется для:\n"+
+			"• Расписания тихого режима\n"+
+			"• Дневных и утренних сводок\n"+
+			"• Времени фиксации инцидентов в журнале\n"+
+			"• Всех уведомлений бота\n\n"+
+			"Выберите часовой пояс или задайте командой <code>/tz &lt;IANA&gt;</code>:",
+		escapeHTML(tzName),
+		escapeHTML(zoneName),
+		offsetSign,
+		offsetHours,
+		now.Format("15:04:05 02.01.2006"),
+	)
+}
+
+func (b *Bot) replyTimezone(chatID int64) {
+	b.sendOrUpdateMenu(chatID, b.getTimezoneText(), TimezoneMarkup(b.GetConfig().Timezone))
+}
+
+func (b *Bot) handleTimezoneCommand(msg *telego.Message) {
+	arg := strings.TrimSpace(commandArg(msg.Text))
+	if arg == "" {
+		b.replyTimezone(msg.Chat.ID)
+		return
+	}
+
+	if !strings.EqualFold(arg, "local") {
+		if _, err := time.LoadLocation(arg); err != nil {
+			b.replyCommand(msg, fmt.Sprintf("❌ Некорректный часовой пояс <code>%s</code>.\nУкажите корректный IANA-пояс (например, <code>Europe/Moscow</code>, <code>UTC</code>, <code>Asia/Yekaterinburg</code>) или выберите из меню.", escapeHTML(arg)))
+			return
+		}
+	}
+
+	if b.configMgr != nil {
+		_ = b.configMgr.Update(func(c *BotConfig) {
+			c.Timezone = arg
+		})
+	}
+	b.replyCommand(msg, fmt.Sprintf("✅ Часовой пояс успешно изменён на <b>%s</b>.\nТекущее время бота: <b>%s</b>", escapeHTML(arg), b.now().Format("15:04:05 02.01.2006")))
+}
+
 func (b *Bot) getSubsText() string {
 	if b.subs == nil {
 		return "Управление подписками отключено."
@@ -1266,14 +1682,43 @@ func (b *Bot) getSubsText() string {
 
 	var sb strings.Builder
 	sb.WriteString("<b>📋 Список подписок:</b>\n\n")
+
+	renderSub := func(icon, u string) {
+		fmt.Fprintf(&sb, "%s <code>%s</code>\n", icon, escapeHTML(u))
+		if sf, ok := b.GetSubFreshness(u); ok && !sf.LastUpdate.IsZero() {
+			ago := formatTimeAgo(b.now().Sub(sf.LastUpdate))
+			if sf.Added == 0 && sf.Removed == 0 {
+				fmt.Fprintf(&sb, "   <i>%s · %d прокси (без изменений)</i>\n", ago, sf.Count)
+			} else {
+				fmt.Fprintf(&sb, "   <i>%s · %d прокси (было %d, +%d, -%d)</i>\n", ago, sf.Count, sf.PrevCount, sf.Added, sf.Removed)
+			}
+		}
+	}
+
 	for _, u := range static {
-		fmt.Fprintf(&sb, "🔒 <code>%s</code>\n", escapeHTML(u))
+		renderSub("🔒", u)
 	}
 	for _, u := range dynamic {
-		fmt.Fprintf(&sb, "➕ <code>%s</code>\n", escapeHTML(u))
+		renderSub("➕", u)
 	}
 	sb.WriteString("\n🔒 — из окружения / флагов, ➕ — добавлена через /addsub")
 	return sb.String()
+}
+
+func formatTimeAgo(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Minute {
+		return "только что"
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dм назад", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dч назад", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dд назад", int(d.Hours()/24))
 }
 
 const diagPageSize = 5
@@ -1304,7 +1749,7 @@ func (b *Bot) getDiagnosticsReports(force bool) []checker.ProxyDiagReport {
 	}
 
 	reports := b.diagSource.RunDiagnostics(targets)
-	sort.Slice(reports, func(i, j int) bool { return reports[i].ProxyName < reports[j].ProxyName })
+	b.sortDiagnosticsReports(reports)
 
 	b.diagMu.Lock()
 	b.cachedDiag = make([]checker.ProxyDiagReport, len(reports))
@@ -1315,7 +1760,70 @@ func (b *Bot) getDiagnosticsReports(force bool) []checker.ProxyDiagReport {
 	return reports
 }
 
+func (b *Bot) sortDiagnosticsReports(reports []checker.ProxyDiagReport) {
+	now := b.now()
+	getSeverityRank := func(rep *checker.ProxyDiagReport) int {
+		if rep.Disabled || rep.Status == "disabled" {
+			return 4
+		}
+		if rep.Status == "offline" {
+			return 1
+		}
+		if rep.Status == "degraded" {
+			return 2
+		}
+		return 3 // online
+	}
+
+	sort.SliceStable(reports, func(i, j int) bool {
+		ri, rj := &reports[i], &reports[j]
+		rankI, rankJ := getSeverityRank(ri), getSeverityRank(rj)
+		if rankI != rankJ {
+			return rankI < rankJ
+		}
+
+		if rankI == 1 { // offline: longer downtime first
+			var dtI, dtJ time.Duration
+			if b.tracker != nil {
+				dtI = b.tracker.GetDowntime(ri.StableID, now)
+				dtJ = b.tracker.GetDowntime(rj.StableID, now)
+			}
+			if dtI != dtJ {
+				return dtI > dtJ
+			}
+			return ri.ProxyName < rj.ProxyName
+		}
+
+		if rankI == 3 { // online: lower latency first
+			var latI, latJ time.Duration
+			for _, tr := range ri.Targets {
+				if tr.Success {
+					latI = tr.Latency
+					break
+				}
+			}
+			for _, tr := range rj.Targets {
+				if tr.Success {
+					latJ = tr.Latency
+					break
+				}
+			}
+			if latI != latJ {
+				return latI < latJ
+			}
+			return ri.ProxyName < rj.ProxyName
+		}
+
+		return ri.ProxyName < rj.ProxyName
+	})
+}
+
 func formatSingleProxyDiag(sb *strings.Builder, rep checker.ProxyDiagReport) {
+	var b *Bot
+	b.formatSingleProxyDiagWithStats(sb, rep)
+}
+
+func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.ProxyDiagReport) {
 	proto := strings.ToUpper(rep.Protocol)
 	if proto == "" {
 		proto = "PROXY"
@@ -1334,7 +1842,68 @@ func formatSingleProxyDiag(sb *strings.Builder, rep checker.ProxyDiagReport) {
 		icon = "🟡"
 	}
 
-	fmt.Fprintf(sb, "%s <b>%s</b> <i>(%s)</i>\n", icon, escapeHTML(rep.ProxyName), proto)
+	flappingSuffix := ""
+	if b != nil && b.statsStore != nil && b.statsStore.GetFlapCount24h(rep.StableID, b.now()) > 10 {
+		flappingSuffix = " ⚠️ флап"
+	}
+
+	fmt.Fprintf(sb, "%s <b>%s</b> <i>(%s)</i>%s\n", icon, escapeHTML(rep.ProxyName), proto, flappingSuffix)
+
+	// Status line with soft hint or latency percentiles
+	if rep.Status == "offline" {
+		var cat checker.ErrorCategory
+		if rep.NodeHealth.DNSErr != "" {
+			cat = checker.CatDNSError
+		} else if rep.NodeHealth.TLSErr != "" {
+			cat = checker.CatTLSError
+		} else if checker.IsUDPProto(rep.Protocol) && rep.NodeHealth.UDPErr != "" {
+			if strings.Contains(strings.ToLower(rep.NodeHealth.UDPErr), "refused") {
+				cat = checker.CatConnRefused
+			} else {
+				cat = checker.CatTimeout
+			}
+		} else if rep.NodeHealth.TCPErr != "" {
+			if strings.Contains(strings.ToLower(rep.NodeHealth.TCPErr), "refused") {
+				cat = checker.CatConnRefused
+			} else {
+				cat = checker.CatTimeout
+			}
+		} else {
+			for _, tr := range rep.Targets {
+				if !tr.Success {
+					cat = checker.ClassifyError(fmt.Errorf("%s", tr.Error), tr.StatusCode)
+					break
+				}
+			}
+			if cat == checker.CatNone {
+				cat = checker.CatTimeout
+			}
+		}
+		hint := checker.FormatSoftHint(cat, checker.IsUDPProto(rep.Protocol))
+		fmt.Fprintf(sb, "  • Статус: 🔴 недоступен (вероятно: %s)\n", escapeHTML(hint))
+	} else if rep.Status == "degraded" {
+		fmt.Fprintf(sb, "  • Статус: 🟡 туннель работает, но цель недоступна\n")
+	} else {
+		var latMs float64
+		for _, tr := range rep.Targets {
+			if tr.Success {
+				latMs = float64(tr.Latency.Milliseconds())
+				break
+			}
+		}
+		if b != nil && b.statsStore != nil {
+			ls := b.statsStore.GetLatencySamples(rep.StableID)
+			if ls.Count() >= 5 {
+				p95 := ls.Percentile(0.95)
+				jitter := ls.StdDev()
+				fmt.Fprintf(sb, "  • Доступен: 🟢 %.0f мс (p95: %.0f мс, σ=%.0f)\n", latMs, p95, jitter)
+			} else {
+				fmt.Fprintf(sb, "  • Доступен: 🟢 %.0f мс\n", latMs)
+			}
+		} else {
+			fmt.Fprintf(sb, "  • Доступен: 🟢 %.0f мс\n", latMs)
+		}
+	}
 
 	// 1. DNS
 	if rep.NodeHealth.DNSErr != "" {
@@ -1387,9 +1956,9 @@ func formatSingleProxyDiag(sb *strings.Builder, rep checker.ProxyDiagReport) {
 		if rep.CheckHost.WorldAvailable {
 			worldStatus = "✅ отвечает"
 		}
-		fmt.Fprintf(sb, "  • Check-Host (TCP): РФ %s, Мир %s\n", ruStatus, worldStatus)
+		fmt.Fprintf(sb, "  • Check-Host: РФ %s, Мир %s\n", ruStatus, worldStatus)
 		if rep.CheckHost.PermanentLink != "" {
-			fmt.Fprintf(sb, "    🔗 <a href=\"%s\">отчёт</a>\n", rep.CheckHost.PermanentLink)
+			fmt.Fprintf(sb, "    🔗 <a href=\"%s\">отчёт Check-Host</a>\n", rep.CheckHost.PermanentLink)
 		}
 	}
 
@@ -1410,9 +1979,38 @@ func (b *Bot) getDiagnosticsText() string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("<b>⚡ Результаты детальной диагностики (%d прокси):</b>\n\n", len(reports)))
 	for _, rep := range reports {
-		formatSingleProxyDiag(&sb, rep)
+		b.formatSingleProxyDiagWithStats(&sb, rep)
 	}
 	return sb.String()
+}
+
+func getDeepLinksForPage(reports []checker.ProxyDiagReport, page int) []DiagDeepLink {
+	if len(reports) == 0 {
+		return nil
+	}
+	totalPages := (len(reports) + diagPageSize - 1) / diagPageSize
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * diagPageSize
+	end := start + diagPageSize
+	if end > len(reports) {
+		end = len(reports)
+	}
+
+	var links []DiagDeepLink
+	for _, rep := range reports[start:end] {
+		if rep.Status == "offline" || rep.Status == "degraded" {
+			links = append(links, DiagDeepLink{
+				Name:     rep.ProxyName,
+				StableID: rep.StableID,
+			})
+		}
+	}
+	return links
 }
 
 func (b *Bot) getDiagnosticsPageText(reports []checker.ProxyDiagReport, page int) (string, int) {
@@ -1438,10 +2036,208 @@ func (b *Bot) getDiagnosticsPageText(reports []checker.ProxyDiagReport, page int
 	sb.WriteString(fmt.Sprintf("📋 <b>Детальный отчёт</b> (Стр. %d из %d, всего %d прокси):\n\n", page, totalPages, len(reports)))
 
 	for _, rep := range reports[start:end] {
-		formatSingleProxyDiag(&sb, rep)
+		b.formatSingleProxyDiagWithStats(&sb, rep)
 	}
 
 	return sb.String(), totalPages
+}
+
+func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeHealth, ch *checker.CheckHostSummary) string {
+	var sb strings.Builder
+
+	proto := strings.ToUpper(pm.Protocol)
+	if proto == "" {
+		proto = "PROXY"
+	}
+
+	transport := "TCP"
+	if checker.IsUDPProto(pm.Protocol) {
+		transport = "UDP / QUIC"
+	} else if strings.Contains(strings.ToLower(pm.Name), "reality") {
+		transport = "Reality / TCP"
+	}
+
+	fmt.Fprintf(&sb, "🔬 <b>Углублённая проверка — %s</b>\n\n", escapeHTML(pm.Name))
+	fmt.Fprintf(&sb, "<b>ПРОТОКОЛ:</b>  %s\n", proto)
+	fmt.Fprintf(&sb, "<b>ТРАНСПОРТ:</b> %s\n", transport)
+	fmt.Fprintf(&sb, "<b>АДРЕС:</b>     %s\n\n", escapeHTML(pm.Address))
+
+	sb.WriteString("<b>ЭТАПЫ ПРОВЕРКИ:</b>\n")
+
+	// 1. DNS-резолв
+	if health.DNSErr != "" {
+		fmt.Fprintf(&sb, "  1. DNS-резолв ........... —      ❌  %s\n", escapeHTML(health.DNSErr))
+	} else if health.ResolvedIP != "" {
+		if health.DNSLatency > 0 {
+			fmt.Fprintf(&sb, "  1. DNS-резолв ........... %.0f мс  ✅\n", float64(health.DNSLatency.Milliseconds()))
+		} else {
+			fmt.Fprintf(&sb, "  1. DNS-резолв ........... ✅ (%s)\n", health.ResolvedIP)
+		}
+	} else {
+		sb.WriteString("  1. DNS-резолв ........... —      (не требуется)\n")
+	}
+
+	// 2. TCP / UDP рукопожатие
+	if checker.IsUDPProto(pm.Protocol) {
+		if health.UDPErr != "" {
+			fmt.Fprintf(&sb, "  2. UDP-датаграмма ...... —      ❌  %s\n", escapeHTML(health.UDPErr))
+		} else if health.UDPPing > 0 {
+			fmt.Fprintf(&sb, "  2. UDP-датаграмма ...... %.0f мс  ✅\n", float64(health.UDPPing.Milliseconds()))
+		} else {
+			sb.WriteString("  2. UDP-датаграмма ...... —\n")
+		}
+	} else {
+		if health.TCPErr != "" {
+			fmt.Fprintf(&sb, "  2. TCP-рукопожатие ...... —      ❌  %s\n", escapeHTML(health.TCPErr))
+		} else if health.TCPPing > 0 {
+			fmt.Fprintf(&sb, "  2. TCP-рукопожатие ...... %.0f мс  ✅  (к %s)\n", float64(health.TCPPing.Milliseconds()), escapeHTML(pm.Address))
+		} else {
+			sb.WriteString("  2. TCP-рукопожатие ...... —\n")
+		}
+	}
+
+	// 3. TLS / Reality handshake
+	if health.TLSErr != "" {
+		fmt.Fprintf(&sb, "  3. TLS/Reality handshake  —      ❌  %s\n", escapeHTML(health.TLSErr))
+	} else if pm.TLSHandshakeMs > 0 {
+		fmt.Fprintf(&sb, "  3. TLS/Reality handshake  %d мс  ✅\n", pm.TLSHandshakeMs)
+	} else if health.TLSLatency > 0 {
+		fmt.Fprintf(&sb, "  3. TLS/Reality handshake  %.0f мс  ✅\n", float64(health.TLSLatency.Milliseconds()))
+	} else if !pm.Online && !pm.CanConnect {
+		sb.WriteString("  3. TLS/Reality handshake  —      ❌  (не завершено)\n")
+	} else {
+		sb.WriteString("  3. TLS/Reality handshake  —      ✅\n")
+	}
+
+	// 4. TTFB через туннель
+	if pm.TTFBMs > 0 {
+		fmt.Fprintf(&sb, "  4. TTFB через туннель .... %d мс\n", pm.TTFBMs)
+	} else if pm.LatencyMs > 0 {
+		fmt.Fprintf(&sb, "  4. TTFB через туннель .... %.0f мс\n", pm.LatencyMs)
+	} else {
+		sb.WriteString("  4. TTFB через туннель .... —      (не достигнуто)\n")
+	}
+
+	// 5. HTTP-ответ
+	if pm.CanTransfer || pm.Online {
+		sb.WriteString("  5. HTTP-ответ ........... 200 OK\n")
+	} else {
+		sb.WriteString("  5. HTTP-ответ ........... —      (не достигнуто)\n")
+	}
+
+	// 6. Полный ответ
+	if pm.LatencyMs > 0 && (pm.CanTransfer || pm.Online) {
+		fmt.Fprintf(&sb, "  6. Полный ответ .......... %.0f мс\n\n", pm.LatencyMs)
+	} else {
+		sb.WriteString("  6. Полный ответ .......... —\n\n")
+	}
+
+	// Summary
+	if pm.Online || (pm.CanConnect && pm.CanTransfer) {
+		sb.WriteString("<b>ИТОГ:</b> ✅ Доступен\n")
+	} else {
+		sb.WriteString("<b>ИТОГ:</b> ❌ Недоступен\n")
+		if pm.LastErrorMsg != "" {
+			fmt.Fprintf(&sb, "<b>ОШИБКА:</b>     %s\n", escapeHTML(pm.LastErrorMsg))
+		}
+		if pm.LastErrorCategory > 0 {
+			cat := checker.ErrorCategory(pm.LastErrorCategory)
+			fmt.Fprintf(&sb, "<b>ТИП ОШИБКИ:</b> %s\n", cat.String())
+		}
+	}
+
+	// HOST-CHECK
+	if ch != nil {
+		sb.WriteString("\n<b>HOST-CHECK (Check-Host.net):</b>\n")
+		ruTotal, ruSuccess, ruRTT := ch.RUStats()
+		worldTotal, worldSuccess, worldRTT := ch.WorldStats()
+
+		if ruTotal > 0 {
+			if ruSuccess > 0 && ruRTT > 0 {
+				fmt.Fprintf(&sb, "  РФ (%d узла):       %d/%d отвечают, средний RTT %.0f мс\n", ruTotal, ruSuccess, ruTotal, float64(ruRTT.Milliseconds()))
+			} else {
+				fmt.Fprintf(&sb, "  РФ (%d узла):       %d/%d отвечают\n", ruTotal, ruSuccess, ruTotal)
+			}
+		}
+		if worldTotal > 0 {
+			if worldSuccess > 0 && worldRTT > 0 {
+				fmt.Fprintf(&sb, "  Мир (%d узла):      %d/%d отвечают, средний RTT %.0f мс\n", worldTotal, worldSuccess, worldTotal, float64(worldRTT.Milliseconds()))
+			} else {
+				fmt.Fprintf(&sb, "  Мир (%d узла):      %d/%d отвечают\n", worldTotal, worldSuccess, worldTotal)
+			}
+		}
+
+		if ch.Verdict != "" {
+			fmt.Fprintf(&sb, "  Вывод: %s\n", escapeHTML(ch.Verdict))
+		}
+		if ch.PermanentLink != "" {
+			fmt.Fprintf(&sb, "  Ссылка: 🔗 <a href=\"%s\">отчёт Check-Host</a>\n", ch.PermanentLink)
+		}
+	}
+
+	return sb.String()
+}
+
+func (b *Bot) handleDeepDiagnostics(chatID int64, msgID int, stableID string) {
+	b.editWithMarkup(chatID, msgID, "⏳ <b>Выполняется углублённая проверка...</b>", BackToMenuMarkup())
+
+	go func() {
+		var targetMetric metrics.ProxyMetric
+		found := false
+		if b.source != nil {
+			for _, pm := range b.source.MetricsSnapshot() {
+				if pm.StableID == stableID {
+					targetMetric = pm
+					found = true
+					break
+				}
+			}
+		}
+
+		// Also find report from cached or run diagnostics
+		reports := b.getDiagnosticsReports(false)
+		var rep *checker.ProxyDiagReport
+		for i := range reports {
+			if reports[i].StableID == stableID {
+				rep = &reports[i]
+				break
+			}
+		}
+
+		if !found && rep != nil {
+			targetMetric = metrics.ProxyMetric{
+				Name:      rep.ProxyName,
+				Protocol:  rep.Protocol,
+				Address:   fmt.Sprintf("%s:%d", rep.Server, rep.Port),
+				StableID:  rep.StableID,
+				Online:    rep.Status == "online",
+				LatencyMs: float64(rep.NodeHealth.TCPPing.Milliseconds()),
+			}
+			found = true
+		}
+
+		if !found {
+			b.editWithMarkup(chatID, msgID, "⚠️ Прокси не найден.", BackToMenuMarkup())
+			return
+		}
+
+		var health checker.NodeHealth
+		var ch *checker.CheckHostSummary
+		if rep != nil {
+			health = rep.NodeHealth
+			ch = rep.CheckHost
+		}
+
+		// If health is empty, do a direct probe
+		if health.ResolvedIP == "" && health.TCPPing == 0 && health.UDPPing == 0 {
+			host, portStr, _ := net.SplitHostPort(targetMetric.Address)
+			port, _ := strconv.Atoi(portStr)
+			health = checker.ProbeNodeHealth(host, port, targetMetric.Protocol, "", "", false)
+		}
+
+		text := b.formatDeepDiagnostics(targetMetric, health, ch)
+		b.editWithMarkup(chatID, msgID, text, DeepDiagnosticsMarkup(stableID))
+	}()
 }
 
 func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *telego.InputRichMessage {
@@ -1618,7 +2414,7 @@ func (b *Bot) replyDigest(chatID int64) {
 
 	text := fmt.Sprintf("<b>📊 Сводка Xray Checker</b>\n\n"+
 		"• Текущий статус: <b>%d/%d онлайн</b>\n"+
-		"• Время: <b>%s</b>\n", online, totalActive, time.Now().Format("15:04:05 02.01.2006"))
+		"• Время: <b>%s</b>\n", online, totalActive, b.now().Format("15:04:05 02.01.2006"))
 
 	if avg, ok := b.getAverageUptimePercent(); ok {
 		text += fmt.Sprintf("• Средний аптайм: <b>%.1f%%</b>\n", avg)
@@ -1645,14 +2441,14 @@ func (b *Bot) sendMorningDigest(now time.Time) {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "<b>🌅 Утренняя сводка Xray Checker</b>\n\n"+
 		"• Статус прокси-хостов: <b>%d/%d онлайн</b>\n"+
-		"• Время: <b>%s</b>\n\n", online, totalActive, now.Format("15:04"))
+		"• Время: <b>%s</b>\n\n", online, totalActive, now.In(b.loc()).Format("15:04"))
 
 	if len(events) == 0 {
 		sb.WriteString("🌙 <i>За ночь аварий не зафиксировано, все прокси-хосты работали стабильно.</i>")
 	} else {
 		sb.WriteString("<b>Инциденты за ночь:</b>\n")
 		for _, e := range events {
-			tStr := e.Timestamp.Format("15:04")
+			tStr := e.Timestamp.In(b.loc()).Format("15:04")
 			if e.Type == "down" {
 				fmt.Fprintf(&sb, "• 🔴 %s: <b>%s</b> — авария (%s)\n", tStr, escapeHTML(e.ProxyName), escapeHTML(e.Reason))
 			} else {
@@ -1689,7 +2485,7 @@ func (b *Bot) sendDaytimeDigest(now time.Time) {
 
 	text := fmt.Sprintf("<b>📊 Дневная сводка Xray Checker</b>\n\n"+
 		"• Доступность прокси-хостов: <b>%d/%d онлайн</b>\n"+
-		"• Время: <b>%s</b>", online, totalActive, now.Format("15:04"))
+		"• Время: <b>%s</b>", online, totalActive, now.In(b.loc()).Format("15:04"))
 
 	b.broadcast(text)
 }
@@ -1706,6 +2502,7 @@ func (b *Bot) replyHelp(chatID int64) {
 		"/stats — статистика аптайма и инцидентов\n" +
 		"/interval [сек] — интервал проверок прокси-хостов\n" +
 		"/quiet — настройки тихого режима\n" +
+		"/tz [пояс] — часовой пояс бота (Europe/Moscow, UTC и др.)\n" +
 		"/targets — список целевых серверов проверки\n"
 	if b.subs != nil {
 		text += "/subs — список подписок\n" +
@@ -1860,7 +2657,20 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 
 	// 2. Process outages
 	for _, pm := range outages {
-		outageText := fmt.Sprintf("🔴 <b>%s</b> недоступен\n%s", escapeHTML(pm.Name), escapeHTML(pm.Address))
+		softHint := ""
+		if pm.LastErrorCategory > 0 {
+			cat := checker.ErrorCategory(pm.LastErrorCategory)
+			hint := checker.FormatSoftHint(cat, checker.IsUDPProto(pm.Protocol))
+			softHint = fmt.Sprintf(" (вероятно: %s)", hint)
+		}
+		timeStr := now.In(b.loc()).Format("15:04")
+		dropCount := int64(1)
+		if b.statsStore != nil {
+			if ps, ok := b.statsStore.Stats[pm.StableID]; ok && ps.DropCount > 0 {
+				dropCount = ps.DropCount
+			}
+		}
+		outageText := fmt.Sprintf("🔴 <b>%s</b> — не отвечает%s\n⏱ %s · %d-е падение\n%s", escapeHTML(pm.Name), softHint, timeStr, dropCount, escapeHTML(pm.Address))
 		for _, chatID := range b.chatIDs {
 			if b.tracker.HasAlert(chatID, pm.StableID) {
 				continue
@@ -2125,7 +2935,6 @@ func (b *Bot) showRichReport(chatID int64, messageID int, rich *telego.InputRich
 	}
 	_, _ = b.sendRich(chatID, rich, RichReportMarkup())
 }
-
 
 func splitMessage(text string, limit int) []string {
 	if len(text) <= limit {
@@ -2585,4 +3394,3 @@ func (b *Bot) RunCheckHostAudit() {
 		}
 	}
 }
-

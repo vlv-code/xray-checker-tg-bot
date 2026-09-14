@@ -200,9 +200,20 @@ func main() {
 		reloadMu.Lock()
 		defer reloadMu.Unlock()
 
-		newConfigs, err := subscription.ReadFromMultipleSources(subURLStore.All())
+		newConfigs, subCounts, err := subscription.ReadFromMultipleSourcesDetailed(subURLStore.All())
 		if err != nil {
 			return false, len(*proxyConfigs), err
+		}
+		now := time.Now()
+		for u, cnt := range subCounts {
+			subURLStore.RecordUpdate(u, cnt, now)
+		}
+		if tgBot != nil {
+			for _, u := range subURLStore.All() {
+				if meta, ok := subURLStore.GetMeta(u); ok {
+					tgBot.SetSubFreshness(u, meta.Count, meta.PrevCount, meta.Added, meta.Removed, meta.LastUpdate)
+				}
+			}
 		}
 
 		if config.CLIConfig.Proxy.ResolveDomains {
@@ -320,6 +331,11 @@ func main() {
 				}
 
 				tgBot = bot
+				for _, u := range subURLStore.All() {
+					if meta, ok := subURLStore.GetMeta(u); ok {
+						tgBot.SetSubFreshness(u, meta.Count, meta.PrevCount, meta.Added, meta.Removed, meta.LastUpdate)
+					}
+				}
 				tgBot.StartCommands()
 				defer tgBot.Stop()
 			}

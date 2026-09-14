@@ -138,6 +138,32 @@ func (at *AlertTracker) GetAlertsForProxy(stableID string) []*ActiveAlert {
 	return list
 }
 
+// GetDowntime returns the duration since the earliest active alert for stableID was recorded.
+func (at *AlertTracker) GetDowntime(stableID string, now time.Time) time.Duration {
+	if at == nil {
+		return 0
+	}
+	at.mu.Lock()
+	defer at.mu.Unlock()
+
+	var earliest time.Time
+	for _, a := range at.alerts {
+		if a.StableID == stableID {
+			if earliest.IsZero() || a.DownAt.Before(earliest) {
+				earliest = a.DownAt
+			}
+		}
+	}
+	if earliest.IsZero() {
+		return 0
+	}
+	d := now.Sub(earliest)
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
 // FormatDowntime formats a duration in human-readable Russian shorthand.
 func FormatDowntime(d time.Duration) string {
 	if d < 0 {

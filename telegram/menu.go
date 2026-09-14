@@ -53,6 +53,7 @@ func SettingsMenuMarkup() *telego.InlineKeyboardMarkup {
 		),
 		tu.InlineKeyboardRow(
 			btn("📈 Статистика инцидентов", "menu:stats"),
+			btn("🕒 Часовой пояс", "menu:timezone"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🔙 Главное меню", "menu:main"),
@@ -243,6 +244,10 @@ func StatsMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("🔝 Топ проблемных", "menu:stats:top"),
 		),
 		tu.InlineKeyboardRow(
+			btn("📊 По протоколам", "menu:stats:protocols"),
+			btn("🌡️ Heatmap", "menu:stats:heatmap"),
+		),
+		tu.InlineKeyboardRow(
 			btn("🔙 К настройкам", "menu:settings"),
 			btn("🏠 Главное меню", "menu:main"),
 		),
@@ -342,6 +347,64 @@ func BackToSettingsMarkup() *telego.InlineKeyboardMarkup {
 	)
 }
 
+// BackToStatsMarkup provides buttons returning to stats overview or main menu.
+func BackToStatsMarkup() *telego.InlineKeyboardMarkup {
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("🔙 К статистике", "menu:stats"),
+			btn("🏠 Главное меню", "menu:main"),
+		),
+	)
+}
+
+// TimezoneMarkup returns keyboard for selecting bot timezone.
+func TimezoneMarkup(currentTz string) *telego.InlineKeyboardMarkup {
+	if currentTz == "" {
+		currentTz = "Local"
+	}
+
+	mark := func(tz, label string) string {
+		if strings.EqualFold(currentTz, tz) {
+			return "🟢 " + label
+		}
+		return "⚪ " + label
+	}
+
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn(mark("UTC", "UTC (UTC+0)"), "menu:tz:UTC"),
+			btn(mark("Europe/Kaliningrad", "Калининград (+2)"), "menu:tz:Europe/Kaliningrad"),
+		),
+		tu.InlineKeyboardRow(
+			btn(mark("Europe/Moscow", "Москва (+3, MSK)"), "menu:tz:Europe/Moscow"),
+			btn(mark("Europe/Samara", "Самара (+4)"), "menu:tz:Europe/Samara"),
+		),
+		tu.InlineKeyboardRow(
+			btn(mark("Asia/Yekaterinburg", "Екатеринбург (+5)"), "menu:tz:Asia/Yekaterinburg"),
+			btn(mark("Asia/Omsk", "Омск (+6)"), "menu:tz:Asia/Omsk"),
+		),
+		tu.InlineKeyboardRow(
+			btn(mark("Asia/Krasnoyarsk", "Красноярск (+7)"), "menu:tz:Asia/Krasnoyarsk"),
+			btn(mark("Asia/Irkutsk", "Иркутск (+8)"), "menu:tz:Asia/Irkutsk"),
+		),
+		tu.InlineKeyboardRow(
+			btn(mark("Asia/Yakutsk", "Якутск (+9)"), "menu:tz:Asia/Yakutsk"),
+			btn(mark("Asia/Vladivostok", "Владивосток (+10)"), "menu:tz:Asia/Vladivostok"),
+		),
+		tu.InlineKeyboardRow(
+			btn(mark("Europe/Kyiv", "Киев (+2/3)"), "menu:tz:Europe/Kyiv"),
+			btn(mark("Asia/Almaty", "Алматы / Астана (+5)"), "menu:tz:Asia/Almaty"),
+		),
+		tu.InlineKeyboardRow(
+			btn(mark("Local", "🖥️ Серверное (Local)"), "menu:tz:Local"),
+		),
+		tu.InlineKeyboardRow(
+			btn("🔙 К настройкам", "menu:settings"),
+			btn("🏠 Главное меню", "menu:main"),
+		),
+	)
+}
+
 // IntervalMenuMarkup returns keyboard for selecting proxy check interval.
 func IntervalMenuMarkup(currentInterval int) *telego.InlineKeyboardMarkup {
 	mark := func(sec int, label string) string {
@@ -405,8 +468,14 @@ func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMa
 	return tu.InlineKeyboard(rows...)
 }
 
-// DiagPaginationMarkup returns pagination controls for the diagnostics view.
-func DiagPaginationMarkup(page, totalPages int) *telego.InlineKeyboardMarkup {
+// DiagDeepLink represents a proxy for which a deep diagnostics button is shown.
+type DiagDeepLink struct {
+	Name     string
+	StableID string
+}
+
+// DiagPaginationMarkup builds inline keyboard for paginated diagnostics report.
+func DiagPaginationMarkup(page, totalPages int, deepLinks ...DiagDeepLink) *telego.InlineKeyboardMarkup {
 	if page < 1 {
 		page = 1
 	}
@@ -415,6 +484,13 @@ func DiagPaginationMarkup(page, totalPages int) *telego.InlineKeyboardMarkup {
 	}
 
 	var rows [][]telego.InlineKeyboardButton
+
+	// Deep diagnostics buttons for problematic proxies on current page
+	for _, dl := range deepLinks {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn(fmt.Sprintf("🔬 Углублённая: %s", dl.Name), fmt.Sprintf("menu:diag:deep:%s", dl.StableID)),
+		))
+	}
 
 	// Pagination row if more than 1 page
 	if totalPages > 1 {
@@ -453,6 +529,19 @@ func DiagPaginationMarkup(page, totalPages int) *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(rows...)
 }
 
+// DeepDiagnosticsMarkup returns navigation buttons for Level 2 Deep diagnostics.
+func DeepDiagnosticsMarkup(stableID string) *telego.InlineKeyboardMarkup {
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("🔙 К детальному отчёту", "menu:diag:p:1"),
+			btn("🔄 Перепроверить", fmt.Sprintf("menu:diag:deep:%s", stableID)),
+		),
+		tu.InlineKeyboardRow(
+			btn("🏠 Главное меню", "menu:main"),
+		),
+	)
+}
+
 // RichReportMarkup returns buttons under a rich diagnostics message.
 func RichReportMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
@@ -465,5 +554,3 @@ func RichReportMarkup() *telego.InlineKeyboardMarkup {
 		),
 	)
 }
-
-

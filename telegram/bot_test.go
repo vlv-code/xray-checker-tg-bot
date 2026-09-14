@@ -545,8 +545,3 @@ func TestBot_RunCheckHostAudit_RUBlock(t *testing.T) {
 		t.Errorf("expected alert to be resolved after RU recovery")
 	}
 }
-
-
-
-
-

@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -78,3 +79,65 @@ func TestMenuMarkups(t *testing.T) {
 	}
 }
 
+func TestBackToStatsMarkup(t *testing.T) {
+	markup := BackToStatsMarkup()
+	if len(markup.InlineKeyboard) != 1 {
+		t.Fatalf("expected 1 row in BackToStatsMarkup, got %d", len(markup.InlineKeyboard))
+	}
+	row := markup.InlineKeyboard[0]
+	if len(row) != 2 {
+		t.Fatalf("expected 2 buttons in BackToStatsMarkup, got %d", len(row))
+	}
+	if row[0].CallbackData != "menu:stats" {
+		t.Errorf("expected first button to return to menu:stats, got %s", row[0].CallbackData)
+	}
+	if row[1].CallbackData != "menu:main" {
+		t.Errorf("expected second button to return to menu:main, got %s", row[1].CallbackData)
+	}
+}
+
+func TestSettingsMenuIncludesTimezone(t *testing.T) {
+	markup := SettingsMenuMarkup()
+	found := false
+	for _, row := range markup.InlineKeyboard {
+		for _, btn := range row {
+			if btn.CallbackData == "menu:timezone" {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected SettingsMenuMarkup to contain menu:timezone button")
+	}
+}
+
+func TestTimezoneMarkup(t *testing.T) {
+	markup := TimezoneMarkup("Europe/Moscow")
+	if len(markup.InlineKeyboard) < 4 {
+		t.Fatalf("expected at least 4 rows in TimezoneMarkup, got %d", len(markup.InlineKeyboard))
+	}
+
+	foundActive := false
+	foundBack := false
+	for _, row := range markup.InlineKeyboard {
+		for _, b := range row {
+			if b.CallbackData == "menu:tz:Europe/Moscow" {
+				if !strings.HasPrefix(b.Text, "🟢") {
+					t.Errorf("expected active timezone Europe/Moscow to have green circle, got %s", b.Text)
+				}
+				foundActive = true
+			}
+			if b.CallbackData == "menu:settings" {
+				foundBack = true
+			}
+		}
+	}
+
+	if !foundActive {
+		t.Errorf("expected to find menu:tz:Europe/Moscow button")
+	}
+	if !foundBack {
+		t.Errorf("expected to find back button to menu:settings")
+	}
+}

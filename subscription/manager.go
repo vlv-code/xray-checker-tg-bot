@@ -6,7 +6,17 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
+
+// URLMeta tracks freshness statistics for a subscription URL.
+type URLMeta struct {
+	LastUpdate time.Time `json:"last_update"`
+	Count      int       `json:"count"`
+	PrevCount  int       `json:"prev_count"`
+	Added      int       `json:"added"`
+	Removed    int       `json:"removed"`
+}
 
 // URLStore tracks the full set of subscription URLs the checker fetches
 // from: a fixed "static" set configured via --subscription-url / the
@@ -19,6 +29,7 @@ type URLStore struct {
 
 	static  []string
 	dynamic []string
+	meta    map[string]URLMeta
 }
 
 // NewURLStore creates a store seeded with staticURLs and loads any
@@ -29,6 +40,7 @@ func NewURLStore(staticURLs []string, path string) (*URLStore, error) {
 	s := &URLStore{
 		path:   path,
 		static: append([]string(nil), staticURLs...),
+		meta:   make(map[string]URLMeta),
 	}
 
 	if path == "" {
@@ -76,6 +88,46 @@ func (s *URLStore) Dynamic() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]string(nil), s.dynamic...)
+}
+
+// RecordUpdate updates the proxy count and delta for a URL.
+func (s *URLStore) RecordUpdate(u string, count int, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.meta == nil {
+		s.meta = make(map[string]URLMeta)
+	}
+	prev, exists := s.meta[u]
+	added := 0
+	removed := 0
+	prevCount := prev.Count
+	if exists {
+		if count > prev.Count {
+			added = count - prev.Count
+		} else if count < prev.Count {
+			removed = prev.Count - count
+		}
+	} else {
+		prevCount = count
+	}
+	s.meta[u] = URLMeta{
+		LastUpdate: now,
+		Count:      count,
+		PrevCount:  prevCount,
+		Added:      added,
+		Removed:    removed,
+	}
+}
+
+// GetMeta returns freshness info for a URL.
+func (s *URLStore) GetMeta(u string) (URLMeta, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.meta == nil {
+		return URLMeta{}, false
+	}
+	m, ok := s.meta[u]
+	return m, ok
 }
 
 // Add validates and appends url to the dynamic set and persists the result.
