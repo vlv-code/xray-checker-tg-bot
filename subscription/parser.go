@@ -858,6 +858,9 @@ func (p *Parser) detectSourceType(source string) string {
 
 func (p *Parser) fetchURLContent(source string) (*fetchResult, error) {
 	cleanURL, fragmentName := p.extractURLFragment(source)
+	if err := validateSubscriptionTarget(cleanURL); err != nil {
+		return nil, err
+	}
 
 	req, err := http.NewRequest("GET", cleanURL, nil)
 	if err != nil {
@@ -1579,6 +1582,64 @@ func isBlockedIP(ip net.IP) bool {
 	return false
 }
 
+func isEnvironmentProxy(host, port string) bool {
+	for _, envKey := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
+		val := os.Getenv(envKey)
+		if val != "" {
+			if u, err := url.Parse(val); err == nil {
+				proxyHost := u.Hostname()
+				proxyPort := u.Port()
+				if proxyPort == "" {
+					if u.Scheme == "https" {
+						proxyPort = "443"
+					} else {
+						proxyPort = "80"
+					}
+				}
+				if strings.EqualFold(proxyHost, host) && proxyPort == port {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func validateSubscriptionTarget(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid subscription URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("invalid subscription scheme %q, only http/https allowed", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("missing host in subscription URL")
+	}
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("SSRF: access to localhost is blocked")
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedIP(ip) {
+			return fmt.Errorf("SSRF: access to private/reserved IP %s is blocked", ip)
+		}
+		return nil
+	}
+
+	ips, err := net.DefaultResolver.LookupIP(context.Background(), "ip", host)
+	if err != nil {
+		return fmt.Errorf("failed to resolve host %s: %w", host, err)
+	}
+	for _, ip := range ips {
+		if isBlockedIP(ip) {
+			return fmt.Errorf("SSRF: host %s resolved to blocked IP %s", host, ip)
+		}
+	}
+	return nil
+}
+
 func newSafeTransport() *http.Transport {
 	dialer := &net.Dialer{
 		Timeout:   15 * time.Second,
@@ -1590,6 +1651,11 @@ func newSafeTransport() *http.Transport {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
 				return nil, err
+			}
+
+			// Allow connecting to an infrastructure proxy configured via environment
+			if isEnvironmentProxy(host, port) {
+				return dialer.DialContext(ctx, network, addr)
 			}
 
 			if ip := net.ParseIP(host); ip != nil {

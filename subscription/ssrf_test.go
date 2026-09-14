@@ -54,3 +54,35 @@ func TestSafeTransportBlocksLocalhost(t *testing.T) {
 		t.Errorf("expected SSRF error message, got: %v", err)
 	}
 }
+
+func TestValidateSubscriptionTarget_BlocksPrivateAndLocalhost(t *testing.T) {
+	blockedURLs := []string{
+		"http://127.0.0.1:2112/metrics",
+		"http://169.254.169.254/latest/meta-data",
+		"http://localhost:8080/secret",
+		"http://192.168.1.1/config",
+		"http://10.0.0.1/admin",
+		"file:///etc/passwd",
+	}
+
+	for _, u := range blockedURLs {
+		err := validateSubscriptionTarget(u)
+		if err == nil {
+			t.Errorf("expected URL %s to be blocked, got nil", u)
+		}
+	}
+}
+
+func TestIsEnvironmentProxy(t *testing.T) {
+	t.Setenv("ALL_PROXY", "socks5://xray-client:1080")
+	if !isEnvironmentProxy("xray-client", "1080") {
+		t.Errorf("expected xray-client:1080 to be recognized as environment proxy")
+	}
+	if isEnvironmentProxy("xray-client", "80") {
+		t.Errorf("xray-client on wrong port should not match")
+	}
+	if isEnvironmentProxy("attacker.com", "1080") {
+		t.Errorf("attacker.com should not be recognized as environment proxy")
+	}
+}
+
