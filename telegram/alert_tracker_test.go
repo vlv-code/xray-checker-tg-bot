@@ -83,6 +83,7 @@ func TestFormatDowntime(t *testing.T) {
 		{5 * time.Minute, "5м 0с"},
 		{15*time.Minute + 30*time.Second, "15м 30с"},
 		{2*time.Hour + 10*time.Minute, "2ч 10м"},
+		{5*24*time.Hour + 2*time.Hour, "5д 2ч"},
 	}
 
 	for _, c := range cases {

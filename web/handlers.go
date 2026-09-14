@@ -1,6 +1,7 @@
 package web
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"strings"
@@ -16,6 +17,8 @@ import (
 var (
 	registeredEndpoints []EndpointInfo
 	endpointsMu         sync.RWMutex
+	lastEndpointsUpdate time.Time
+	endpointsCacheTTL   = 3 * time.Second
 )
 
 type EndpointInfo struct {
@@ -117,7 +120,9 @@ func BasicAuthMiddleware(username, password string) func(http.Handler) http.Hand
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user, pass, ok := r.BasicAuth()
-			if !ok || user != username || pass != password {
+			userMatch := subtle.ConstantTimeCompare([]byte(user), []byte(username)) == 1
+			passMatch := subtle.ConstantTimeCompare([]byte(pass), []byte(password)) == 1
+			if !ok || !userMatch || !passMatch {
 				w.Header().Set("WWW-Authenticate", `Basic realm="metrics"`)
 				http.Error(w, "Unauthorized.", http.StatusUnauthorized)
 				return
@@ -161,6 +166,13 @@ func ConfigStatusHandler(proxyChecker *checker.ProxyChecker) http.HandlerFunc {
 }
 
 func RegisterConfigEndpoints(proxies []*models.ProxyConfig, proxyChecker *checker.ProxyChecker, startPort int) {
+	endpointsMu.RLock()
+	if time.Since(lastEndpointsUpdate) < endpointsCacheTTL && len(registeredEndpoints) > 0 {
+		endpointsMu.RUnlock()
+		return
+	}
+	endpointsMu.RUnlock()
+
 	endpoints := make([]EndpointInfo, 0, len(proxies))
 
 	for _, proxy := range proxies {
@@ -188,6 +200,7 @@ func RegisterConfigEndpoints(proxies []*models.ProxyConfig, proxyChecker *checke
 
 	endpointsMu.Lock()
 	registeredEndpoints = endpoints
+	lastEndpointsUpdate = time.Now()
 	endpointsMu.Unlock()
 }
 

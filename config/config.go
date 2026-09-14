@@ -54,7 +54,7 @@ type CLI struct {
 	Metrics struct {
 		Host      string `name:"metrics-host" help:"Host to listen on" default:"0.0.0.0" env:"METRICS_HOST"`
 		Port      string `name:"metrics-port" help:"Port to listen on" default:"2112" env:"METRICS_PORT"`
-		Protected bool   `name:"metrics-protected" help:"Whether metrics are protected by basic auth" default:"false" env:"METRICS_PROTECTED"`
+		Protected bool   `name:"metrics-protected" help:"Whether metrics are protected by basic auth" default:"true" env:"METRICS_PROTECTED"`
 		Username  string `name:"metrics-username" help:"Username for metrics if protected by basic auth" default:"metricsUser" env:"METRICS_USERNAME"`
 		Password  string `name:"metrics-password" help:"Password for metrics if protected by basic auth" default:"MetricsVeryHardPassword" env:"METRICS_PASSWORD"`
 		Instance  string `name:"metrics-instance" help:"Instance label for metrics" default:"" env:"METRICS_INSTANCE"`
@@ -113,9 +113,9 @@ type VersionFlag string
 func (v VersionFlag) Decode(ctx *kong.DecodeContext) error { return nil }
 func (v VersionFlag) IsBool() bool                         { return true }
 func (v VersionFlag) BeforeApply(app *kong.Kong, vars kong.Vars) error {
-	fmt.Println("Xray Checker: A Prometheus exporter for monitoring Xray proxies")
+	fmt.Println("Xray Checker Bot: A Prometheus exporter and Telegram bot for monitoring Xray proxies")
 	fmt.Printf("Version:\t %s\n", vars["version"])
-	fmt.Printf("GitHub: https://github.com/kutovoys/xray-checker\n")
+	fmt.Printf("GitHub: https://github.com/vlv-code/xray-checker-tg-bot\n")
 	app.Exit(0)
 	return nil
 }

@@ -2,7 +2,7 @@
 
 [![GitHub Release](https://img.shields.io/github/v/release/vlv-code/xray-checker-tg-bot?style=flat&color=blue)](https://github.com/vlv-code/xray-checker-tg-bot/releases/latest)
 [![DockerHub](https://img.shields.io/badge/Docker-ready-blue)](https://github.com/vlv-code/xray-checker-tg-bot)
-[![License](https://img.shields.io/badge/License-GPL%20v3-green)](https://github.com/vlv-code/xray-checker-tg-bot/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/License-AGPL%20v3-blue)](https://github.com/vlv-code/xray-checker-tg-bot/blob/main/LICENSE)
 [![ru](https://img.shields.io/badge/lang-ru-blue)](README_RU.md)
 [![en](https://img.shields.io/badge/lang-en-red)](README.md)
 
@@ -145,7 +145,7 @@ docker compose up -d --build
 
 Чтобы обновить чекер до последней версии с сохранением всех данных:
 ```bash
-cd /opt/remnawave-bedolaga-telegram-bot   # или директория вашего проекта
+cd /opt/xray-checker   # или директория вашего проекта
 git pull origin main
 docker compose up -d --build
 ```

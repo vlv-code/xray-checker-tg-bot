@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
     ports:
       - "${METRICS_PORT:-2112}:${METRICS_PORT:-2112}"
     volumes:

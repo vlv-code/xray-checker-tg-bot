@@ -24,9 +24,8 @@ import (
 	"xray-checker/metrics"
 )
 
-// maxMessageLen keeps outgoing messages under Telegram's ~4096 character limit
-// with headroom for HTML entities added by escaping.
-const maxMessageLen = 3500
+// maxMessageLen keeps outgoing messages under Telegram's ~4096 character limit.
+const maxMessageLen = 4000
 
 // DiagnosticsSource provides diagnostic testing across target endpoints.
 type DiagnosticsSource interface {
@@ -73,11 +72,15 @@ type Bot struct {
 	lastCheckHostAudit time.Time
 	checkHostClient    *checker.CheckHostClient
 	checkHostNodes     []string
+
+	lastMenuMu  sync.Mutex
+	lastMenuMsg map[int64]int
 }
 
 // New creates a Bot and verifies the token against the Telegram API.
 func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRecovery, commandsEnabled bool, subs SubscriptionManager) (*Bot, error) {
 	httpClient := &http.Client{
+		Timeout:   30 * time.Second,
 		Transport: http.DefaultTransport,
 	}
 	api, err := telego.NewBot(token, telego.WithDiscardLogger(), telego.WithHTTPClient(httpClient))
@@ -113,6 +116,7 @@ func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRe
 		tracker:          NewAlertTracker(),
 		eventBuffer:      NewEventBuffer(),
 		lastSeen:         make(map[string]bool),
+		lastMenuMsg:      make(map[int64]int),
 		stopChan:         make(chan struct{}),
 	}, nil
 }
@@ -284,7 +288,19 @@ func (b *Bot) checkSchedules(now time.Time) {
 
 	// Morning transition: quiet ended -> send morning digest
 	if b.wasQuiet && !isQuiet {
-		b.sendMorningDigest(now)
+		endHour, endMin, err := parseTimeOfDay(cfg.QuietHoursEnd)
+		if err != nil {
+			endHour, endMin = 8, 0
+		}
+		nowMinutes := now.Hour()*60 + now.Minute()
+		endMinutes := endHour*60 + endMin
+		diff := nowMinutes - endMinutes
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff <= 60 {
+			b.sendMorningDigest(now)
+		}
 	}
 	b.wasQuiet = isQuiet
 
@@ -391,8 +407,14 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		return
 	}
 
-	// Acknowledge callback immediately to dismiss spinner
-	_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID))
+	// Acknowledge callback immediately to dismiss spinner, EXCEPT for callbacks that return their own custom toast.
+	isToastCallback := strings.HasPrefix(cb.Data, "menu:toggle_proxy:") ||
+		strings.HasPrefix(cb.Data, "menu:toggle_host:") ||
+		cb.Data == "menu:checkhost:run_now"
+
+	if !isToastCallback {
+		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID))
+	}
 
 	switch cb.Data {
 	case "menu:main", "menu:main:refresh":
@@ -453,12 +475,16 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
 	case "menu:quiet:snooze:morning":
 		if b.configMgr != nil {
-			now := time.Now()
-			next8 := time.Date(now.Year(), now.Month(), now.Day(), 8, 0, 0, 0, now.Location())
-			if !now.Before(next8) {
-				next8 = next8.Add(24 * time.Hour)
+			endHour, endMin, err := parseTimeOfDay(b.GetConfig().QuietHoursEnd)
+			if err != nil {
+				endHour, endMin = 8, 0
 			}
-			until := next8.Unix()
+			now := time.Now()
+			nextMorning := time.Date(now.Year(), now.Month(), now.Day(), endHour, endMin, 0, 0, now.Location())
+			if !now.Before(nextMorning) {
+				nextMorning = nextMorning.Add(24 * time.Hour)
+			}
+			until := nextMorning.Unix()
 			_ = b.configMgr.Update(func(c *BotConfig) {
 				c.QuietSnoozeUntil = until
 			})
@@ -667,8 +693,8 @@ func (b *Bot) getMenuText() string {
 
 	nowStr := time.Now().Format("15:04:05 02.01.2006")
 	var uptimeStr string
-	if b.statsStore != nil {
-		uptimeStr = fmt.Sprintf("• Средний аптайм: <b>%.1f%%</b>\n", b.statsStore.GetUptimePercent(""))
+	if avg, ok := b.getAverageUptimePercent(); ok {
+		uptimeStr = fmt.Sprintf("• Средний аптайм: <b>%.1f%%</b>\n", avg)
 	}
 
 	var sb strings.Builder
@@ -814,10 +840,27 @@ func (b *Bot) getDisabledProxiesView(page int) (string, *telego.InlineKeyboardMa
 	return sb.String(), markup
 }
 
+func (b *Bot) replyCommand(msg *telego.Message, text string) {
+	if msg == nil {
+		return
+	}
+	if b.api == nil {
+		return
+	}
+	params := tu.Message(tu.ID(msg.Chat.ID), text).
+		WithParseMode(telego.ModeHTML).
+		WithReplyParameters(&telego.ReplyParameters{
+			MessageID: msg.MessageID,
+		})
+	if _, err := b.api.SendMessage(b.ctx, params); err != nil {
+		b.send(msg.Chat.ID, text)
+	}
+}
+
 func (b *Bot) handleToggleNodeCommand(msg *telego.Message) {
 	arg := strings.TrimSpace(commandArg(msg.Text))
 	if arg == "" {
-		b.send(msg.Chat.ID, "❌ Укажите имя ноды или StableID для переключения.\nПример: <code>/togglenode PL-main</code>")
+		b.replyCommand(msg, "❌ Укажите имя ноды или StableID для переключения.\nПример: <code>/togglenode PL-main</code>")
 		return
 	}
 	if b.configMgr == nil {
@@ -827,28 +870,57 @@ func (b *Bot) handleToggleNodeCommand(msg *telego.Message) {
 	var targetStableID string
 	var targetName string
 	if b.source != nil {
-		for _, pm := range b.source.MetricsSnapshot() {
-			if pm.StableID == arg || strings.EqualFold(pm.Name, arg) || strings.Contains(strings.ToLower(pm.Name), strings.ToLower(arg)) {
+		snapshot := b.source.MetricsSnapshot()
+
+		// Pass 1: exact match by StableID or Name
+		for _, pm := range snapshot {
+			if pm.StableID == arg || strings.EqualFold(pm.Name, arg) {
 				targetStableID = pm.StableID
 				targetName = pm.Name
 				break
 			}
 		}
+
+		// Pass 2: substring match if no exact match found
+		if targetStableID == "" {
+			var matches []metrics.ProxyMetric
+			for _, pm := range snapshot {
+				if strings.Contains(strings.ToLower(pm.Name), strings.ToLower(arg)) {
+					matches = append(matches, pm)
+				}
+			}
+			if len(matches) == 1 {
+				targetStableID = matches[0].StableID
+				targetName = matches[0].Name
+			} else if len(matches) > 1 {
+				var names []string
+				for i, m := range matches {
+					if i >= 5 {
+						names = append(names, fmt.Sprintf("...и ещё %d", len(matches)-5))
+						break
+					}
+					names = append(names, fmt.Sprintf("«%s»", m.Name))
+				}
+				b.replyCommand(msg, fmt.Sprintf("⚠️ Найдено несколько нод с фрагментом «%s»:\n%s\nУточните полное имя или StableID.", escapeHTML(arg), strings.Join(names, ", ")))
+				return
+			}
+		}
 	}
+
 	if targetStableID == "" {
-		targetStableID = arg
-		targetName = arg
+		b.replyCommand(msg, fmt.Sprintf("❌ Нода «%s» не найдена среди текущих подключений.", escapeHTML(arg)))
+		return
 	}
 
 	disabled, err := b.configMgr.ToggleProxy(targetStableID)
 	if err != nil {
-		b.send(msg.Chat.ID, fmt.Sprintf("❌ Ошибка сохранения конфигурации: %v", err))
+		b.replyCommand(msg, fmt.Sprintf("❌ Ошибка сохранения конфигурации: %v", err))
 		return
 	}
 	if disabled {
-		b.send(msg.Chat.ID, fmt.Sprintf("⏸️ Проверка ноды <b>%s</b> <b>отключена</b>.", escapeHTML(targetName)))
+		b.replyCommand(msg, fmt.Sprintf("⏸️ Проверка ноды <b>%s</b> <b>отключена</b>.", escapeHTML(targetName)))
 	} else {
-		b.send(msg.Chat.ID, fmt.Sprintf("🟢 Проверка ноды <b>%s</b> <b>включена</b>.", escapeHTML(targetName)))
+		b.replyCommand(msg, fmt.Sprintf("🟢 Проверка ноды <b>%s</b> <b>включена</b>.", escapeHTML(targetName)))
 	}
 }
 
@@ -898,25 +970,25 @@ func (b *Bot) getDisabledHostsView(page int) (string, *telego.InlineKeyboardMark
 }
 
 func (b *Bot) replySettings(chatID int64) {
-	b.sendWithMarkup(chatID, b.getSettingsText(), SettingsMenuMarkup())
+	b.sendOrUpdateMenu(chatID, b.getSettingsText(), SettingsMenuMarkup())
 }
 
 func (b *Bot) handleToggleHostCommand(msg *telego.Message) {
 	arg := strings.TrimSpace(commandArg(msg.Text))
 	if arg == "" {
-		b.send(msg.Chat.ID, "❌ Укажите хост для переключения.\nПример: <code>/togglehost example.com</code>")
+		b.replyCommand(msg, "❌ Укажите хост для переключения.\nПример: <code>/togglehost example.com</code>")
 		return
 	}
 	if b.configMgr != nil {
 		disabled, err := b.configMgr.ToggleHost(arg)
 		if err != nil {
-			b.send(msg.Chat.ID, fmt.Sprintf("❌ Ошибка сохранения конфигурации: %v", err))
+			b.replyCommand(msg, fmt.Sprintf("❌ Ошибка сохранения конфигурации: %v", err))
 			return
 		}
 		if disabled {
-			b.send(msg.Chat.ID, fmt.Sprintf("⏸️ Проверка хоста <code>%s</code> <b>отключена</b> во всех подписках.", escapeHTML(arg)))
+			b.replyCommand(msg, fmt.Sprintf("⏸️ Проверка хоста <code>%s</code> <b>отключена</b> во всех подписках.", escapeHTML(arg)))
 		} else {
-			b.send(msg.Chat.ID, fmt.Sprintf("🟢 Проверка хоста <code>%s</code> <b>включена</b>.", escapeHTML(arg)))
+			b.replyCommand(msg, fmt.Sprintf("🟢 Проверка хоста <code>%s</code> <b>включена</b>.", escapeHTML(arg)))
 		}
 	}
 }
@@ -930,17 +1002,17 @@ func (b *Bot) handleIntervalCommand(msg *telego.Message) {
 
 	sec, err := strconv.Atoi(arg)
 	if err != nil || sec < 10 {
-		b.send(msg.Chat.ID, "❌ Укажите корректный интервал в секундах (минимум 10 сек).\nПример: <code>/interval 60</code>")
+		b.replyCommand(msg, "❌ Укажите корректный интервал в секундах (минимум 10 сек).\nПример: <code>/interval 60</code>")
 		return
 	}
 
 	b.updateCheckInterval(sec)
-	b.sendWithMarkup(msg.Chat.ID, fmt.Sprintf("✅ Интервал проверки прокси установлен на <b>%d сек (%s)</b>.",
-		sec, FormatDowntime(time.Duration(sec)*time.Second)), IntervalMenuMarkup(sec))
+	b.replyCommand(msg, fmt.Sprintf("✅ Интервал проверки прокси установлен на <b>%d сек (%s)</b>.",
+		sec, FormatDowntime(time.Duration(sec)*time.Second)))
 }
 
 func (b *Bot) replyInterval(chatID int64) {
-	b.sendWithMarkup(chatID, b.getIntervalText(), IntervalMenuMarkup(b.getIntervalSec()))
+	b.sendOrUpdateMenu(chatID, b.getIntervalText(), IntervalMenuMarkup(b.getIntervalSec()))
 }
 
 func (b *Bot) getIntervalText() string {
@@ -953,10 +1025,33 @@ func (b *Bot) getIntervalText() string {
 }
 
 func (b *Bot) replyMenu(chatID int64) {
-	b.sendWithMarkup(chatID, b.getMenuText(), MainMenuMarkup())
+	b.sendOrUpdateMenu(chatID, b.getMenuText(), MainMenuMarkup())
+}
+
+func (b *Bot) getAverageUptimePercent() (float64, bool) {
+	if b.statsStore == nil || b.source == nil {
+		return 100.0, false
+	}
+	snapshot := b.source.MetricsSnapshot()
+	var totalUptime float64
+	var count int
+	for _, pm := range snapshot {
+		if pm.Disabled {
+			continue
+		}
+		totalUptime += b.statsStore.GetUptimePercent(pm.StableID)
+		count++
+	}
+	if count == 0 {
+		return 100.0, false
+	}
+	return totalUptime / float64(count), true
 }
 
 func (b *Bot) getStatusText() string {
+	if b.source == nil {
+		return "Нет данных о прокси — проверки ещё не выполнялись."
+	}
 	snapshot := b.source.MetricsSnapshot()
 	if len(snapshot) == 0 {
 		return "Нет данных о прокси — проверки ещё не выполнялись."
@@ -965,22 +1060,35 @@ func (b *Bot) getStatusText() string {
 	sort.Slice(snapshot, func(i, j int) bool { return snapshot[i].Name < snapshot[j].Name })
 
 	online := 0
-	var body strings.Builder
+	activeTotal := 0
+	disabledCount := 0
+	var activeBody strings.Builder
+	var disabledBody strings.Builder
+
 	for _, pm := range snapshot {
+		if pm.Disabled {
+			disabledCount++
+			fmt.Fprintf(&disabledBody, "⏸️ <b>%s</b> — отключена\n", escapeHTML(pm.Name))
+			continue
+		}
+		activeTotal++
 		if pm.Online {
 			online++
-			fmt.Fprintf(&body, "✅ <b>%s</b> — %.0f ms\n", escapeHTML(pm.Name), pm.LatencyMs)
+			fmt.Fprintf(&activeBody, "✅ <b>%s</b> — %.0f ms\n", escapeHTML(pm.Name), pm.LatencyMs)
 		} else {
-			fmt.Fprintf(&body, "🔴 <b>%s</b> — недоступен\n", escapeHTML(pm.Name))
+			fmt.Fprintf(&activeBody, "🔴 <b>%s</b> — недоступен\n", escapeHTML(pm.Name))
 		}
 	}
 
-	header := fmt.Sprintf("<b>Статус прокси: %d/%d online</b>\n\n", online, len(snapshot))
-	return header + body.String()
+	header := fmt.Sprintf("<b>Статус прокси: %d/%d online</b>\n\n", online, activeTotal)
+	if disabledCount > 0 {
+		return header + activeBody.String() + fmt.Sprintf("\n<b>Отключённые ноды (%d):</b>\n", disabledCount) + disabledBody.String()
+	}
+	return header + activeBody.String()
 }
 
 func (b *Bot) replyStatus(chatID int64) {
-	b.sendWithMarkup(chatID, b.getStatusText(), StatusMenuMarkup())
+	b.sendOrUpdateMenu(chatID, b.getStatusText(), StatusMenuMarkup())
 }
 
 func (b *Bot) getStatsOverviewText() string {
@@ -1020,7 +1128,7 @@ func (b *Bot) getStatsOverviewText() string {
 }
 
 func (b *Bot) replyStats(chatID int64) {
-	b.sendWithMarkup(chatID, b.getStatsOverviewText(), StatsMenuMarkup())
+	b.sendOrUpdateMenu(chatID, b.getStatsOverviewText(), StatsMenuMarkup())
 }
 
 func (b *Bot) getIncidentsText() string {
@@ -1087,7 +1195,7 @@ func (b *Bot) getQuietHoursText() string {
 }
 
 func (b *Bot) replyQuiet(chatID int64) {
-	b.sendWithMarkup(chatID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
+	b.sendOrUpdateMenu(chatID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
 }
 
 func (b *Bot) getAlertModeText() string {
@@ -1127,7 +1235,7 @@ func (b *Bot) getTargetsText() string {
 }
 
 func (b *Bot) replyTargets(chatID int64) {
-	b.sendWithMarkup(chatID, b.getTargetsText(), TargetsMenuMarkup())
+	b.sendOrUpdateMenu(chatID, b.getTargetsText(), TargetsMenuMarkup())
 }
 
 func (b *Bot) getSubsText() string {
@@ -1496,8 +1604,8 @@ func (b *Bot) replyDigest(chatID int64) {
 		"• Текущий статус: <b>%d/%d online</b>\n"+
 		"• Время: <b>%s</b>\n", online, totalActive, time.Now().Format("15:04:05 02.01.2006"))
 
-	if b.statsStore != nil {
-		text += fmt.Sprintf("• Средний аптайм: <b>%.1f%%</b>\n", b.statsStore.GetUptimePercent(""))
+	if avg, ok := b.getAverageUptimePercent(); ok {
+		text += fmt.Sprintf("• Средний аптайм: <b>%.1f%%</b>\n", avg)
 	}
 
 	b.sendWithMarkup(chatID, text, BackToMenuMarkup())
@@ -1590,14 +1698,29 @@ func (b *Bot) replyHelp(chatID int64) {
 	}
 	text += "/help — эта справка\n\n" +
 		"Уведомления об авариях приходят сюда автоматически."
-	b.sendWithMarkup(chatID, text, MainMenuMarkup())
+	b.sendOrUpdateMenu(chatID, text, MainMenuMarkup())
+}
+
+// ProcessSnapshot compares the current proxy snapshot against the last known
+// state and handles transitions with smart alert lifecycle and stats tracking.
+type deleteAction struct {
+	chatID    int64
+	messageID int
+}
+
+type recoveryAction struct {
+	chatID    int64
+	pm        metrics.ProxyMetric
+	alert     *ActiveAlert
+	hadAlert  bool
+	downtime  time.Duration
+	alertMode string
 }
 
 // ProcessSnapshot compares the current proxy snapshot against the last known
 // state and handles transitions with smart alert lifecycle and stats tracking.
 func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 
 	now := time.Now()
 	cfg := b.GetConfig()
@@ -1617,8 +1740,13 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 			}
 		}
 		b.seeded = true
+		b.mu.Unlock()
 		return
 	}
+
+	var disabledDeletions []deleteAction
+	var outages []metrics.ProxyMetric
+	var recoveries []recoveryAction
 
 	seenNow := make(map[string]bool, len(snapshot))
 	for _, pm := range snapshot {
@@ -1626,10 +1754,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 			// Proxy is disabled: resolve/clean any active alerts and ignore
 			for _, chatID := range b.chatIDs {
 				if alert, hadAlert := b.tracker.Resolve(chatID, pm.StableID); hadAlert {
-					_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-						ChatID:    tu.ID(chatID),
-						MessageID: alert.MessageID,
-					})
+					disabledDeletions = append(disabledDeletions, deleteAction{chatID: chatID, messageID: alert.MessageID})
 				}
 			}
 			delete(b.lastSeen, pm.StableID)
@@ -1662,15 +1787,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 					Reason:    "Offline",
 				})
 			} else {
-				outageText := fmt.Sprintf("🔴 <b>%s</b> недоступен\n%s", escapeHTML(pm.Name), escapeHTML(pm.Address))
-				for _, chatID := range b.chatIDs {
-					if b.tracker.HasAlert(chatID, pm.StableID) {
-						continue
-					}
-					if sent, err := b.sendAndReturn(chatID, outageText); err == nil {
-						b.tracker.Track(chatID, sent.MessageID, pm.StableID, pm.Name, now, "Offline")
-					}
-				}
+				outages = append(outages, pm)
 			}
 
 		case !prev && pm.Online:
@@ -1692,47 +1809,14 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 					if hadAlert {
 						downtime = now.Sub(alert.DownAt)
 					}
-
-					if cfg.AlertMode == AlertModeClean {
-						// Delete outage alert
-						if hadAlert {
-							_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-								ChatID:    tu.ID(chatID),
-								MessageID: alert.MessageID,
-							})
-						}
-						if b.notifyOnRecovery && hadAlert {
-							recoveryText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms", escapeHTML(pm.Name), pm.LatencyMs)
-							if downtime > 0 {
-								recoveryText += fmt.Sprintf(" (был оффлайн %s)", FormatDowntime(downtime))
-							}
-							if sent, err := b.sendAndReturn(chatID, recoveryText); err == nil {
-								// Delete recovery confirmation after 2 minutes
-								go func(cID int64, mID int) {
-									time.Sleep(2 * time.Minute)
-									_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-										ChatID:    tu.ID(cID),
-										MessageID: mID,
-									})
-								}(chatID, sent.MessageID)
-							}
-						}
-					} else { // AlertModeLive
-						if hadAlert {
-							liveText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms (был оффлайн %s)",
-								escapeHTML(pm.Name), pm.LatencyMs, FormatDowntime(downtime))
-							params := &telego.EditMessageTextParams{
-								ChatID:    tu.ID(chatID),
-								MessageID: alert.MessageID,
-								Text:      liveText,
-								ParseMode: telego.ModeHTML,
-							}
-							_, _ = b.api.EditMessageText(b.ctx, params)
-						} else if b.notifyOnRecovery {
-							recoveryText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms", escapeHTML(pm.Name), pm.LatencyMs)
-							b.send(chatID, recoveryText)
-						}
-					}
+					recoveries = append(recoveries, recoveryAction{
+						chatID:    chatID,
+						pm:        pm,
+						alert:     alert,
+						hadAlert:  hadAlert,
+						downtime:  downtime,
+						alertMode: cfg.AlertMode,
+					})
 				}
 			}
 		}
@@ -1742,6 +1826,77 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 	for id := range b.lastSeen {
 		if !seenNow[id] {
 			delete(b.lastSeen, id)
+		}
+	}
+
+	// Release lock BEFORE executing network calls
+	b.mu.Unlock()
+
+	// 1. Process deletions for disabled proxies
+	for _, del := range disabledDeletions {
+		if b.api != nil {
+			_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+				ChatID:    tu.ID(del.chatID),
+				MessageID: del.messageID,
+			})
+		}
+	}
+
+	// 2. Process outages
+	for _, pm := range outages {
+		outageText := fmt.Sprintf("🔴 <b>%s</b> недоступен\n%s", escapeHTML(pm.Name), escapeHTML(pm.Address))
+		for _, chatID := range b.chatIDs {
+			if b.tracker.HasAlert(chatID, pm.StableID) {
+				continue
+			}
+			if sent, err := b.sendAndReturn(chatID, outageText); err == nil && sent != nil && sent.MessageID != 0 {
+				b.tracker.Track(chatID, sent.MessageID, pm.StableID, pm.Name, now, "Offline")
+			}
+		}
+	}
+
+	// 3. Process recoveries
+	for _, rec := range recoveries {
+		if rec.alertMode == AlertModeClean {
+			if rec.hadAlert && b.api != nil {
+				_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+					ChatID:    tu.ID(rec.chatID),
+					MessageID: rec.alert.MessageID,
+				})
+			}
+			if b.notifyOnRecovery && rec.hadAlert {
+				recoveryText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms", escapeHTML(rec.pm.Name), rec.pm.LatencyMs)
+				if rec.downtime > 0 {
+					recoveryText += fmt.Sprintf(" (был оффлайн %s)", FormatDowntime(rec.downtime))
+				}
+				if sent, err := b.sendAndReturn(rec.chatID, recoveryText); err == nil && sent != nil && sent.MessageID != 0 {
+					cID := rec.chatID
+					mID := sent.MessageID
+					time.AfterFunc(2*time.Minute, func() {
+						if b.api != nil {
+							_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+								ChatID:    tu.ID(cID),
+								MessageID: mID,
+							})
+						}
+					})
+				}
+			}
+		} else { // AlertModeLive
+			if rec.hadAlert && b.api != nil {
+				liveText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms (был оффлайн %s)",
+					escapeHTML(rec.pm.Name), rec.pm.LatencyMs, FormatDowntime(rec.downtime))
+				params := &telego.EditMessageTextParams{
+					ChatID:    tu.ID(rec.chatID),
+					MessageID: rec.alert.MessageID,
+					Text:      liveText,
+					ParseMode: telego.ModeHTML,
+				}
+				_, _ = b.api.EditMessageText(b.ctx, params)
+			} else if b.notifyOnRecovery {
+				recoveryText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms", escapeHTML(rec.pm.Name), rec.pm.LatencyMs)
+				b.send(rec.chatID, recoveryText)
+			}
 		}
 	}
 }
@@ -1766,7 +1921,7 @@ func (b *Bot) send(chatID int64, text string) {
 
 func (b *Bot) sendAndReturn(chatID int64, text string) (*telego.Message, error) {
 	if b.api == nil {
-		return &telego.Message{MessageID: 100}, nil
+		return &telego.Message{MessageID: 0}, nil
 	}
 	params := tu.Message(tu.ID(chatID), text).WithParseMode(telego.ModeHTML)
 	sent, err := b.api.SendMessage(b.ctx, params)
@@ -1779,18 +1934,109 @@ func (b *Bot) sendAndReturn(chatID int64, text string) (*telego.Message, error) 
 
 func (b *Bot) sendWithMarkup(chatID int64, text string, markup *telego.InlineKeyboardMarkup) (*telego.Message, error) {
 	if b.api == nil {
-		return &telego.Message{MessageID: 100}, nil
+		return &telego.Message{MessageID: 0}, nil
 	}
-	params := tu.Message(tu.ID(chatID), text).WithParseMode(telego.ModeHTML).WithReplyMarkup(markup)
+	chunks := splitMessage(text, maxMessageLen)
+	if len(chunks) == 0 {
+		return &telego.Message{MessageID: 0}, nil
+	}
+	if len(chunks) == 1 {
+		params := tu.Message(tu.ID(chatID), chunks[0]).WithParseMode(telego.ModeHTML).WithReplyMarkup(markup)
+		sent, err := b.api.SendMessage(b.ctx, params)
+		if err != nil {
+			logger.Error("Telegram: failed to send message to %d: %v", chatID, err)
+			return nil, err
+		}
+		return sent, nil
+	}
+
+	for i := 0; i < len(chunks)-1; i++ {
+		params := tu.Message(tu.ID(chatID), chunks[i]).WithParseMode(telego.ModeHTML)
+		if _, err := b.api.SendMessage(b.ctx, params); err != nil {
+			logger.Error("Telegram: failed to send chunk to %d: %v", chatID, err)
+		}
+	}
+
+	params := tu.Message(tu.ID(chatID), chunks[len(chunks)-1]).WithParseMode(telego.ModeHTML).WithReplyMarkup(markup)
 	sent, err := b.api.SendMessage(b.ctx, params)
 	if err != nil {
-		logger.Error("Telegram: failed to send message to %d: %v", chatID, err)
+		logger.Error("Telegram: failed to send final chunk with markup to %d: %v", chatID, err)
 		return nil, err
 	}
 	return sent, nil
 }
 
+func (b *Bot) sendOrUpdateMenu(chatID int64, text string, markup *telego.InlineKeyboardMarkup) {
+	b.lastMenuMu.Lock()
+	if b.lastMenuMsg == nil {
+		b.lastMenuMsg = make(map[int64]int)
+	}
+	oldMsgID, hasOld := b.lastMenuMsg[chatID]
+	b.lastMenuMu.Unlock()
+
+	if hasOld && oldMsgID > 0 && b.api != nil {
+		_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+			ChatID:    tu.ID(chatID),
+			MessageID: oldMsgID,
+		})
+	}
+
+	sent, _ := b.sendWithMarkup(chatID, text, markup)
+	if sent != nil && sent.GetMessageID() > 0 {
+		b.lastMenuMu.Lock()
+		b.lastMenuMsg[chatID] = sent.GetMessageID()
+		b.lastMenuMu.Unlock()
+	}
+}
+
+func (b *Bot) edit(chatID int64, messageID int, text string) {
+	b.editWithMarkup(chatID, messageID, text, nil)
+}
+
+func (b *Bot) buildAddSubReport(count int) string {
+	var onlineCount, offlineCount int
+	var offlineNames []string
+	if b.source != nil {
+		for _, pm := range b.source.MetricsSnapshot() {
+			if pm.Disabled {
+				continue
+			}
+			if pm.Online {
+				onlineCount++
+			} else {
+				offlineCount++
+				offlineNames = append(offlineNames, pm.Name)
+			}
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("✅ <b>Подписка добавлена.</b> Всего прокси: %d\n", count))
+	sb.WriteString(fmt.Sprintf("🟢 Доступно: %d\n", onlineCount))
+	if offlineCount > 0 {
+		sb.WriteString(fmt.Sprintf("🔴 Недоступно: %d\n", offlineCount))
+		limit := 10
+		if len(offlineNames) < limit {
+			limit = len(offlineNames)
+		}
+		for i := 0; i < limit; i++ {
+			sb.WriteString(fmt.Sprintf("  • <code>%s</code>\n", escapeHTML(offlineNames[i])))
+		}
+		if len(offlineNames) > limit {
+			sb.WriteString(fmt.Sprintf("  … и ещё %d нод(ы)\n", len(offlineNames)-limit))
+		}
+	}
+	return sb.String()
+}
+
 func (b *Bot) editWithMarkup(chatID int64, messageID int, text string, markup *telego.InlineKeyboardMarkup) {
+	b.lastMenuMu.Lock()
+	if b.lastMenuMsg == nil {
+		b.lastMenuMsg = make(map[int64]int)
+	}
+	b.lastMenuMsg[chatID] = messageID
+	b.lastMenuMu.Unlock()
+
 	if b.api == nil {
 		return
 	}
@@ -1873,20 +2119,83 @@ func splitMessage(text string, limit int) []string {
 	lines := strings.Split(text, "\n")
 	var chunks []string
 	var cur strings.Builder
+	var openTags []string
+
 	for _, line := range lines {
-		if cur.Len() > 0 && cur.Len()+len(line)+1 > limit {
+		closing := closeTags(openTags)
+		if cur.Len() > 0 && cur.Len()+len(line)+1+len(closing) > limit {
+			cur.WriteString(closing)
 			chunks = append(chunks, cur.String())
 			cur.Reset()
+
+			cur.WriteString(openTagsPrefix(openTags))
 		}
-		if cur.Len() > 0 {
+		if cur.Len() > 0 && cur.Len() != len(openTagsPrefix(openTags)) {
 			cur.WriteString("\n")
 		}
 		cur.WriteString(line)
+		openTags = updateOpenTags(line, openTags)
 	}
 	if cur.Len() > 0 {
+		cur.WriteString(closeTags(openTags))
 		chunks = append(chunks, cur.String())
 	}
 	return chunks
+}
+
+func updateOpenTags(text string, openTags []string) []string {
+	i := 0
+	for i < len(text) {
+		if text[i] == '<' {
+			end := strings.IndexByte(text[i:], '>')
+			if end == -1 {
+				break
+			}
+			tagContent := strings.TrimSpace(text[i+1 : i+end])
+			if strings.HasPrefix(tagContent, "/") {
+				tagName := strings.ToLower(strings.TrimPrefix(tagContent, "/"))
+				for j := len(openTags) - 1; j >= 0; j-- {
+					openName := strings.ToLower(strings.Fields(openTags[j])[0])
+					if openName == tagName {
+						openTags = append(openTags[:j], openTags[j+1:]...)
+						break
+					}
+				}
+			} else if !strings.HasSuffix(tagContent, "/") {
+				parts := strings.Fields(tagContent)
+				if len(parts) > 0 {
+					tagName := strings.ToLower(parts[0])
+					switch tagName {
+					case "b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "code", "pre", "tg-spoiler", "blockquote":
+						openTags = append(openTags, tagName)
+					case "a":
+						openTags = append(openTags, tagContent)
+					}
+				}
+			}
+			i += end + 1
+		} else {
+			i++
+		}
+	}
+	return openTags
+}
+
+func closeTags(tags []string) string {
+	var sb strings.Builder
+	for i := len(tags) - 1; i >= 0; i-- {
+		tagName := strings.Fields(tags[i])[0]
+		sb.WriteString("</" + tagName + ">")
+	}
+	return sb.String()
+}
+
+func openTagsPrefix(tags []string) string {
+	var sb strings.Builder
+	for _, tag := range tags {
+		sb.WriteString("<" + tag + ">")
+	}
+	return sb.String()
 }
 
 func escapeHTML(s string) string {

@@ -31,73 +31,65 @@ func (b *Bot) handleAddSub(msg *telego.Message) {
 	chatID := msg.Chat.ID
 	url := commandArg(msg.Text)
 	if url == "" {
-		b.send(chatID, "Использование: /addsub &lt;URL подписки&gt;")
+		b.replyCommand(msg, "Использование: /addsub &lt;URL подписки&gt;")
 		return
 	}
 	if b.subs == nil {
-		b.send(chatID, "Управление подписками через бота выключено.")
+		b.replyCommand(msg, "Управление подписками через бота выключено.")
 		return
 	}
 
-	b.send(chatID, "⏳ Проверяю и добавляю подписку…")
+	sent, _ := b.sendAndReturn(chatID, "⏳ Проверяю и добавляю подписку…")
+	placeholderID := 0
+	if sent != nil {
+		placeholderID = sent.GetMessageID()
+	}
+
 	count, err := b.subs.AddSubscription(url)
 	if err != nil {
-		b.send(chatID, fmt.Sprintf("❌ Не удалось добавить подписку.\n%s", escapeHTML(err.Error())))
+		errText := fmt.Sprintf("❌ Не удалось добавить подписку.\n%s", escapeHTML(err.Error()))
+		if placeholderID > 0 {
+			b.edit(chatID, placeholderID, errText)
+		} else {
+			b.replyCommand(msg, errText)
+		}
 		return
 	}
-	b.send(chatID, fmt.Sprintf("✅ Подписка добавлена. Всего прокси: %d", count))
+
+	report := b.buildAddSubReport(count)
+	if placeholderID > 0 {
+		b.edit(chatID, placeholderID, report)
+	} else {
+		b.replyCommand(msg, report)
+	}
 }
 
 func (b *Bot) handleDelSub(msg *telego.Message) {
-	chatID := msg.Chat.ID
 	url := commandArg(msg.Text)
 	if url == "" {
-		b.send(chatID, "Использование: /delsub &lt;URL подписки&gt;")
+		b.replyCommand(msg, "Использование: /delsub &lt;URL подписки&gt;")
 		return
 	}
 	if b.subs == nil {
-		b.send(chatID, "Управление подписками через бота выключено.")
+		b.replyCommand(msg, "Управление подписками через бота выключено.")
 		return
 	}
 
 	found, count, err := b.subs.RemoveSubscription(url)
 	if err != nil {
-		b.send(chatID, fmt.Sprintf("❌ Не удалось удалить подписку.\n%s", escapeHTML(err.Error())))
+		b.replyCommand(msg, fmt.Sprintf("❌ Не удалось удалить подписку.\n%s", escapeHTML(err.Error())))
 		return
 	}
 	if !found {
-		b.send(chatID, "Не найдено подписки с таким URL среди добавленных через бота.\n"+
+		b.replyCommand(msg, "Не найдено подписки с таким URL среди добавленных через бота.\n"+
 			"Подписки, заданные при запуске (переменные окружения/флаги), удалить нельзя.")
 		return
 	}
-	b.send(chatID, fmt.Sprintf("✅ Подписка удалена. Всего прокси: %d", count))
+	b.replyCommand(msg, fmt.Sprintf("✅ Подписка удалена. Всего прокси: %d", count))
 }
 
 func (b *Bot) replySubs(chatID int64) {
-	if b.subs == nil {
-		b.send(chatID, "Управление подписками через бота выключено.")
-		return
-	}
-
-	static := b.subs.Static()
-	dynamic := b.subs.Dynamic()
-
-	var body strings.Builder
-	body.WriteString("<b>Подписки</b>\n\n")
-	if len(static) == 0 && len(dynamic) == 0 {
-		body.WriteString("Нет ни одной подписки.\n")
-	}
-	for _, u := range static {
-		fmt.Fprintf(&body, "🔒 %s\n", escapeHTML(u))
-	}
-	for _, u := range dynamic {
-		fmt.Fprintf(&body, "➕ %s\n", escapeHTML(u))
-	}
-	if len(static) > 0 || len(dynamic) > 0 {
-		body.WriteString("\n🔒 — задана при запуске, ➕ — добавлена через /addsub")
-	}
-
-	b.send(chatID, body.String())
+	b.sendOrUpdateMenu(chatID, b.getSubsText(), BackToSettingsMarkup())
 }
 
 // commandArg returns the first whitespace-separated argument after a

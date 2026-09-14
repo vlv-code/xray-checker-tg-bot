@@ -144,18 +144,24 @@ func DisabledProxiesMarkup(items []ProxyToggleItem, page, totalPages int) *teleg
 	}
 
 	if totalPages > 1 {
-		prevPage := page - 1
-		if prevPage < 1 {
-			prevPage = totalPages
+		var prevBtn telego.InlineKeyboardButton
+		if page > 1 {
+			prevBtn = btn("⬅️ Пред", fmt.Sprintf("menu:disabled_proxies:%d", page-1))
+		} else {
+			prevBtn = btn("·", "menu:noop")
 		}
-		nextPage := page + 1
-		if nextPage > totalPages {
-			nextPage = 1
+
+		var nextBtn telego.InlineKeyboardButton
+		if page < totalPages {
+			nextBtn = btn("След ➡️", fmt.Sprintf("menu:disabled_proxies:%d", page+1))
+		} else {
+			nextBtn = btn("·", "menu:noop")
 		}
+
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn("⬅️ Пред", fmt.Sprintf("menu:disabled_proxies:%d", prevPage)),
+			prevBtn,
 			btn(fmt.Sprintf("%d / %d", page, totalPages), fmt.Sprintf("menu:disabled_proxies:noop:%d:%d", page, totalPages)),
-			btn("След ➡️", fmt.Sprintf("menu:disabled_proxies:%d", nextPage)),
+			nextBtn,
 		))
 	}
 
@@ -178,25 +184,36 @@ func DisabledHostsMarkup(hosts []string, disabledMap map[string]bool, page, tota
 			statusIcon = "⏸️"
 			statusText = "выключен"
 		}
-		btnText := fmt.Sprintf("%s %s (%s)", statusIcon, host, statusText)
+		displayHost := host
+		runes := []rune(displayHost)
+		if len(runes) > 28 {
+			displayHost = string(runes[:25]) + "..."
+		}
+		btnText := fmt.Sprintf("%s %s (%s)", statusIcon, displayHost, statusText)
 		rows = append(rows, tu.InlineKeyboardRow(
 			btn(btnText, fmt.Sprintf("menu:toggle_host:%s:%d", host, page)),
 		))
 	}
 
 	if totalPages > 1 {
-		prevPage := page - 1
-		if prevPage < 1 {
-			prevPage = totalPages
+		var prevBtn telego.InlineKeyboardButton
+		if page > 1 {
+			prevBtn = btn("⬅️ Пред", fmt.Sprintf("menu:disabled_hosts:%d", page-1))
+		} else {
+			prevBtn = btn("·", "menu:noop")
 		}
-		nextPage := page + 1
-		if nextPage > totalPages {
-			nextPage = 1
+
+		var nextBtn telego.InlineKeyboardButton
+		if page < totalPages {
+			nextBtn = btn("След ➡️", fmt.Sprintf("menu:disabled_hosts:%d", page+1))
+		} else {
+			nextBtn = btn("·", "menu:noop")
 		}
+
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn("⬅️ Пред", fmt.Sprintf("menu:disabled_hosts:%d", prevPage)),
+			prevBtn,
 			btn(fmt.Sprintf("%d / %d", page, totalPages), fmt.Sprintf("menu:disabled_hosts:noop:%d:%d", page, totalPages)),
-			btn("След ➡️", fmt.Sprintf("menu:disabled_hosts:%d", nextPage)),
+			nextBtn,
 		))
 	}
 
@@ -247,6 +264,11 @@ func QuietHoursMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 		btn(toggleText, "menu:quiet:toggle"),
 	))
 
+	morningTime := "08:00"
+	if cfg.QuietHoursEnd != "" {
+		morningTime = cfg.QuietHoursEnd
+	}
+
 	now := time.Now().Unix()
 	if cfg.QuietSnoozeUntil > now {
 		remaining := time.Duration(cfg.QuietSnoozeUntil-now) * time.Second
@@ -257,7 +279,7 @@ func QuietHoursMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 		rows = append(rows, tu.InlineKeyboardRow(
 			btn("💤 Пауза 1ч", "menu:quiet:snooze:1h"),
 			btn("💤 Пауза 4ч", "menu:quiet:snooze:4h"),
-			btn("🌅 До утра (08:00)", "menu:quiet:snooze:morning"),
+			btn(fmt.Sprintf("🌅 До утра (%s)", morningTime), "menu:quiet:snooze:morning"),
 		))
 	}
 
@@ -373,6 +395,12 @@ func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMa
 		}
 	}
 
+	if len(proxies) > 20 {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn(fmt.Sprintf("...и ещё %d нод (проверьте через /checkhost)", len(proxies)-20), "menu:noop"),
+		))
+	}
+
 	rows = append(rows, tu.InlineKeyboardRow(
 		btn("🔙 Главное меню", "menu:main"),
 	))
@@ -389,23 +417,28 @@ func DiagPaginationMarkup(page, totalPages int) *telego.InlineKeyboardMarkup {
 		totalPages = 1
 	}
 
-	prevPage := page - 1
-	if prevPage < 1 {
-		prevPage = totalPages
-	}
-	nextPage := page + 1
-	if nextPage > totalPages {
-		nextPage = 1
-	}
-
 	var rows [][]telego.InlineKeyboardButton
 
 	// Pagination row if more than 1 page
 	if totalPages > 1 {
+		var prevBtn telego.InlineKeyboardButton
+		if page > 1 {
+			prevBtn = btn("⬅️ Пред", fmt.Sprintf("menu:diag:p:%d", page-1))
+		} else {
+			prevBtn = btn("·", "menu:noop")
+		}
+
+		var nextBtn telego.InlineKeyboardButton
+		if page < totalPages {
+			nextBtn = btn("След ➡️", fmt.Sprintf("menu:diag:p:%d", page+1))
+		} else {
+			nextBtn = btn("·", "menu:noop")
+		}
+
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn("⬅️ Пред", fmt.Sprintf("menu:diag:p:%d", prevPage)),
+			prevBtn,
 			btn(fmt.Sprintf("%d / %d", page, totalPages), fmt.Sprintf("menu:diag:noop:%d:%d", page, totalPages)),
-			btn("След ➡️", fmt.Sprintf("menu:diag:p:%d", nextPage)),
+			nextBtn,
 		))
 	}
 

@@ -154,5 +154,10 @@ func FormatDowntime(d time.Duration) string {
 	}
 	hours := minutes / 60
 	minutes = minutes % 60
-	return fmt.Sprintf("%dч %dм", hours, minutes)
+	if hours < 24 {
+		return fmt.Sprintf("%dч %dм", hours, minutes)
+	}
+	days := hours / 24
+	hours = hours % 24
+	return fmt.Sprintf("%dд %dч", days, hours)
 }

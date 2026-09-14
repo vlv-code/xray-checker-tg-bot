@@ -1,6 +1,7 @@
 package subscription
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -892,7 +893,10 @@ func (p *Parser) fetchURLContent(source string) (*fetchResult, error) {
 		req.Header.Set(strings.TrimSpace(key), strings.TrimSpace(value))
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: newSafeTransport(),
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -903,7 +907,7 @@ func (p *Parser) fetchURLContent(source string) (*fetchResult, error) {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	content, err := io.ReadAll(resp.Body)
+	content, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
 	if err != nil {
 		return nil, err
 	}
@@ -1548,3 +1552,73 @@ func (p *Parser) parseSingleConfigFile(data []byte, startIndex int) ([]*models.P
 
 	return nil, fmt.Errorf("unsupported config format")
 }
+
+func isBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	// Check IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1)
+	if ip4 := ip.To4(); ip4 != nil {
+		if ip4.IsLoopback() || ip4.IsPrivate() || ip4.IsLinkLocalUnicast() || ip4.IsUnspecified() {
+			return true
+		}
+		// 0.0.0.0/8
+		if ip4[0] == 0 {
+			return true
+		}
+		// 169.254.0.0/16
+		if ip4[0] == 169 && ip4[1] == 254 {
+			return true
+		}
+		return false
+	}
+	// IPv6
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	return false
+}
+
+func newSafeTransport() *http.Transport {
+	dialer := &net.Dialer{
+		Timeout:   15 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+
+			if ip := net.ParseIP(host); ip != nil {
+				if isBlockedIP(ip) {
+					return nil, fmt.Errorf("SSRF: access to private/reserved IP %s is blocked", ip)
+				}
+				return dialer.DialContext(ctx, network, addr)
+			}
+
+			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			if err != nil {
+				return nil, err
+			}
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("no IP addresses found for host %s", host)
+			}
+
+			for _, ip := range ips {
+				if isBlockedIP(ip) {
+					return nil, fmt.Errorf("SSRF: host %s resolved to blocked IP %s", host, ip)
+				}
+			}
+
+			targetAddr := net.JoinHostPort(ips[0].String(), port)
+			return dialer.DialContext(ctx, network, targetAddr)
+		},
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+

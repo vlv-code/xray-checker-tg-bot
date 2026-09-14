@@ -10,6 +10,6 @@ updates:
     schedule:
       interval: "weekly"
     reviewers: 
-      - "kutovoys"
+      - "vlv-code"
     assignees:
-      - "kutovoys"
+      - "vlv-code"

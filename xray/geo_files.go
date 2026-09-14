@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"xray-checker/logger"
 )
@@ -70,7 +71,10 @@ func (gfm *GeoFileManager) ensureFile(filename, url string) error {
 }
 
 func (gfm *GeoFileManager) downloadFile(url, filePath string) error {
-	resp, err := http.Get(url)
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+	}
+	resp, err := client.Get(url)
 	if err != nil {
 		return fmt.Errorf("HTTP request failed: %v", err)
 	}
