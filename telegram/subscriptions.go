@@ -39,7 +39,7 @@ func (b *Bot) handleAddSub(msg *telego.Message) {
 		return
 	}
 
-	sent, _ := b.sendAndReturn(chatID, "⏳ Проверяю и добавляю подписку…")
+	sent, _ := b.sendAndReturn(chatID, "⏳ Проверка и добавление подписки…")
 	placeholderID := 0
 	if sent != nil {
 		placeholderID = sent.GetMessageID()
@@ -85,7 +85,7 @@ func (b *Bot) handleDelSub(msg *telego.Message) {
 			"Подписки, заданные при запуске (переменные окружения/флаги), удалить нельзя.")
 		return
 	}
-	b.replyCommand(msg, fmt.Sprintf("✅ Подписка удалена. Всего прокси: %d", count))
+	b.replyCommand(msg, fmt.Sprintf("✅ Подписка удалена. Прокси-хостов: %d", count))
 }
 
 func (b *Bot) replySubs(chatID int64) {

@@ -270,7 +270,7 @@ func TestBot_MenuTextAndSettings(t *testing.T) {
 	if !strings.Contains(menuText, "📊 Сводка Xray Checker") {
 		t.Errorf("expected header '📊 Сводка Xray Checker', got: %s", menuText)
 	}
-	if !strings.Contains(menuText, "• Текущий статус: <b>1/2 online</b>") {
+	if !strings.Contains(menuText, "• Текущий статус: <b>1/2 онлайн</b>") {
 		t.Errorf("expected 1/2 online with disabled excluded, got: %s", menuText)
 	}
 	if !strings.Contains(menuText, "1 отключено") {
@@ -333,10 +333,10 @@ func TestBot_DisabledProxiesView(t *testing.T) {
 	}
 
 	viewText, markup := b.getDisabledProxiesView(1)
-	if !strings.Contains(viewText, "🚫 Управление нодами (вкл/выкл)") {
+	if !strings.Contains(viewText, "🚫 Управление прокси-хостами") {
 		t.Errorf("expected view title, got: %s", viewText)
 	}
-	if !strings.Contains(viewText, "Всего нод: <b>3</b> | Отключено: <b>1</b>") {
+	if !strings.Contains(viewText, "Всего прокси-хостов: <b>3</b> | Отключено: <b>1</b>") {
 		t.Errorf("expected node counts, got: %s", viewText)
 	}
 
@@ -359,7 +359,7 @@ func TestBot_DisabledProxiesView(t *testing.T) {
 
 	// Verify menu text immediately reflects disabled node from cfg
 	menuText := b.getMenuText()
-	if !strings.Contains(menuText, "• Текущий статус: <b>2/2 online</b>") {
+	if !strings.Contains(menuText, "• Текущий статус: <b>2/2 онлайн</b>") {
 		t.Errorf("expected 2/2 online in menu text, got: %s", menuText)
 	}
 	if !strings.Contains(menuText, "1 отключено") {
@@ -425,27 +425,27 @@ func TestCheckHostSettingsMarkupAndText(t *testing.T) {
 	}
 
 	// Row 1: toggle bg
-	if !strings.Contains(markup.InlineKeyboard[0][0].Text, "ВКЛ") {
-		t.Errorf("expected ВКЛ in bg toggle button, got %s", markup.InlineKeyboard[0][0].Text)
+	if !strings.Contains(markup.InlineKeyboard[0][0].Text, "вкл") {
+		t.Errorf("expected вкл in bg toggle button, got %s", markup.InlineKeyboard[0][0].Text)
 	}
 	if markup.InlineKeyboard[0][0].CallbackData != "menu:checkhost:toggle_bg" {
 		t.Errorf("expected menu:checkhost:toggle_bg callback, got %s", markup.InlineKeyboard[0][0].CallbackData)
 	}
 
 	// Row 2: toggle alert
-	if !strings.Contains(markup.InlineKeyboard[1][0].Text, "ВКЛ") {
-		t.Errorf("expected ВКЛ in alert toggle button, got %s", markup.InlineKeyboard[1][0].Text)
+	if !strings.Contains(markup.InlineKeyboard[1][0].Text, "вкл") {
+		t.Errorf("expected вкл in alert toggle button, got %s", markup.InlineKeyboard[1][0].Text)
 	}
 
 	// Row 3: interval 2h active
 	found2h := false
 	for _, b := range markup.InlineKeyboard[2] {
-		if strings.Contains(b.Text, "• 2 ч. •") {
+		if strings.Contains(b.Text, "🟢 2 ч") {
 			found2h = true
 		}
 	}
 	if !found2h {
-		t.Errorf("expected active • 2 ч. • button in row 3, got: %v", markup.InlineKeyboard[2])
+		t.Errorf("expected active 🟢 2 ч button in row 3, got: %v", markup.InlineKeyboard[2])
 	}
 
 	// Test text
@@ -492,6 +492,7 @@ func TestBot_RunCheckHostAudit_RUBlock(t *testing.T) {
 	defer ts.Close()
 
 	chClient := checker.NewCheckHostClient(ts.URL, 10*time.Millisecond)
+	chClient.HTTPClient = ts.Client()
 
 	ms := &mockSource{
 		metrics: []metrics.ProxyMetric{

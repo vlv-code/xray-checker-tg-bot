@@ -139,7 +139,7 @@ func TestBot_BuildAddSubReport(t *testing.T) {
 	}
 
 	report := b.buildAddSubReport(3)
-	if !strings.Contains(report, "Всего прокси: 3") {
+	if !strings.Contains(report, "Прокси-хостов: 3") {
 		t.Errorf("expected report to contain total proxies, got:\n%s", report)
 	}
 	if !strings.Contains(report, "🟢 Доступно: 2") {

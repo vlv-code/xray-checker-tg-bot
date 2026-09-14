@@ -37,14 +37,14 @@ func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 func SettingsMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🚫 Отключение нод (вкл/выкл)", "menu:disabled_proxies:1"),
+			btn("🚫 Управление прокси-хостами", "menu:disabled_proxies:1"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🌐 Фоновый Check-Host", "menu:checkhost_cfg"),
 			btn("⏱️ Интервал проверок", "menu:interval"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🎯 Сайты проверки", "menu:targets"),
+			btn("🎯 Целевые серверы", "menu:targets"),
 			btn("🌙 Тихий режим", "menu:quiet"),
 		),
 		tu.InlineKeyboardRow(
@@ -62,14 +62,14 @@ func SettingsMenuMarkup() *telego.InlineKeyboardMarkup {
 
 // CheckHostSettingsMarkup returns keyboard for configuring background Check-Host auditing.
 func CheckHostSettingsMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
-	bgStatus := "❌ Фоновый чек: ВЫКЛ"
+	bgStatus := "🌐 Фоновая проверка: выкл"
 	if cfg.CheckHostBgEnabled {
-		bgStatus = "✅ Фоновый чек: ВКЛ"
+		bgStatus = "🌐 Фоновая проверка: вкл"
 	}
 
-	alertStatus := "🔕 Алерты по РФ: ВЫКЛ"
+	alertStatus := "🔕 Алерты по РФ: выкл"
 	if cfg.CheckHostAlertEnabled {
-		alertStatus = "🔔 Алерты по РФ: ВКЛ"
+		alertStatus = "🔔 Алерты по РФ: вкл"
 	}
 
 	intHours := cfg.CheckHostIntervalHours
@@ -78,10 +78,11 @@ func CheckHostSettingsMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 	}
 
 	makeIntBtn := func(h int) telego.InlineKeyboardButton {
-		text := fmt.Sprintf("%d ч.", h)
+		icon := "⚪"
 		if intHours == h {
-			text = fmt.Sprintf("• %d ч. •", h)
+			icon = "🟢"
 		}
+		text := fmt.Sprintf("%s %d ч", icon, h)
 		return btn(text, fmt.Sprintf("menu:checkhost:int:%d", h))
 	}
 
@@ -124,10 +125,8 @@ func DisabledProxiesMarkup(items []ProxyToggleItem, page, totalPages int) *teleg
 
 	for _, item := range items {
 		statusIcon := "🟢"
-		statusText := "активна"
 		if item.Disabled {
 			statusIcon = "⏸️"
-			statusText = "выключена"
 		}
 		displayName := item.Name
 		if displayName == "" {
@@ -137,7 +136,7 @@ func DisabledProxiesMarkup(items []ProxyToggleItem, page, totalPages int) *teleg
 		if len(runes) > 28 {
 			displayName = string(runes[:25]) + "..."
 		}
-		btnText := fmt.Sprintf("%s %s (%s)", statusIcon, displayName, statusText)
+		btnText := fmt.Sprintf("%s %s", statusIcon, displayName)
 		rows = append(rows, tu.InlineKeyboardRow(
 			btn(btnText, fmt.Sprintf("menu:toggle_proxy:%s:%d", item.StableID, page)),
 		))
@@ -179,17 +178,15 @@ func DisabledHostsMarkup(hosts []string, disabledMap map[string]bool, page, tota
 
 	for _, host := range hosts {
 		statusIcon := "🟢"
-		statusText := "активен"
 		if disabledMap[strings.ToLower(host)] {
 			statusIcon = "⏸️"
-			statusText = "выключен"
 		}
 		displayHost := host
 		runes := []rune(displayHost)
 		if len(runes) > 28 {
 			displayHost = string(runes[:25]) + "..."
 		}
-		btnText := fmt.Sprintf("%s %s (%s)", statusIcon, displayHost, statusText)
+		btnText := fmt.Sprintf("%s %s", statusIcon, displayHost)
 		rows = append(rows, tu.InlineKeyboardRow(
 			btn(btnText, fmt.Sprintf("menu:toggle_host:%s:%d", host, page)),
 		))
@@ -397,7 +394,7 @@ func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMa
 
 	if len(proxies) > 20 {
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn(fmt.Sprintf("...и ещё %d нод (проверьте через /checkhost)", len(proxies)-20), "menu:noop"),
+			btn(fmt.Sprintf("...и ещё %d прокси-хостов (проверьте через /checkhost)", len(proxies)-20), "menu:noop"),
 		))
 	}
 

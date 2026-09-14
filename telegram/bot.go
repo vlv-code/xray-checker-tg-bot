@@ -252,7 +252,7 @@ func (b *Bot) setupBotMenuButton() {
 		{Command: "diag", Description: "Детальный отчёт"},
 		{Command: "checkhost", Description: "Проверка Check-Host"},
 		{Command: "settings", Description: "Настройки бота"},
-		{Command: "status", Description: "Статус нод"},
+		{Command: "status", Description: "Статус прокси-хостов"},
 	}
 	_ = b.api.SetMyCommands(b.ctx, &telego.SetMyCommandsParams{
 		Commands: commands,
@@ -574,9 +574,9 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				if b.configMgr != nil {
 					disabled, _ := b.configMgr.ToggleProxy(stableID)
 					proxyName := b.getProxyNameByStableID(stableID)
-					toast := fmt.Sprintf("🟢 Нода %s включена", proxyName)
+					toast := fmt.Sprintf("🟢 Прокси-хост %s включен", proxyName)
 					if disabled {
-						toast = fmt.Sprintf("⏸️ Нода %s выключена", proxyName)
+						toast = fmt.Sprintf("⏸️ Прокси-хост %s выключен", proxyName)
 					}
 					if b.api != nil {
 						_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText(toast))
@@ -686,9 +686,9 @@ func (b *Bot) getMenuText() string {
 
 	var statusLine string
 	if disabledCount > 0 {
-		statusLine = fmt.Sprintf("• Текущий статус: <b>%d/%d online</b> <i>(⏸️ %d отключено)</i>\n", online, totalActive, disabledCount)
+		statusLine = fmt.Sprintf("• Текущий статус: <b>%d/%d онлайн</b> <i>(⏸️ %d отключено)</i>\n", online, totalActive, disabledCount)
 	} else {
-		statusLine = fmt.Sprintf("• Текущий статус: <b>%d/%d online</b>\n", online, len(snapshot))
+		statusLine = fmt.Sprintf("• Текущий статус: <b>%d/%d онлайн</b>\n", online, len(snapshot))
 	}
 
 	nowStr := time.Now().Format("15:04:05 02.01.2006")
@@ -715,10 +715,10 @@ func (b *Bot) getMenuText() string {
 			sb.WriteString(fmt.Sprintf("• %s\n", escapeHTML(downProxies[i])))
 		}
 		if len(downProxies) > limit {
-			sb.WriteString(fmt.Sprintf("<i>...и ещё %d оффлайн</i>\n", len(downProxies)-limit))
+			sb.WriteString(fmt.Sprintf("<i>...и ещё %d недоступно</i>\n", len(downProxies)-limit))
 		}
 	} else if totalActive > 0 {
-		sb.WriteString("\n🟢 <i>Все активные серверы доступны и работают стабильно.</i>\n")
+		sb.WriteString("\n🟢 <i>Все активные прокси-хосты доступны и работают стабильно.</i>\n")
 	}
 
 	return sb.String()
@@ -728,7 +728,7 @@ func (b *Bot) getSettingsText() string {
 	cfg := b.GetConfig()
 	modeName := "🔄 Live (редактирование)"
 	if cfg.AlertMode == AlertModeClean {
-		modeName = "🧹 Clean (автоочистка)"
+		modeName = "🧹 Чистый чат (автоочистка)"
 	}
 
 	quietStatus := "выключен"
@@ -741,7 +741,12 @@ func (b *Bot) getSettingsText() string {
 	}
 
 	intervalSec := b.getIntervalSec()
-	intervalStr := fmt.Sprintf("%d сек (%s)", intervalSec, FormatDowntime(time.Duration(intervalSec)*time.Second))
+	var intervalStr string
+	if intervalSec < 60 {
+		intervalStr = fmt.Sprintf("%d сек.", intervalSec)
+	} else {
+		intervalStr = FormatDowntime(time.Duration(intervalSec) * time.Second)
+	}
 
 	disabledCount := len(cfg.DisabledHosts) + len(cfg.DisabledProxies)
 
@@ -760,7 +765,7 @@ func (b *Bot) getSettingsText() string {
 		"• Фоновый Check-Host: <b>%s</b>\n"+
 		"• Режим алертов: <b>%s</b>\n"+
 		"• Тихий режим: <b>%s</b>\n"+
-		"• Отключено хостов/нод: <b>%d</b>\n\n"+
+		"• Отключено (хосты/прокси): <b>%d</b>\n\n"+
 		"Выберите раздел настроек с помощью кнопок ниже:",
 		intervalStr, chBgStatus, modeName, quietStatus, disabledCount)
 }
@@ -831,10 +836,10 @@ func (b *Bot) getDisabledProxiesView(page int) (string, *telego.InlineKeyboardMa
 	}
 
 	var sb strings.Builder
-	sb.WriteString("<b>🚫 Управление нодами (вкл/выкл)</b>\n\n")
-	sb.WriteString("Нажмите на ноду, чтобы включить или отключить её проверку.\n")
-	sb.WriteString("Отключённые ноды не проверяются, не вызывают алертов и сразу исключаются из сводки.\n\n")
-	sb.WriteString(fmt.Sprintf("Всего нод: <b>%d</b> | Отключено: <b>%d</b>\n", totalItems, disabledCount))
+	sb.WriteString("<b>🚫 Управление прокси-хостами</b>\n\n")
+	sb.WriteString("Нажмите на прокси-хост, чтобы включить или отключить его проверку.\n")
+	sb.WriteString("Отключённые прокси-хосты не проверяются, не вызывают алертов и сразу исключаются из сводки.\n\n")
+	sb.WriteString(fmt.Sprintf("Всего прокси-хостов: <b>%d</b> | Отключено: <b>%d</b>\n", totalItems, disabledCount))
 
 	markup := DisabledProxiesMarkup(pageItems, page, totalPages)
 	return sb.String(), markup
@@ -860,7 +865,7 @@ func (b *Bot) replyCommand(msg *telego.Message, text string) {
 func (b *Bot) handleToggleNodeCommand(msg *telego.Message) {
 	arg := strings.TrimSpace(commandArg(msg.Text))
 	if arg == "" {
-		b.replyCommand(msg, "❌ Укажите имя ноды или StableID для переключения.\nПример: <code>/togglenode PL-main</code>")
+		b.replyCommand(msg, "❌ Укажите имя или ID прокси-хоста. Пример: <code>/togglenode PL-main</code>")
 		return
 	}
 	if b.configMgr == nil {
@@ -901,14 +906,14 @@ func (b *Bot) handleToggleNodeCommand(msg *telego.Message) {
 					}
 					names = append(names, fmt.Sprintf("«%s»", m.Name))
 				}
-				b.replyCommand(msg, fmt.Sprintf("⚠️ Найдено несколько нод с фрагментом «%s»:\n%s\nУточните полное имя или StableID.", escapeHTML(arg), strings.Join(names, ", ")))
+				b.replyCommand(msg, fmt.Sprintf("⚠️ Найдено несколько прокси-хостов с фрагментом «%s»:\n%s\nУточните полное имя или ID.", escapeHTML(arg), strings.Join(names, ", ")))
 				return
 			}
 		}
 	}
 
 	if targetStableID == "" {
-		b.replyCommand(msg, fmt.Sprintf("❌ Нода «%s» не найдена среди текущих подключений.", escapeHTML(arg)))
+		b.replyCommand(msg, fmt.Sprintf("❌ Прокси-хост «%s» не найден среди текущих подключений.", escapeHTML(arg)))
 		return
 	}
 
@@ -918,9 +923,9 @@ func (b *Bot) handleToggleNodeCommand(msg *telego.Message) {
 		return
 	}
 	if disabled {
-		b.replyCommand(msg, fmt.Sprintf("⏸️ Проверка ноды <b>%s</b> <b>отключена</b>.", escapeHTML(targetName)))
+		b.replyCommand(msg, fmt.Sprintf("⏸️ Проверка прокси-хоста <b>%s</b> <b>отключена</b>.", escapeHTML(targetName)))
 	} else {
-		b.replyCommand(msg, fmt.Sprintf("🟢 Проверка ноды <b>%s</b> <b>включена</b>.", escapeHTML(targetName)))
+		b.replyCommand(msg, fmt.Sprintf("🟢 Проверка прокси-хоста <b>%s</b> <b>включена</b>.", escapeHTML(targetName)))
 	}
 }
 
@@ -1007,8 +1012,13 @@ func (b *Bot) handleIntervalCommand(msg *telego.Message) {
 	}
 
 	b.updateCheckInterval(sec)
-	b.replyCommand(msg, fmt.Sprintf("✅ Интервал проверки прокси установлен на <b>%d сек (%s)</b>.",
-		sec, FormatDowntime(time.Duration(sec)*time.Second)))
+	var durStr string
+	if sec < 60 {
+		durStr = fmt.Sprintf("%d сек.", sec)
+	} else {
+		durStr = FormatDowntime(time.Duration(sec) * time.Second)
+	}
+	b.replyCommand(msg, fmt.Sprintf("✅ Интервал проверки прокси-хостов установлен на <b>%s</b>.", durStr))
 }
 
 func (b *Bot) replyInterval(chatID int64) {
@@ -1017,11 +1027,17 @@ func (b *Bot) replyInterval(chatID int64) {
 
 func (b *Bot) getIntervalText() string {
 	sec := b.getIntervalSec()
-	return fmt.Sprintf("<b>⏱️ Интервал проверок прокси</b>\n\n"+
-		"• Текущий интервал: <b>%d сек (%s)</b>\n\n"+
+	var durStr string
+	if sec < 60 {
+		durStr = fmt.Sprintf("%d сек.", sec)
+	} else {
+		durStr = FormatDowntime(time.Duration(sec) * time.Second)
+	}
+	return fmt.Sprintf("<b>⏱️ Интервал проверок прокси-хостов</b>\n\n"+
+		"• Текущий интервал: <b>%s</b>\n\n"+
 		"Выберите готовый пресет или отправьте команду с произвольным числом секунд:\n"+
 		"<code>/interval &lt;секунды&gt;</code> (например, <code>/interval 45</code>)",
-		sec, FormatDowntime(time.Duration(sec)*time.Second))
+		durStr)
 }
 
 func (b *Bot) replyMenu(chatID int64) {
@@ -1050,11 +1066,11 @@ func (b *Bot) getAverageUptimePercent() (float64, bool) {
 
 func (b *Bot) getStatusText() string {
 	if b.source == nil {
-		return "Нет данных о прокси — проверки ещё не выполнялись."
+		return "Нет данных о прокси-хостах — проверки ещё не выполнялись."
 	}
 	snapshot := b.source.MetricsSnapshot()
 	if len(snapshot) == 0 {
-		return "Нет данных о прокси — проверки ещё не выполнялись."
+		return "Нет данных о прокси-хостах — проверки ещё не выполнялись."
 	}
 
 	sort.Slice(snapshot, func(i, j int) bool { return snapshot[i].Name < snapshot[j].Name })
@@ -1068,7 +1084,7 @@ func (b *Bot) getStatusText() string {
 	for _, pm := range snapshot {
 		if pm.Disabled {
 			disabledCount++
-			fmt.Fprintf(&disabledBody, "⏸️ <b>%s</b> — отключена\n", escapeHTML(pm.Name))
+			fmt.Fprintf(&disabledBody, "⏸️ <b>%s</b> — отключён\n", escapeHTML(pm.Name))
 			continue
 		}
 		activeTotal++
@@ -1080,9 +1096,9 @@ func (b *Bot) getStatusText() string {
 		}
 	}
 
-	header := fmt.Sprintf("<b>Статус прокси: %d/%d online</b>\n\n", online, activeTotal)
+	header := fmt.Sprintf("<b>Статус прокси-хостов: %d/%d онлайн</b>\n\n", online, activeTotal)
 	if disabledCount > 0 {
-		return header + activeBody.String() + fmt.Sprintf("\n<b>Отключённые ноды (%d):</b>\n", disabledCount) + disabledBody.String()
+		return header + activeBody.String() + fmt.Sprintf("\n<b>Отключённые прокси-хосты (%d):</b>\n", disabledCount) + disabledBody.String()
 	}
 	return header + activeBody.String()
 }
@@ -1113,17 +1129,17 @@ func (b *Bot) getStatsOverviewText() string {
 	if len(incidents) > 0 {
 		inc := incidents[0]
 		downTime := time.Unix(inc.DownAt, 0).Format("15:04 02.01")
-		durText := "ещё не восстановился"
+		durText := "ещё не восстановлен"
 		if inc.UpAt > 0 {
 			durText = FormatDowntime(time.Duration(inc.DurationSec) * time.Second)
 		}
-		lastIncidentText = fmt.Sprintf("%s: %s (длительность: %s)", escapeHTML(inc.ProxyName), downTime, durText)
+		lastIncidentText = fmt.Sprintf("%s: %s (простой: %s)", escapeHTML(inc.ProxyName), downTime, durText)
 	}
 
 	return fmt.Sprintf("<b>📈 Статистика аптайма</b>\n\n"+
-		"• Всего прокси в мониторинге: <b>%d</b>\n"+
+		"• Прокси-хостов в мониторинге: <b>%d</b>\n"+
 		"• Средний аптайм пула: <b>%.1f%%</b>\n"+
-		"• Последний сбой: <i>%s</i>\n\n"+
+		"• Последний инцидент: <i>%s</i>\n\n"+
 		"Выберите детализацию:", totalProxies, avgUptime, lastIncidentText)
 }
 
@@ -1137,7 +1153,7 @@ func (b *Bot) getIncidentsText() string {
 	}
 	incidents := b.statsStore.GetRecentIncidents(15)
 	if len(incidents) == 0 {
-		return "<b>📋 Журнал инцидентов</b>\n\nЗафиксированных сбоев нет — все прокси работают стабильно!"
+		return "<b>📋 Журнал инцидентов</b>\n\nЗафиксированных инцидентов нет — все прокси-хосты работают стабильно!"
 	}
 
 	var sb strings.Builder
@@ -1145,10 +1161,10 @@ func (b *Bot) getIncidentsText() string {
 	for _, inc := range incidents {
 		downTime := time.Unix(inc.DownAt, 0).Format("15:04 02.01")
 		if inc.UpAt == 0 {
-			fmt.Fprintf(&sb, "🔴 <b>%s</b> — упал %s (<i>сейчас оффлайн</i>)\nПричина: %s\n\n",
+			fmt.Fprintf(&sb, "🔴 <b>%s</b> — авария %s (<i>сейчас недоступен</i>)\nПричина: %s\n\n",
 				escapeHTML(inc.ProxyName), downTime, escapeHTML(inc.Reason))
 		} else {
-			fmt.Fprintf(&sb, "🟡 <b>%s</b> — %s (оффлайн %s)\nПричина: %s\n\n",
+			fmt.Fprintf(&sb, "🟡 <b>%s</b> — %s (простой: %s)\nПричина: %s\n\n",
 				escapeHTML(inc.ProxyName), downTime, FormatDowntime(time.Duration(inc.DurationSec)*time.Second), escapeHTML(inc.Reason))
 		}
 	}
@@ -1165,9 +1181,9 @@ func (b *Bot) getTopProblematicText() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("<b>🔝 Топ проблемных прокси (по падениям):</b>\n\n")
+	sb.WriteString("<b>🔝 Топ по инцидентам (прокси-хосты):</b>\n\n")
 	for i, p := range top {
-		fmt.Fprintf(&sb, "%d. <b>%s</b>: падений: %d, аптайм: %.1f%%, суммарный простой: %s\n",
+		fmt.Fprintf(&sb, "%d. <b>%s</b>: инцидентов: %d, аптайм: %.1f%%, суммарный простой: %s\n",
 			i+1, escapeHTML(p.ProxyName), p.DropCount, p.UptimePct, FormatDowntime(time.Duration(p.DowntimeSec)*time.Second))
 	}
 	return sb.String()
@@ -1187,7 +1203,7 @@ func (b *Bot) getQuietHoursText() string {
 		snoozeStatus = fmt.Sprintf("Активен (осталось %s)", FormatDowntime(rem))
 	}
 
-	return fmt.Sprintf("<b>🌙 Тихий режим (ночной сон)</b>\n\n"+
+	return fmt.Sprintf("<b>🌙 Тихий режим</b>\n\n"+
 		"В тихом режиме звуковые алерты об авариях не приходят в чат, а копятся для утренней сводки.\n\n"+
 		"• Расписание сна: <b>%s</b>\n"+
 		"• Ручная пауза: <b>%s</b>\n\n"+
@@ -1207,7 +1223,7 @@ func (b *Bot) getAlertModeText() string {
 
 	return fmt.Sprintf("<b>⚙️ Режим уведомлений об авариях</b>\n\n"+
 		"Текущий режим: <b>%s</b>\n\n"+
-		"• <b>Live-режим</b>: аварийное сообщение о падении не удаляется, а при восстановлении обновляется на статус «Восстановлен» с длительностью даунтайма.\n"+
+		"• <b>Live-режим</b>: сообщение об аварии не удаляется, а при восстановлении обновляется на статус «Восстановлен» с указанием времени простоя.\n"+
 		"• <b>Чистый чат</b>: аварийное сообщение удаляется сразу при восстановлении, а подтверждение восстановления исчезает через 2 минуты, оставляя чат чистым.", current)
 }
 
@@ -1226,11 +1242,11 @@ func (b *Bot) getTargetsText() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("<b>🎯 Целевые серверы для проверки прокси:</b>\n\n")
+	sb.WriteString("<b>🎯 Целевые серверы проверки прокси-хостов:</b>\n\n")
 	for i, t := range targets {
 		fmt.Fprintf(&sb, "%d. <code>%s</code>\n", i+1, escapeHTML(t))
 	}
-	sb.WriteString("\nЧекер проверяет доступность нод по этим эндпоинтам. Если хотя бы один ответил успехом, нода считается рабочей.")
+	sb.WriteString("\nЧекер проверяет доступность прокси-хостов по целевым серверам. Если хотя бы один ответил успехом, прокси-хост считается доступным.")
 	return sb.String()
 }
 
@@ -1373,7 +1389,7 @@ func formatSingleProxyDiag(sb *strings.Builder, rep checker.ProxyDiagReport) {
 		}
 		fmt.Fprintf(sb, "  • Check-Host (TCP): РФ %s, Мир %s\n", ruStatus, worldStatus)
 		if rep.CheckHost.PermanentLink != "" {
-			fmt.Fprintf(sb, "    🔗 <a href=\"%s\">отчет</a>\n", rep.CheckHost.PermanentLink)
+			fmt.Fprintf(sb, "    🔗 <a href=\"%s\">отчёт</a>\n", rep.CheckHost.PermanentLink)
 		}
 	}
 
@@ -1430,7 +1446,7 @@ func (b *Bot) getDiagnosticsPageText(reports []checker.ProxyDiagReport, page int
 
 func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *telego.InputRichMessage {
 	if len(reports) == 0 {
-		msg := tu.RichMessage(tu.RichBlockParagraph(tu.RichTextPlain("Нет доступных прокси для проверки.")))
+		msg := tu.RichMessage(tu.RichBlockParagraph(tu.RichTextPlain("Нет доступных прокси-хостов для проверки.")))
 		return &msg
 	}
 
@@ -1438,13 +1454,13 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 
 	// 1. Heading
 	blocks = append(blocks, tu.RichBlockSectionHeading(
-		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("📋 Результаты детального отчёта (%d прокси)", len(reports)))),
+		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("📋 Результаты детального отчёта (%d прокси-хостов)", len(reports)))),
 		2,
 	))
 
-	// 2. Table: Нода | Протокол | Пинг | Статус
+	// 2. Table: Прокси-хост | Протокол | Пинг | Статус
 	headerRow := []telego.RichBlockTableCell{
-		tu.RichBlockTableCell(tu.RichTextBold(tu.RichTextPlain("Нода"))).WithIsHeader(),
+		tu.RichBlockTableCell(tu.RichTextBold(tu.RichTextPlain("Прокси-хост"))).WithIsHeader(),
 		tu.RichBlockTableCell(tu.RichTextBold(tu.RichTextPlain("Прот."))).WithIsHeader(),
 		tu.RichBlockTableCell(tu.RichTextBold(tu.RichTextPlain("Пинг"))).WithIsHeader(),
 		tu.RichBlockTableCell(tu.RichTextBold(tu.RichTextPlain("Статус"))).WithIsHeader(),
@@ -1462,12 +1478,12 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 			}
 		}
 
-		statusText := "🟢 OK"
+		statusText := "🟢 Доступен"
 		switch rep.Status {
 		case "offline":
-			statusText = "🔴 Оффлайн"
+			statusText = "🔴 Недоступен"
 		case "degraded":
-			statusText = "🟡 Сбоит"
+			statusText = "🟡 Ошибка"
 		case "disabled":
 			statusText = "⏸️ Отключён"
 			latencyText = "—"
@@ -1498,7 +1514,7 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 		}
 		hasProblems = true
 
-		summary := tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("🔴 %s — детали сбоя (%s)", rep.ProxyName, strings.ToUpper(rep.Protocol))))
+		summary := tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("🔴 %s — детали аварии (%s)", rep.ProxyName, strings.ToUpper(rep.Protocol))))
 
 		var detailLines []string
 		if rep.NodeHealth.DNSErr != "" {
@@ -1540,7 +1556,7 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 	}
 
 	if !hasProblems {
-		blocks = append(blocks, tu.RichBlockParagraph(tu.RichTextItalic(tu.RichTextPlain("Все прокси работают стабильно, сбоев не обнаружено."))))
+		blocks = append(blocks, tu.RichBlockParagraph(tu.RichTextItalic(tu.RichTextPlain("Все прокси-хосты работают стабильно, аварий не обнаружено."))))
 	}
 
 	msg := tu.RichMessage(blocks...)
@@ -1601,7 +1617,7 @@ func (b *Bot) replyDigest(chatID int64) {
 	}
 
 	text := fmt.Sprintf("<b>📊 Сводка Xray Checker</b>\n\n"+
-		"• Текущий статус: <b>%d/%d online</b>\n"+
+		"• Текущий статус: <b>%d/%d онлайн</b>\n"+
 		"• Время: <b>%s</b>\n", online, totalActive, time.Now().Format("15:04:05 02.01.2006"))
 
 	if avg, ok := b.getAverageUptimePercent(); ok {
@@ -1628,19 +1644,19 @@ func (b *Bot) sendMorningDigest(now time.Time) {
 	events := b.eventBuffer.Drain()
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "<b>🌅 Утренняя сводка Xray Checker</b>\n\n"+
-		"• Статус прокси: <b>%d/%d online</b>\n"+
+		"• Статус прокси-хостов: <b>%d/%d онлайн</b>\n"+
 		"• Время: <b>%s</b>\n\n", online, totalActive, now.Format("15:04"))
 
 	if len(events) == 0 {
-		sb.WriteString("🌙 <i>За ночь аварий не зафиксировано, все серверы работали стабильно.</i>")
+		sb.WriteString("🌙 <i>За ночь аварий не зафиксировано, все прокси-хосты работали стабильно.</i>")
 	} else {
-		sb.WriteString("<b>События за ночь:</b>\n")
+		sb.WriteString("<b>Инциденты за ночь:</b>\n")
 		for _, e := range events {
 			tStr := e.Timestamp.Format("15:04")
 			if e.Type == "down" {
-				fmt.Fprintf(&sb, "• 🔴 %s: <b>%s</b> упал (%s)\n", tStr, escapeHTML(e.ProxyName), escapeHTML(e.Reason))
+				fmt.Fprintf(&sb, "• 🔴 %s: <b>%s</b> — авария (%s)\n", tStr, escapeHTML(e.ProxyName), escapeHTML(e.Reason))
 			} else {
-				fmt.Fprintf(&sb, "• ✅ %s: <b>%s</b> восстановился (был оффлайн %s)\n", tStr, escapeHTML(e.ProxyName), FormatDowntime(e.Downtime))
+				fmt.Fprintf(&sb, "• ✅ %s: <b>%s</b> — восстановлен (простой: %s)\n", tStr, escapeHTML(e.ProxyName), FormatDowntime(e.Downtime))
 			}
 		}
 	}
@@ -1672,24 +1688,24 @@ func (b *Bot) sendDaytimeDigest(now time.Time) {
 	}
 
 	text := fmt.Sprintf("<b>📊 Дневная сводка Xray Checker</b>\n\n"+
-		"• Доступность: <b>%d/%d онлайн</b>\n"+
+		"• Доступность прокси-хостов: <b>%d/%d онлайн</b>\n"+
 		"• Время: <b>%s</b>", online, totalActive, now.Format("15:04"))
 
 	b.broadcast(text)
 }
 
 func (b *Bot) replyHelp(chatID int64) {
-	text := "<b>Xray Checker Bot</b>\n\n" +
+	text := "🤖 <b>Xray Checker Bot — справка</b>\n\n" +
 		"/menu — главное интерактивное меню\n" +
-		"/status — статус всех прокси\n" +
-		"/diag — детальный отчёт\n" +
-		"/settings — настройки бота и отключение нод\n" +
-		"/togglenode [имя|ID] — включить/отключить проверку ноды\n" +
-		"/checkhost [хост[:порт]] — глобальная проверка через Check-Host.net\n" +
+		"/status — статус всех прокси-хостов\n" +
+		"/diag — детальный отчёт о прокси-хостах\n" +
+		"/settings — настройки бота и управление прокси-хостами\n" +
+		"/togglenode <имя|ID> — включить/отключить проверку прокси-хоста\n" +
+		"/checkhost <хост[:порт]> — глобальная проверка через Check-Host.net\n" +
 		"/checkhost_bg [on|off|1h|run] — фоновая проверка Check-Host\n" +
 		"/stats — статистика аптайма и инцидентов\n" +
-		"/interval [сек] — интервал проверок прокси\n" +
-		"/quiet — настройки тихого режима (сна)\n" +
+		"/interval [сек] — интервал проверок прокси-хостов\n" +
+		"/quiet — настройки тихого режима\n" +
 		"/targets — список целевых серверов проверки\n"
 	if b.subs != nil {
 		text += "/subs — список подписок\n" +
@@ -1697,7 +1713,7 @@ func (b *Bot) replyHelp(chatID int64) {
 			"/delsub &lt;URL&gt; — удалить добавленную подписку\n"
 	}
 	text += "/help — эта справка\n\n" +
-		"Уведомления об авариях приходят сюда автоматически."
+		"🔔 Аварийные уведомления отправляются автоматически."
 	b.sendOrUpdateMenu(chatID, text, MainMenuMarkup())
 }
 
@@ -1865,9 +1881,9 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				})
 			}
 			if b.notifyOnRecovery && rec.hadAlert {
-				recoveryText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms", escapeHTML(rec.pm.Name), rec.pm.LatencyMs)
+				recoveryText := fmt.Sprintf("✅ <b>%s</b> восстановлен — %.0f ms", escapeHTML(rec.pm.Name), rec.pm.LatencyMs)
 				if rec.downtime > 0 {
-					recoveryText += fmt.Sprintf(" (был оффлайн %s)", FormatDowntime(rec.downtime))
+					recoveryText += fmt.Sprintf(" (простой: %s)", FormatDowntime(rec.downtime))
 				}
 				if sent, err := b.sendAndReturn(rec.chatID, recoveryText); err == nil && sent != nil && sent.MessageID != 0 {
 					cID := rec.chatID
@@ -1884,7 +1900,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 			}
 		} else { // AlertModeLive
 			if rec.hadAlert && b.api != nil {
-				liveText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms (был оффлайн %s)",
+				liveText := fmt.Sprintf("✅ <b>%s</b> восстановлен — %.0f ms (простой: %s)",
 					escapeHTML(rec.pm.Name), rec.pm.LatencyMs, FormatDowntime(rec.downtime))
 				params := &telego.EditMessageTextParams{
 					ChatID:    tu.ID(rec.chatID),
@@ -1894,7 +1910,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				}
 				_, _ = b.api.EditMessageText(b.ctx, params)
 			} else if b.notifyOnRecovery {
-				recoveryText := fmt.Sprintf("✅ <b>%s</b> снова в строю — %.0f ms", escapeHTML(rec.pm.Name), rec.pm.LatencyMs)
+				recoveryText := fmt.Sprintf("✅ <b>%s</b> восстановлен — %.0f ms", escapeHTML(rec.pm.Name), rec.pm.LatencyMs)
 				b.send(rec.chatID, recoveryText)
 			}
 		}
@@ -2011,7 +2027,7 @@ func (b *Bot) buildAddSubReport(count int) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("✅ <b>Подписка добавлена.</b> Всего прокси: %d\n", count))
+	sb.WriteString(fmt.Sprintf("✅ <b>Подписка добавлена.</b> Прокси-хостов: %d\n", count))
 	sb.WriteString(fmt.Sprintf("🟢 Доступно: %d\n", onlineCount))
 	if offlineCount > 0 {
 		sb.WriteString(fmt.Sprintf("🔴 Недоступно: %d\n", offlineCount))
@@ -2023,7 +2039,7 @@ func (b *Bot) buildAddSubReport(count int) string {
 			sb.WriteString(fmt.Sprintf("  • <code>%s</code>\n", escapeHTML(offlineNames[i])))
 		}
 		if len(offlineNames) > limit {
-			sb.WriteString(fmt.Sprintf("  … и ещё %d нод(ы)\n", len(offlineNames)-limit))
+			sb.WriteString(fmt.Sprintf("  … и ещё %d прокси-хост(а/ов)\n", len(offlineNames)-limit))
 		}
 	}
 	return sb.String()
@@ -2311,8 +2327,8 @@ func (b *Bot) getCheckHostSettingsText() string {
 	return fmt.Sprintf("🌐 <b>Настройки фоновой проверки Check-Host</b>\n\n"+
 		"• Фоновая проверка: <b>%s</b>\n"+
 		"• Периодичность: <b>каждые %d ч.</b>\n"+
-		"• Алерты о недоступности из РФ: <b>%s</b>\n\n"+
-		"Бот периодически проверяет доступность всех активных хостов из подписок с российских и мировых узлов Check-Host.net и оповещает при проблемах с доступностью в РФ.\n\n"+
+		"• Алерты по РФ: <b>%s</b>\n\n"+
+		"Периодическая проверка хостов из российских и зарубежных локаций через Check-Host.net. Оповещает при блокировках или сетевых сбоях в РФ.\n\n"+
 		"<i>Отключённые в настройках хосты автоматически пропускаются.</i>",
 		bgStatus, intHours, alertStatus)
 }
@@ -2471,7 +2487,6 @@ func (b *Bot) RunCheckHostAudit() {
 			summary, err = chClient.CheckTCP(ctx, target.targetAddr, fastNodes)
 		}
 		cancel()
-
 		if err != nil || summary == nil {
 			continue
 		}

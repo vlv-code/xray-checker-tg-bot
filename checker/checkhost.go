@@ -378,7 +378,7 @@ func FormatCheckHostReport(summary *CheckHostSummary) string {
 	}
 
 	if summary.PermanentLink != "" {
-		sb.WriteString(fmt.Sprintf("🔗 <a href=\"%s\">Постоянная ссылка на отчет</a>\n", summary.PermanentLink))
+		sb.WriteString(fmt.Sprintf("🔗 <a href=\"%s\">Постоянная ссылка на отчёт</a>\n", summary.PermanentLink))
 	}
 
 	return sb.String()
