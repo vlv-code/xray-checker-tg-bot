@@ -58,7 +58,8 @@ type Bot struct {
 
 	mu            sync.Mutex
 	lastSeen      map[string]bool // stable_id -> last known online status
-	seeded        bool            // true once the first snapshot has been recorded
+	lastFlapAlert map[string]time.Time
+	seeded        bool // true once the first snapshot has been recorded
 	wasQuiet      bool
 	lastDayDigest time.Time
 	stopChan      chan struct{}
@@ -121,6 +122,7 @@ func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRe
 		tracker:          NewAlertTracker(),
 		eventBuffer:      NewEventBuffer(),
 		lastSeen:         make(map[string]bool),
+		lastFlapAlert:    make(map[string]time.Time),
 		lastMenuMsg:      make(map[int64]int),
 		subFreshness:     make(map[string]SubFreshness),
 		stopChan:         make(chan struct{}),
@@ -1499,7 +1501,7 @@ func (b *Bot) getIncidentsText() string {
 	for _, inc := range incidents {
 		downTime := time.Unix(inc.DownAt, 0).In(b.loc()).Format("15:04 02.01")
 		if inc.UpAt == 0 {
-			fmt.Fprintf(&sb, "🔴 <b>%s</b> — авария %s (<i>сейчас недоступен</i>)\nПричина: %s\n\n",
+			fmt.Fprintf(&sb, "🔴 <b>%s</b> — сбой %s (<i>сейчас недоступен</i>)\nПричина: %s\n\n",
 				escapeHTML(inc.ProxyName), downTime, escapeHTML(inc.Reason))
 		} else {
 			fmt.Fprintf(&sb, "🟡 <b>%s</b> — %s (простой: %s)\nПричина: %s\n\n",
@@ -1520,9 +1522,19 @@ func (b *Bot) getTopProblematicText() string {
 
 	var sb strings.Builder
 	sb.WriteString("<b>🔝 Топ по инцидентам (прокси-хосты):</b>\n\n")
+	now := b.now()
 	for i, p := range top {
-		fmt.Fprintf(&sb, "%d. <b>%s</b>: инцидентов: %d, аптайм: %.1f%%, суммарный простой: %s\n",
-			i+1, escapeHTML(p.ProxyName), p.DropCount, p.UptimePct, FormatDowntime(time.Duration(p.DowntimeSec)*time.Second))
+		incStats := b.statsStore.GetIncidentStats(p.StableID, 24*time.Hour, now)
+		mtbfStr := ""
+		if incStats.MTBF > 0 {
+			mtbfStr = fmt.Sprintf(", MTBF: %s", FormatDowntime(incStats.MTBF))
+		}
+		mttrStr := ""
+		if incStats.MTTR > 0 {
+			mttrStr = fmt.Sprintf(", MTTR: %s", FormatDowntime(incStats.MTTR))
+		}
+		fmt.Fprintf(&sb, "%d. <b>%s</b>: инцидентов: %d, аптайм: %.1f%%%s%s, суммарный простой: %s\n",
+			i+1, escapeHTML(p.ProxyName), p.DropCount, p.UptimePct, mtbfStr, mttrStr, FormatDowntime(time.Duration(p.DowntimeSec)*time.Second))
 	}
 	return sb.String()
 }
@@ -1547,7 +1559,7 @@ func (b *Bot) getQuietHoursText() string {
 	}
 
 	return fmt.Sprintf("<b>🌙 Тихий режим</b>\n\n"+
-		"В тихом режиме звуковые алерты об авариях не приходят в чат, а копятся для утренней сводки.\n\n"+
+		"В тихом режиме звуковые алерты о сбоях не приходят в чат, а копятся для утренней сводки.\n\n"+
 		"• Расписание сна: <b>%s</b>\n"+
 		"• Ручная пауза: <b>%s</b>\n"+
 		"• Часовой пояс: <b>%s</b>\n\n"+
@@ -1565,10 +1577,10 @@ func (b *Bot) getAlertModeText() string {
 		current = "🧹 Чистый чат (автоочистка)"
 	}
 
-	return fmt.Sprintf("<b>⚙️ Режим уведомлений об авариях</b>\n\n"+
+	return fmt.Sprintf("<b>⚙️ Режим уведомлений о сбоях</b>\n\n"+
 		"Текущий режим: <b>%s</b>\n\n"+
-		"• <b>Live-режим</b>: сообщение об аварии не удаляется, а при восстановлении обновляется на статус «Восстановлен» с указанием времени простоя.\n"+
-		"• <b>Чистый чат</b>: аварийное сообщение удаляется сразу при восстановлении, а подтверждение восстановления исчезает через 2 минуты, оставляя чат чистым.", current)
+		"• <b>Live-режим</b>: сообщение о сбое не удаляется, а при восстановлении обновляется на статус «Восстановлен» с указанием времени простоя.\n"+
+		"• <b>Чистый чат</b>: сообщение о сбое удаляется сразу при восстановлении, а подтверждение восстановления исчезает через 2 минуты, оставляя чат чистым.", current)
 }
 
 func (b *Bot) getTargetsText() string {
@@ -1895,8 +1907,9 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 			ls := b.statsStore.GetLatencySamples(rep.StableID)
 			if ls.Count() >= 5 {
 				p95 := ls.Percentile(0.95)
+				p99 := ls.Percentile(0.99)
 				jitter := ls.StdDev()
-				fmt.Fprintf(sb, "  • Доступен: 🟢 %.0f мс (p95: %.0f мс, σ=%.0f)\n", latMs, p95, jitter)
+				fmt.Fprintf(sb, "  • Доступен: 🟢 %.0f мс (p95: %.0f мс, p99: %.0f мс, σ=%.0f)\n", latMs, p95, p99, jitter)
 			} else {
 				fmt.Fprintf(sb, "  • Доступен: 🟢 %.0f мс\n", latMs)
 			}
@@ -2146,6 +2159,34 @@ func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeH
 		}
 	}
 
+	// Latency percentiles & Reliability metrics
+	if b != nil && b.statsStore != nil {
+		ls := b.statsStore.GetLatencySamples(pm.StableID)
+		if ls != nil && ls.Count() >= 5 {
+			fmt.Fprintf(&sb, "\n<b>СТАТИСТИКА ЗАДЕРЖКИ:</b>\n")
+			fmt.Fprintf(&sb, "  • p50: %.0f мс | p95: %.0f мс | p99: %.0f мс (σ=%.0f, n=%d)\n",
+				ls.Percentile(0.50), ls.Percentile(0.95), ls.Percentile(0.99), ls.StdDev(), ls.Count())
+		}
+
+		incStats := b.statsStore.GetIncidentStats(pm.StableID, 24*time.Hour, b.now())
+		flaps := b.statsStore.GetFlapCount24h(pm.StableID, b.now())
+		if incStats.Incidents > 0 || flaps > 0 {
+			sb.WriteString("\n<b>НАДЁЖНОСТЬ (24ч):</b>\n")
+			if incStats.Incidents > 0 {
+				fmt.Fprintf(&sb, "  • Инцидентов: %d\n", incStats.Incidents)
+				if incStats.MTBF > 0 {
+					fmt.Fprintf(&sb, "  • MTBF (наработка на отказ): %s\n", FormatDowntime(incStats.MTBF))
+				}
+				if incStats.MTTR > 0 {
+					fmt.Fprintf(&sb, "  • MTTR (время восстановления): %s\n", FormatDowntime(incStats.MTTR))
+				}
+			}
+			if flaps > 0 {
+				fmt.Fprintf(&sb, "  • Флаппинг: %d переключений за 24ч\n", flaps)
+			}
+		}
+	}
+
 	// HOST-CHECK
 	if ch != nil {
 		sb.WriteString("\n<b>HOST-CHECK (Check-Host.net):</b>\n")
@@ -2310,7 +2351,7 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 		}
 		hasProblems = true
 
-		summary := tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("🔴 %s — детали аварии (%s)", rep.ProxyName, strings.ToUpper(rep.Protocol))))
+		summary := tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("🔴 %s — детали сбоя (%s)", rep.ProxyName, strings.ToUpper(rep.Protocol))))
 
 		var detailLines []string
 		if rep.NodeHealth.DNSErr != "" {
@@ -2444,13 +2485,13 @@ func (b *Bot) sendMorningDigest(now time.Time) {
 		"• Время: <b>%s</b>\n\n", online, totalActive, now.In(b.loc()).Format("15:04"))
 
 	if len(events) == 0 {
-		sb.WriteString("🌙 <i>За ночь аварий не зафиксировано, все прокси-хосты работали стабильно.</i>")
+		sb.WriteString("🌙 <i>За ночь инцидентов не зафиксировано, все прокси-хосты работали стабильно.</i>")
 	} else {
 		sb.WriteString("<b>Инциденты за ночь:</b>\n")
 		for _, e := range events {
 			tStr := e.Timestamp.In(b.loc()).Format("15:04")
 			if e.Type == "down" {
-				fmt.Fprintf(&sb, "• 🔴 %s: <b>%s</b> — авария (%s)\n", tStr, escapeHTML(e.ProxyName), escapeHTML(e.Reason))
+				fmt.Fprintf(&sb, "• 🔴 %s: <b>%s</b> — сбой (%s)\n", tStr, escapeHTML(e.ProxyName), escapeHTML(e.Reason))
 			} else {
 				fmt.Fprintf(&sb, "• ✅ %s: <b>%s</b> — восстановлен (простой: %s)\n", tStr, escapeHTML(e.ProxyName), FormatDowntime(e.Downtime))
 			}
@@ -2510,7 +2551,7 @@ func (b *Bot) replyHelp(chatID int64) {
 			"/delsub &lt;URL&gt; — удалить добавленную подписку\n"
 	}
 	text += "/help — эта справка\n\n" +
-		"🔔 Аварийные уведомления отправляются автоматически."
+		"🔔 Уведомления о сбоях отправляются автоматически."
 	b.sendOrUpdateMenu(chatID, text, MainMenuMarkup())
 }
 
@@ -2535,7 +2576,7 @@ type recoveryAction struct {
 func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 	b.mu.Lock()
 
-	now := time.Now()
+	now := b.now()
 	cfg := b.GetConfig()
 	isQuiet := IsQuietTime(now, cfg)
 
@@ -2600,7 +2641,21 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 					Reason:    "Offline",
 				})
 			} else {
-				outages = append(outages, pm)
+				suppressed := false
+				if b.statsStore != nil {
+					flaps := b.statsStore.GetFlapCount24h(pm.StableID, now)
+					if flaps > 10 {
+						lastAlert := b.lastFlapAlert[pm.StableID]
+						if !lastAlert.IsZero() && now.Sub(lastAlert) < 15*time.Minute {
+							suppressed = true
+						} else {
+							b.lastFlapAlert[pm.StableID] = now
+						}
+					}
+				}
+				if !suppressed {
+					outages = append(outages, pm)
+				}
 			}
 
 		case !prev && pm.Online:
@@ -2670,7 +2725,11 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				dropCount = ps.DropCount
 			}
 		}
-		outageText := fmt.Sprintf("🔴 <b>%s</b> — не отвечает%s\n⏱ %s · %d-е падение\n%s", escapeHTML(pm.Name), softHint, timeStr, dropCount, escapeHTML(pm.Address))
+		flapNote := ""
+		if b.statsStore != nil && b.statsStore.GetFlapCount24h(pm.StableID, now) > 10 {
+			flapNote = fmt.Sprintf("\n⚠️ <i>Частые сбои (%d за 24ч). Алерты приостановлены на 15 мин.</i>", b.statsStore.GetFlapCount24h(pm.StableID, now))
+		}
+		outageText := fmt.Sprintf("🔴 <b>%s</b> — не отвечает%s\n⏱ %s · %d-й сбой\n%s%s", escapeHTML(pm.Name), softHint, timeStr, dropCount, escapeHTML(pm.Address), flapNote)
 		for _, chatID := range b.chatIDs {
 			if b.tracker.HasAlert(chatID, pm.StableID) {
 				continue

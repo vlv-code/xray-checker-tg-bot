@@ -4,8 +4,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mymmrac/telego"
+	"xray-checker/checker"
 	"xray-checker/metrics"
 )
 
@@ -195,5 +197,130 @@ func TestBot_TimezoneDisplay(t *testing.T) {
 	}
 	if !strings.Contains(tzText, "UTC+5") {
 		t.Errorf("expected tzText to contain UTC+5, got:\n%s", tzText)
+	}
+}
+
+func TestBot_FlappingSuppression(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStatsStore(filepath.Join(tmpDir, "stats.json"))
+	if err != nil {
+		t.Fatalf("failed to create stats store: %v", err)
+	}
+
+	testNow := time.Now()
+	b := &Bot{
+		statsStore:    store,
+		seeded:        true,
+		lastSeen:      make(map[string]bool),
+		lastFlapAlert: make(map[string]time.Time),
+		tracker:       NewAlertTracker(),
+		eventBuffer:   NewEventBuffer(),
+		nowFunc:       func() time.Time { return testNow },
+	}
+
+	// Record 12 transitions so flap count is 12 (> 10)
+	for i := 0; i < 12; i++ {
+		online := i%2 == 0
+		store.RecordTransition("p1", "Proxy 1", online, "test", testNow.Add(time.Duration(-60+i)*time.Minute))
+	}
+
+	if store.GetFlapCount24h("p1", testNow) < 11 {
+		t.Fatalf("expected flap count > 10, got %d", store.GetFlapCount24h("p1", testNow))
+	}
+
+	// 1st transition to down: should record alert time and not be suppressed
+	b.lastSeen["p1"] = true
+	snapshot1 := []metrics.ProxyMetric{
+		{StableID: "p1", Name: "Proxy 1", Online: false, Address: "1.2.3.4:443"},
+	}
+	t1 := testNow
+	b.ProcessSnapshot(snapshot1)
+
+	if b.lastFlapAlert["p1"].IsZero() || !b.lastFlapAlert["p1"].Equal(t1) {
+		t.Fatalf("expected lastFlapAlert to be recorded as t1, got %v (want %v)", b.lastFlapAlert["p1"], t1)
+	}
+
+	// 2nd transition to down 2 minutes later: should be suppressed (lastFlapAlert unchanged)
+	testNow = testNow.Add(2 * time.Minute)
+	b.lastSeen["p1"] = true
+	b.ProcessSnapshot(snapshot1)
+	if !b.lastFlapAlert["p1"].Equal(t1) {
+		t.Errorf("expected lastFlapAlert to remain t1 (%v) during cooldown, got %v", t1, b.lastFlapAlert["p1"])
+	}
+
+	// 3rd transition to down 16 minutes later: cooldown expired, allowed again
+	testNow = testNow.Add(16 * time.Minute)
+	t3 := testNow
+	b.lastSeen["p1"] = true
+	b.ProcessSnapshot(snapshot1)
+	if !b.lastFlapAlert["p1"].Equal(t3) {
+		t.Errorf("expected lastFlapAlert to update to t3 (%v) after cooldown, got %v", t3, b.lastFlapAlert["p1"])
+	}
+}
+
+func TestBot_DeepDiag_ReliabilityAndP99(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStatsStore(filepath.Join(tmpDir, "stats.json"))
+	if err != nil {
+		t.Fatalf("failed to create stats store: %v", err)
+	}
+
+	b := &Bot{
+		statsStore: store,
+	}
+
+	// Record 10 latency samples
+	for _, lat := range []float64{20, 30, 40, 50, 60, 70, 80, 90, 150, 300} {
+		store.RecordLatency("p1", lat)
+	}
+
+	// Record transitions for MTBF/MTTR and flaps
+	now := time.Now()
+	store.RecordTransition("p1", "Proxy 1", false, "Connection refused", now.Add(-2*time.Hour))
+	store.RecordTransition("p1", "Proxy 1", true, "", now.Add(-1*time.Hour))
+
+	pm := metrics.ProxyMetric{
+		StableID: "p1",
+		Name:     "Proxy 1",
+		Address:  "example.com:443",
+		Protocol: "vless",
+		Online:   true,
+	}
+
+	text := b.formatDeepDiagnostics(pm, checker.NodeHealth{ResolvedIP: "1.1.1.1"}, nil)
+
+	if !strings.Contains(text, "p99:") {
+		t.Errorf("expected text to contain 'p99:', got:\n%s", text)
+	}
+	if !strings.Contains(text, "НАДЁЖНОСТЬ (24ч):") {
+		t.Errorf("expected text to contain 'НАДЁЖНОСТЬ (24ч):', got:\n%s", text)
+	}
+	if !strings.Contains(text, "MTBF") {
+		t.Errorf("expected text to contain 'MTBF', got:\n%s", text)
+	}
+	if !strings.Contains(text, "MTTR") {
+		t.Errorf("expected text to contain 'MTTR', got:\n%s", text)
+	}
+}
+
+func TestBot_TopProblematic_MTBF_MTTR(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStatsStore(filepath.Join(tmpDir, "stats.json"))
+	if err != nil {
+		t.Fatalf("failed to create stats store: %v", err)
+	}
+
+	b := &Bot{
+		statsStore: store,
+	}
+
+	now := time.Now()
+	store.RecordCheck("p1", "BadProxy", false, 0)
+	store.RecordTransition("p1", "BadProxy", false, "Offline", now.Add(-2*time.Hour))
+	store.RecordTransition("p1", "BadProxy", true, "", now.Add(-1*time.Hour))
+
+	text := b.getTopProblematicText()
+	if !strings.Contains(text, "MTBF:") || !strings.Contains(text, "MTTR:") {
+		t.Errorf("expected top problematic text to contain MTBF and MTTR, got:\n%s", text)
 	}
 }

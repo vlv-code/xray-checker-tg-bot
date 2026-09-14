@@ -87,16 +87,56 @@ func (tm *TargetManager) GetTargets() []string {
 	return out
 }
 
-// AddTarget adds a validated target URL to the list.
-func (tm *TargetManager) AddTarget(rawURL string) error {
+func isBlockedTargetIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		if ip4.IsLoopback() || ip4.IsPrivate() || ip4.IsLinkLocalUnicast() || ip4.IsUnspecified() {
+			return true
+		}
+		if ip4[0] == 0 || (ip4[0] == 169 && ip4[1] == 254) {
+			return true
+		}
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
+func validateTargetURL(rawURL string) (*url.URL, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
-		return fmt.Errorf("target URL cannot be empty")
+		return nil, fmt.Errorf("target URL cannot be empty")
 	}
 
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("invalid URL: must be http or https with valid host")
+		return nil, fmt.Errorf("invalid URL: must be http or https with valid host")
+	}
+
+	hostname := u.Hostname()
+	if hostname == "" {
+		return nil, fmt.Errorf("missing host in target URL")
+	}
+
+	if strings.EqualFold(hostname, "localhost") || strings.HasSuffix(strings.ToLower(hostname), ".localhost") || strings.HasSuffix(strings.ToLower(hostname), ".local") {
+		return nil, fmt.Errorf("SSRF: local host %q is blocked", hostname)
+	}
+
+	if ip := net.ParseIP(hostname); ip != nil {
+		if isBlockedTargetIP(ip) {
+			return nil, fmt.Errorf("SSRF: access to private/reserved IP %s is blocked", ip)
+		}
+	}
+
+	return u, nil
+}
+
+// AddTarget adds a validated target URL to the list.
+func (tm *TargetManager) AddTarget(rawURL string) error {
+	rawURL = strings.TrimSpace(rawURL)
+	if _, err := validateTargetURL(rawURL); err != nil {
+		return err
 	}
 
 	tm.mu.Lock()

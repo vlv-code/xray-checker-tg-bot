@@ -161,7 +161,7 @@ docker compose up -d --build
 | `TELEGRAM_BOT_TOKEN` | `""` | Токен Telegram-бота от @BotFather (включает бота) |
 | `TELEGRAM_CHAT_IDS` | `""` | Список Chat ID через запятую, допущенных к боту |
 | `TELEGRAM_ALERT_MODE` | `clean` | Режим алертов: `clean` (автоочистка) или `live` (редактирование сообщения) |
-| `TELEGRAM_RICH_MODE`  | `true` | Использовать Telegram Bot API 10.1 Rich-формат (таблица + спойлеры деталей) |
+| `TELEGRAM_RICH_MODE`  | `false` | Использовать Telegram Bot API 10.1 Rich-формат (таблица + спойлеры деталей) |
 | `CHECKHOST_BG_ENABLED` | `true` | Фоновый периодический аудит всех хостов из подписок через Check-Host.net |
 | `CHECKHOST_INTERVAL_HOURS` | `1` | Интервал фонового Check-Host аудита в часах (1, 2, 4, 6, 12) |
 | `CHECKHOST_ALERT_ENABLED` | `true` | Отправлять предупреждение в бота, если нода недоступна из РФ |

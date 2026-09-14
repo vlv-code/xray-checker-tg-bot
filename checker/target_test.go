@@ -230,3 +230,43 @@ func TestProbeNodeHealth_UDP(t *testing.T) {
 		t.Errorf("expected positive UDPPing, got %v", health.UDPPing)
 	}
 }
+
+func TestTargetManager_SSRF_Protection(t *testing.T) {
+	tm := NewTargetManager(nil)
+
+	blockedTargets := []string{
+		"http://127.0.0.1/test",
+		"http://127.0.0.2:8080/metrics",
+		"http://localhost/check",
+		"https://my.localhost/check",
+		"http://169.254.169.254/latest/meta-data",
+		"http://10.0.0.1/admin",
+		"http://172.16.0.1/api",
+		"http://192.168.1.1/setup",
+		"http://0.0.0.0/test",
+		"http://[::1]/status",
+	}
+
+	for _, target := range blockedTargets {
+		err := tm.AddTarget(target)
+		if err == nil {
+			t.Errorf("expected target %q to be blocked by SSRF check, got nil", target)
+		} else if !strings.Contains(err.Error(), "SSRF") {
+			t.Errorf("expected error for %q to contain 'SSRF', got %v", target, err)
+		}
+	}
+
+	allowedTargets := []string{
+		"https://example.com/generate_204",
+		"https://1.1.1.1/generate_204",
+		"https://8.8.8.8/test",
+		"https://google.com/health",
+	}
+
+	for _, target := range allowedTargets {
+		err := tm.AddTarget(target)
+		if err != nil {
+			t.Errorf("expected allowed target %q to succeed, got %v", target, err)
+		}
+	}
+}

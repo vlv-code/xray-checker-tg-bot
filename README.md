@@ -160,7 +160,7 @@ docker compose up -d --build
 | `TELEGRAM_BOT_TOKEN` | `""` | Telegram bot token from @BotFather (enables the bot) |
 | `TELEGRAM_CHAT_IDS` | `""` | Comma-separated list of authorized Telegram chat IDs |
 | `TELEGRAM_ALERT_MODE` | `clean` | Alert mode: `clean` (auto-deletes) or `live` (edits outage alert) |
-| `TELEGRAM_RICH_MODE`  | `true` | Enable Telegram Bot API 10.1 rich messages for diagnostics (table + collapsible details) |
+| `TELEGRAM_RICH_MODE`  | `false` | Enable Telegram Bot API 10.1 rich messages for diagnostics (table + collapsible details) |
 | `CHECKHOST_BG_ENABLED` | `true` | Periodic background Reachability audit via Check-Host.net |
 | `CHECKHOST_INTERVAL_HOURS` | `1` | Background Check-Host audit interval in hours (1, 2, 4, 6, 12) |
 | `CHECKHOST_ALERT_ENABLED` | `true` | Send Telegram alert if a node is unreachable from Russia |
