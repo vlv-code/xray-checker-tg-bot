@@ -52,39 +52,20 @@ export default defineConfig({
             href: "/site.webmanifest",
           },
         },
-        // Plausible Analytics
-        {
-          tag: "script",
-          attrs: {
-            async: true,
-            src: "https://ps.log.rw/js/pa-mlJHNSq4iSgTf0o8D8qJM.js",
-          },
-        },
-        {
-          tag: "script",
-          content:
-            'window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};plausible.init()',
-        },
-      ],
       editLink: {
-        baseUrl: "https://github.com/kutovoys/xray-checker/edit/main/docs/",
+        baseUrl: "https://github.com/vlv-code/xray-checker-tg-bot/edit/main/docs/",
       },
       customCss: ["./src/styles/custom.css"],
       social: [
         {
           icon: "github",
           label: "GitHub",
+          href: "https://github.com/vlv-code/xray-checker-tg-bot",
+        },
+        {
+          icon: "external",
+          label: "Upstream Repo",
           href: "https://github.com/kutovoys/xray-checker",
-        },
-        {
-          icon: "telegram",
-          label: "Telegram",
-          href: "https://t.me/+VEzFQmaTZcQ5ZGYy",
-        },
-        {
-          icon: "linkedin",
-          label: "LinkedIn",
-          href: "https://www.linkedin.com/in/kutovoys/",
         },
       ],
       defaultLocale: "root",
@@ -362,20 +343,6 @@ export default defineConfig({
             {
               label: "Marzban Exporter",
               link: "https://github.com/kutovoys/marzban-exporter",
-            },
-          ],
-        },
-        {
-          label: "VPN Recommendation",
-          translations: {
-            ru: "Рекомендуем",
-            fa: "VPN پیشنهادی",
-          },
-          items: [
-            {
-              label: "bye-bye-home",
-              link: "https://cabinet.bbhome.xyz/",
-              badge: { text: "PIPISKA1337", variant: "success" },
             },
           ],
         },
