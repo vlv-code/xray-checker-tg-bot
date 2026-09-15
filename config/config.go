@@ -56,7 +56,7 @@ type CLI struct {
 		Port      string `name:"metrics-port" help:"Port to listen on" default:"2112" env:"METRICS_PORT"`
 		Protected bool   `name:"metrics-protected" help:"Whether metrics are protected by basic auth" default:"true" env:"METRICS_PROTECTED"`
 		Username  string `name:"metrics-username" help:"Username for metrics if protected by basic auth" default:"metricsUser" env:"METRICS_USERNAME"`
-		Password  string `name:"metrics-password" help:"Password for metrics if protected by basic auth" default:"MetricsVeryHardPassword" env:"METRICS_PASSWORD"`
+		Password  string `name:"metrics-password" help:"Password for metrics if protected by basic auth" default:"" env:"METRICS_PASSWORD"`
 		Instance  string `name:"metrics-instance" help:"Instance label for metrics" default:"" env:"METRICS_INSTANCE"`
 		PushURL   string `name:"metrics-push-url" help:"Prometheus pushgateway URL (e.g. https://user:pass@host:port)" default:"" env:"METRICS_PUSH_URL"`
 		BasePath  string `name:"metrics-base-path" help:"URL path to metrics (e.g. /xray/metrics)" default:"" env:"METRICS_BASE_PATH"`
@@ -101,6 +101,9 @@ type CLI struct {
 func (c *CLI) Validate() error {
 	if c.Web.Enabled && c.Web.Public && !c.Metrics.Protected {
 		return fmt.Errorf("--web-public requires --metrics-protected to be enabled")
+	}
+	if c.Metrics.Protected && c.Metrics.Port != "" && c.Metrics.Port != "0" && c.Metrics.Password == "" {
+		return fmt.Errorf("METRICS_PROTECTED is true but METRICS_PASSWORD is empty. Please set a secure METRICS_PASSWORD via environment variable or --metrics-password flag")
 	}
 	if c.Telegram.BotToken != "" && len(c.Telegram.ChatIDs) == 0 {
 		return fmt.Errorf("--telegram-bot-token requires at least one --telegram-chat-id")

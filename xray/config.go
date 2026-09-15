@@ -84,7 +84,7 @@ func (g *ConfigGenerator) GenerateValidatedConfig(proxies []*models.ProxyConfig,
 
 		buildErr := validateConfigBuild(configBytes)
 		if buildErr == nil {
-			if err := os.WriteFile(filename, configBytes, 0644); err != nil {
+			if err := os.WriteFile(filename, configBytes, 0600); err != nil {
 				return current, fmt.Errorf("error saving config: %v", err)
 			}
 			if len(current) != len(proxies) {
@@ -108,7 +108,7 @@ func (g *ConfigGenerator) GenerateValidatedConfig(proxies []*models.ProxyConfig,
 			// Failure can't be attributed to a single proxy — keep the config so the
 			// error surfaces at startup instead of silently dropping everything.
 			logger.Error("Xray config build failed and no offending proxy could be identified; keeping config as-is: %v", buildErr)
-			if werr := os.WriteFile(filename, configBytes, 0644); werr != nil {
+			if werr := os.WriteFile(filename, configBytes, 0600); werr != nil {
 				return current, werr
 			}
 			return current, nil
@@ -518,12 +518,6 @@ func (g *ConfigGenerator) generateStreamSettings(proxy *models.ProxyConfig) map[
 
 func (g *ConfigGenerator) generateRouting(proxies []*models.ProxyConfig) map[string]interface{} {
 	var rules []map[string]interface{}
-
-	rules = append(rules, map[string]interface{}{
-		"type":        "field",
-		"protocol":    []string{"dns"},
-		"outboundTag": "dns-out",
-	})
 
 	for _, proxy := range proxies {
 		inboundTag := fmt.Sprintf("%s_%s_%d_Inbound", proxy.Name, proxy.Protocol, proxy.Index)

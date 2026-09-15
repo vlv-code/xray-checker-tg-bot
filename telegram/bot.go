@@ -86,7 +86,7 @@ type Bot struct {
 // New creates a Bot and verifies the token against the Telegram API.
 func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRecovery, commandsEnabled bool, subs SubscriptionManager) (*Bot, error) {
 	httpClient := &http.Client{
-		Timeout:   30 * time.Second,
+		Timeout:   75 * time.Second,
 		Transport: http.DefaultTransport,
 	}
 	api, err := telego.NewBot(token, telego.WithDiscardLogger(), telego.WithHTTPClient(httpClient))
@@ -183,14 +183,23 @@ func (b *Bot) SetAlertTracker(tracker *AlertTracker) {
 	}
 }
 
+func (b *Bot) updateConfig(fn func(*BotConfig)) error {
+	if b.configMgr == nil {
+		return nil
+	}
+	if err := b.configMgr.Update(fn); err != nil {
+		logger.Error("Telegram: failed to save bot config: %v", err)
+		return err
+	}
+	return nil
+}
+
 // SetRichMode sets default reporting format.
 func (b *Bot) SetRichMode(enabled bool) {
 	b.richMode = enabled
-	if b.configMgr != nil {
-		_ = b.configMgr.Update(func(cfg *BotConfig) {
-			cfg.RichMode = enabled
-		})
-	}
+	_ = b.updateConfig(func(cfg *BotConfig) {
+		cfg.RichMode = enabled
+	})
 }
 
 func (b *Bot) isRichMode() bool {
@@ -212,11 +221,9 @@ func (b *Bot) updateCheckInterval(sec int) {
 	if sec < 10 {
 		sec = 10
 	}
-	if b.configMgr != nil {
-		_ = b.configMgr.Update(func(c *BotConfig) {
-			c.CheckIntervalSec = sec
-		})
-	}
+	_ = b.updateConfig(func(c *BotConfig) {
+		c.CheckIntervalSec = sec
+	})
 	if b.intervalHandler != nil {
 		b.intervalHandler(sec)
 	}
@@ -251,7 +258,7 @@ func (b *Bot) StartCommands() {
 	b.startScheduler()
 
 	updates, err := b.api.UpdatesViaLongPolling(b.ctx, &telego.GetUpdatesParams{
-		Timeout: 60,
+		Timeout: 50,
 	})
 	if err != nil {
 		logger.Error("Telegram: failed to start long polling: %v", err)
@@ -327,7 +334,8 @@ func (b *Bot) checkSchedules(now time.Time) {
 		if err != nil {
 			endHour, endMin = 8, 0
 		}
-		nowMinutes := now.Hour()*60 + now.Minute()
+		localNow := now.In(b.loc())
+		nowMinutes := localNow.Hour()*60 + localNow.Minute()
 		endMinutes := endHour*60 + endMin
 		diff := nowMinutes - endMinutes
 		if diff < 0 {
@@ -495,67 +503,53 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:quiet":
 		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
 	case "menu:quiet:toggle":
-		if b.configMgr != nil {
-			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.QuietHoursEnabled = !c.QuietHoursEnabled
-			})
-		}
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.QuietHoursEnabled = !c.QuietHoursEnabled
+		})
 		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
 	case "menu:quiet:snooze:1h":
-		if b.configMgr != nil {
-			until := time.Now().Add(1 * time.Hour).Unix()
-			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.QuietSnoozeUntil = until
-			})
-		}
+		until := time.Now().Add(1 * time.Hour).Unix()
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.QuietSnoozeUntil = until
+		})
 		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
 	case "menu:quiet:snooze:4h":
-		if b.configMgr != nil {
-			until := time.Now().Add(4 * time.Hour).Unix()
-			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.QuietSnoozeUntil = until
-			})
-		}
+		until := time.Now().Add(4 * time.Hour).Unix()
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.QuietSnoozeUntil = until
+		})
 		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
 	case "menu:quiet:snooze:morning":
-		if b.configMgr != nil {
-			endHour, endMin, err := parseTimeOfDay(b.GetConfig().QuietHoursEnd)
-			if err != nil {
-				endHour, endMin = 8, 0
-			}
-			now := b.now()
-			nextMorning := time.Date(now.Year(), now.Month(), now.Day(), endHour, endMin, 0, 0, b.loc())
-			if !now.Before(nextMorning) {
-				nextMorning = nextMorning.Add(24 * time.Hour)
-			}
-			until := nextMorning.Unix()
-			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.QuietSnoozeUntil = until
-			})
+		endHour, endMin, err := parseTimeOfDay(b.GetConfig().QuietHoursEnd)
+		if err != nil {
+			endHour, endMin = 8, 0
 		}
+		now := b.now()
+		nextMorning := time.Date(now.Year(), now.Month(), now.Day(), endHour, endMin, 0, 0, b.loc())
+		if !now.Before(nextMorning) {
+			nextMorning = nextMorning.Add(24 * time.Hour)
+		}
+		until := nextMorning.Unix()
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.QuietSnoozeUntil = until
+		})
 		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
 	case "menu:quiet:unsnooze":
-		if b.configMgr != nil {
-			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.QuietSnoozeUntil = 0
-			})
-		}
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.QuietSnoozeUntil = 0
+		})
 		b.editWithMarkup(chatID, msgID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
 	case "menu:alert_mode":
 		b.editWithMarkup(chatID, msgID, b.getAlertModeText(), AlertModeMarkup(b.GetConfig()))
 	case "menu:alert_mode:live":
-		if b.configMgr != nil {
-			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.AlertMode = AlertModeLive
-			})
-		}
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.AlertMode = AlertModeLive
+		})
 		b.editWithMarkup(chatID, msgID, b.getAlertModeText(), AlertModeMarkup(b.GetConfig()))
 	case "menu:alert_mode:clean":
-		if b.configMgr != nil {
-			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.AlertMode = AlertModeClean
-			})
-		}
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.AlertMode = AlertModeClean
+		})
 		b.editWithMarkup(chatID, msgID, b.getAlertModeText(), AlertModeMarkup(b.GetConfig()))
 	case "menu:targets":
 		b.editWithMarkup(chatID, msgID, b.getTargetsText(), TargetsMenuMarkup())
@@ -571,18 +565,14 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:checkhost_cfg":
 		b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
 	case "menu:checkhost:toggle_bg":
-		if b.configMgr != nil {
-			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.CheckHostBgEnabled = !c.CheckHostBgEnabled
-			})
-		}
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.CheckHostBgEnabled = !c.CheckHostBgEnabled
+		})
 		b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
 	case "menu:checkhost:toggle_alert":
-		if b.configMgr != nil {
-			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.CheckHostAlertEnabled = !c.CheckHostAlertEnabled
-			})
-		}
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.CheckHostAlertEnabled = !c.CheckHostAlertEnabled
+		})
 		b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
 	case "menu:checkhost:run_now":
 		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🚀 Запуск фоновой проверки Check-Host..."))
@@ -590,24 +580,23 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	default:
 		if strings.HasPrefix(cb.Data, "menu:tz:") {
 			tz := strings.TrimPrefix(cb.Data, "menu:tz:")
-			if b.configMgr != nil {
-				_ = b.configMgr.Update(func(c *BotConfig) {
-					c.Timezone = tz
-				})
-			}
+			_ = b.updateConfig(func(c *BotConfig) {
+				c.Timezone = tz
+			})
 			b.editWithMarkup(chatID, msgID, b.getTimezoneText(), TimezoneMarkup(b.GetConfig().Timezone))
 		} else if strings.HasPrefix(cb.Data, "menu:checkhost:int:") {
 			intStr := strings.TrimPrefix(cb.Data, "menu:checkhost:int:")
 			if hours, err := strconv.Atoi(intStr); err == nil && hours > 0 {
-				if b.configMgr != nil {
-					_ = b.configMgr.Update(func(c *BotConfig) {
-						c.CheckHostIntervalHours = hours
-					})
-				}
+				_ = b.updateConfig(func(c *BotConfig) {
+					c.CheckHostIntervalHours = hours
+				})
 				b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
 			}
 		} else if strings.HasPrefix(cb.Data, "menu:disabled_proxies:") {
 			pageStr := strings.TrimPrefix(cb.Data, "menu:disabled_proxies:")
+			if strings.Contains(pageStr, "noop") {
+				return
+			}
 			page, _ := strconv.Atoi(pageStr)
 			if page <= 0 {
 				page = 1
@@ -616,15 +605,18 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			b.editWithMarkup(chatID, msgID, text, markup)
 		} else if strings.HasPrefix(cb.Data, "menu:toggle_proxy:") {
 			rest := strings.TrimPrefix(cb.Data, "menu:toggle_proxy:")
-			parts := strings.Split(rest, ":")
-			if len(parts) >= 2 {
-				stableID := parts[0]
-				page, _ := strconv.Atoi(parts[1])
+			idx := strings.LastIndex(rest, ":")
+			if idx != -1 {
+				stableID := rest[:idx]
+				page, _ := strconv.Atoi(rest[idx+1:])
 				if page <= 0 {
 					page = 1
 				}
 				if b.configMgr != nil {
-					disabled, _ := b.configMgr.ToggleProxy(stableID)
+					disabled, err := b.configMgr.ToggleProxy(stableID)
+					if err != nil {
+						logger.Error("Telegram: failed to toggle proxy %s: %v", stableID, err)
+					}
 					proxyName := b.getProxyNameByStableID(stableID)
 					toast := fmt.Sprintf("🟢 Прокси-хост %s включен", proxyName)
 					if disabled {
@@ -639,6 +631,9 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			}
 		} else if strings.HasPrefix(cb.Data, "menu:disabled_hosts:") {
 			pageStr := strings.TrimPrefix(cb.Data, "menu:disabled_hosts:")
+			if strings.Contains(pageStr, "noop") {
+				return
+			}
 			page, _ := strconv.Atoi(pageStr)
 			if page <= 0 {
 				page = 1
@@ -647,15 +642,18 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			b.editWithMarkup(chatID, msgID, text, markup)
 		} else if strings.HasPrefix(cb.Data, "menu:toggle_host:") {
 			rest := strings.TrimPrefix(cb.Data, "menu:toggle_host:")
-			parts := strings.Split(rest, ":")
-			if len(parts) >= 2 {
-				host := parts[0]
-				page, _ := strconv.Atoi(parts[1])
+			idx := strings.LastIndex(rest, ":")
+			if idx != -1 {
+				host := rest[:idx]
+				page, _ := strconv.Atoi(rest[idx+1:])
 				if page <= 0 {
 					page = 1
 				}
 				if b.configMgr != nil {
-					disabled, _ := b.configMgr.ToggleHost(host)
+					disabled, err := b.configMgr.ToggleHost(host)
+					if err != nil {
+						logger.Error("Telegram: failed to toggle host %s: %v", host, err)
+					}
 					toast := fmt.Sprintf("🟢 Хост %s включён", host)
 					if disabled {
 						toast = fmt.Sprintf("⏸️ Хост %s выключен", host)
@@ -671,7 +669,10 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			if page <= 0 {
 				page = 1
 			}
-			reports := b.getDiagnosticsReports(false)
+			reports := b.getCachedDiagnosticsReports()
+			if len(reports) == 0 {
+				reports = b.getDiagnosticsReports(false)
+			}
 			pageText, totalPages := b.getDiagnosticsPageText(reports, page)
 			deepLinks := getDeepLinksForPage(reports, page)
 			b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages, deepLinks...))
@@ -1674,11 +1675,9 @@ func (b *Bot) handleTimezoneCommand(msg *telego.Message) {
 		}
 	}
 
-	if b.configMgr != nil {
-		_ = b.configMgr.Update(func(c *BotConfig) {
-			c.Timezone = arg
-		})
-	}
+	_ = b.updateConfig(func(c *BotConfig) {
+		c.Timezone = arg
+	})
 	b.replyCommand(msg, fmt.Sprintf("✅ Часовой пояс успешно изменён на <b>%s</b>.\nТекущее время бота: <b>%s</b>", escapeHTML(arg), b.now().Format("15:04:05 02.01.2006")))
 }
 
@@ -1734,6 +1733,20 @@ func formatTimeAgo(d time.Duration) string {
 }
 
 const diagPageSize = 5
+
+func (b *Bot) getCachedDiagnosticsReports() []checker.ProxyDiagReport {
+	if b.diagSource == nil {
+		return nil
+	}
+	b.diagMu.Lock()
+	defer b.diagMu.Unlock()
+	if len(b.cachedDiag) > 0 {
+		reports := make([]checker.ProxyDiagReport, len(b.cachedDiag))
+		copy(reports, b.cachedDiag)
+		return reports
+	}
+	return nil
+}
 
 func (b *Bot) getDiagnosticsReports(force bool) []checker.ProxyDiagReport {
 	if b.diagSource == nil {
@@ -2590,6 +2603,13 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				b.statsStore.RecordCheck(pm.StableID, pm.Name, pm.Online, pm.LatencyMs)
 				if !pm.Online {
 					b.statsStore.RecordInitialDown(pm.StableID, pm.Name, now)
+				} else {
+					b.statsStore.SyncOnlineState(pm.StableID, now)
+				}
+			}
+			if pm.Online {
+				for _, chatID := range b.chatIDs {
+					b.tracker.Resolve(chatID, pm.StableID)
 				}
 			}
 		}
@@ -2659,8 +2679,9 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 			}
 
 		case !prev && pm.Online:
+			var downtime time.Duration
 			if b.statsStore != nil {
-				b.statsStore.RecordTransition(pm.StableID, pm.Name, true, "", now)
+				downtime = b.statsStore.RecordTransition(pm.StableID, pm.Name, true, "", now)
 			}
 
 			if isQuiet {
@@ -2669,12 +2690,12 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 					Type:      "up",
 					ProxyName: pm.Name,
 					LatencyMs: pm.LatencyMs,
+					Downtime:  downtime,
 				})
 			} else {
 				for _, chatID := range b.chatIDs {
 					alert, hadAlert := b.tracker.Resolve(chatID, pm.StableID)
-					var downtime time.Duration
-					if hadAlert {
+					if hadAlert && alert != nil && !alert.DownAt.IsZero() {
 						downtime = now.Sub(alert.DownAt)
 					}
 					recoveries = append(recoveries, recoveryAction{
@@ -2694,7 +2715,11 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 	for id := range b.lastSeen {
 		if !seenNow[id] {
 			delete(b.lastSeen, id)
+			delete(b.lastFlapAlert, id)
 		}
+	}
+	if b.statsStore != nil && len(seenNow) > 0 {
+		b.statsStore.PruneInactive(seenNow)
 	}
 
 	// Release lock BEFORE executing network calls
@@ -2721,8 +2746,8 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 		timeStr := now.In(b.loc()).Format("15:04")
 		dropCount := int64(1)
 		if b.statsStore != nil {
-			if ps, ok := b.statsStore.Stats[pm.StableID]; ok && ps.DropCount > 0 {
-				dropCount = ps.DropCount
+			if drops := b.statsStore.GetDropCount(pm.StableID); drops > 0 {
+				dropCount = drops
 			}
 		}
 		flapNote := ""
@@ -2735,6 +2760,18 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				continue
 			}
 			if sent, err := b.sendAndReturn(chatID, outageText); err == nil && sent != nil && sent.MessageID != 0 {
+				b.mu.Lock()
+				stillDown := !b.lastSeen[pm.StableID]
+				b.mu.Unlock()
+				if !stillDown {
+					if b.api != nil {
+						_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+							ChatID:    tu.ID(chatID),
+							MessageID: sent.MessageID,
+						})
+					}
+					continue
+				}
 				b.tracker.Track(chatID, sent.MessageID, pm.StableID, pm.Name, now, "Offline")
 			}
 		}
@@ -3211,32 +3248,24 @@ func (b *Bot) handleCheckHostBgCommand(msg *telego.Message) {
 
 	switch strings.ToLower(arg) {
 	case "on", "enable", "1":
-		if b.configMgr != nil {
-			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.CheckHostBgEnabled = true
-			})
-		}
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.CheckHostBgEnabled = true
+		})
 		b.send(msg.Chat.ID, "✅ Фоновая проверка Check-Host <b>включена</b>.")
 	case "off", "disable", "0":
-		if b.configMgr != nil {
-			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.CheckHostBgEnabled = false
-			})
-		}
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.CheckHostBgEnabled = false
+		})
 		b.send(msg.Chat.ID, "❌ Фоновая проверка Check-Host <b>выключена</b>.")
 	case "alert_on", "alerts_on":
-		if b.configMgr != nil {
-			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.CheckHostAlertEnabled = true
-			})
-		}
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.CheckHostAlertEnabled = true
+		})
 		b.send(msg.Chat.ID, "🔔 Алерты по недоступности из РФ <b>включены</b>.")
 	case "alert_off", "alerts_off":
-		if b.configMgr != nil {
-			_ = b.configMgr.Update(func(c *BotConfig) {
-				c.CheckHostAlertEnabled = false
-			})
-		}
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.CheckHostAlertEnabled = false
+		})
 		b.send(msg.Chat.ID, "🔕 Алерты по недоступности из РФ <b>выключены</b>.")
 	case "run", "now":
 		b.send(msg.Chat.ID, "🚀 Запуск фоновой проверки Check-Host...")
@@ -3245,11 +3274,9 @@ func (b *Bot) handleCheckHostBgCommand(msg *telego.Message) {
 		cleanArg := strings.TrimSuffix(strings.ToLower(arg), "h")
 		cleanArg = strings.TrimSuffix(cleanArg, "ч")
 		if hours, err := strconv.Atoi(cleanArg); err == nil && hours > 0 {
-			if b.configMgr != nil {
-				_ = b.configMgr.Update(func(c *BotConfig) {
-					c.CheckHostIntervalHours = hours
-				})
-			}
+			_ = b.updateConfig(func(c *BotConfig) {
+				c.CheckHostIntervalHours = hours
+			})
 			b.send(msg.Chat.ID, fmt.Sprintf("⏱️ Интервал фонового Check-Host установлен на <b>каждые %d ч.</b>", hours))
 		} else {
 			b.send(msg.Chat.ID, "Использование: <code>/checkhost_bg [on|off|alert_on|alert_off|1h|2h|run]</code>")

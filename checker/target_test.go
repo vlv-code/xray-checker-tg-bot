@@ -243,6 +243,8 @@ func TestTargetManager_SSRF_Protection(t *testing.T) {
 		"http://10.0.0.1/admin",
 		"http://172.16.0.1/api",
 		"http://192.168.1.1/setup",
+		"http://100.64.0.1/cgnat",
+		"http://224.0.0.1/multicast",
 		"http://0.0.0.0/test",
 		"http://[::1]/status",
 	}

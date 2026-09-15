@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -118,9 +119,13 @@ func NewProxyChecker(proxies []*models.ProxyConfig, startPort int, ipCheckURL st
 }
 
 func (pc *ProxyChecker) GetCurrentIP() (string, error) {
+	pc.mu.RLock()
 	if pc.ipInitialized && pc.currentIP != "" {
-		return pc.currentIP, nil
+		ip := pc.currentIP
+		pc.mu.RUnlock()
+		return ip, nil
 	}
+	pc.mu.RUnlock()
 
 	resp, err := pc.httpClient.Get(pc.ipCheck)
 	if err != nil {
@@ -133,9 +138,13 @@ func (pc *ProxyChecker) GetCurrentIP() (string, error) {
 		return "", fmt.Errorf("error reading response: %v", err)
 	}
 
-	pc.currentIP = string(body)
+	ipStr := strings.TrimSpace(string(body))
+	pc.mu.Lock()
+	pc.currentIP = ipStr
 	pc.ipInitialized = true
-	return pc.currentIP, nil
+	pc.mu.Unlock()
+
+	return ipStr, nil
 }
 
 func (pc *ProxyChecker) CheckProxy(proxy *models.ProxyConfig) {
@@ -657,7 +666,14 @@ func (pc *ProxyChecker) MetricsSnapshot() []metrics.ProxyMetric {
 func (pc *ProxyChecker) CheckAllProxies() {
 	if _, err := pc.GetCurrentIP(); err != nil {
 		logger.Warn("Error getting current IP: %v", err)
-		return
+		if pc.checkMethod == "ip" {
+			pc.mu.RLock()
+			hasIP := pc.currentIP != ""
+			pc.mu.RUnlock()
+			if !hasIP {
+				return
+			}
+		}
 	}
 
 	pc.mu.RLock()

@@ -58,6 +58,7 @@ func TestCheckHostClient_CheckTCP(t *testing.T) {
 	defer ts.Close()
 
 	client := NewCheckHostClient(ts.URL, 100*time.Millisecond)
+	client.HTTPClient = ts.Client()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -173,6 +174,7 @@ func TestCheckHostClient_CheckPing(t *testing.T) {
 	defer ts.Close()
 
 	client := NewCheckHostClient(ts.URL, 50*time.Millisecond)
+	client.HTTPClient = ts.Client()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 

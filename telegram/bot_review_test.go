@@ -218,8 +218,8 @@ func TestBot_FlappingSuppression(t *testing.T) {
 		nowFunc:       func() time.Time { return testNow },
 	}
 
-	// Record 12 transitions so flap count is 12 (> 10)
-	for i := 0; i < 12; i++ {
+	// Record 24 transitions so offline count is 12 (> 10)
+	for i := 0; i < 24; i++ {
 		online := i%2 == 0
 		store.RecordTransition("p1", "Proxy 1", online, "test", testNow.Add(time.Duration(-60+i)*time.Minute))
 	}

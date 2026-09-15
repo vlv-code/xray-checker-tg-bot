@@ -106,3 +106,54 @@ func TestShouldShowServerDetails(t *testing.T) {
 	config.CLIConfig.Web.Public = false
 	config.CLIConfig.Web.TrustedExternalAuth = false
 }
+
+func TestSanitizeGeneratedConfigMasksWireGuardAndSocksSecrets(t *testing.T) {
+	wgOutbound := map[string]interface{}{
+		"tag":      "wg_node",
+		"protocol": "wireguard",
+		"settings": map[string]interface{}{
+			"secretKey": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d=",
+			"peers": []map[string]interface{}{
+				{
+					"publicKey":    "pubKeyMaterialShouldNotBeMasked=",
+					"preSharedKey": "presharedKeySecretMaterialShouldBeMasked=",
+				},
+			},
+		},
+	}
+
+	socksOutbound := map[string]interface{}{
+		"tag":      "socks_node",
+		"protocol": "socks",
+		"settings": map[string]interface{}{
+			"servers": []map[string]interface{}{
+				{
+					"address": "1.2.3.4",
+					"port":    1080,
+					"users": []map[string]interface{}{
+						{"user": "socksuser", "pass": "verysecretpassword"},
+					},
+				},
+			},
+		},
+	}
+
+	sanitizedWG := sanitizeGeneratedConfig(wgOutbound)
+	wgSettings := sanitizedWG["settings"].(map[string]interface{})
+	if wgSettings["secretKey"] != "a1b2...c3d=" {
+		t.Errorf("WireGuard secretKey not masked: %v", wgSettings["secretKey"])
+	}
+	wgPeer := wgSettings["peers"].([]interface{})[0].(map[string]interface{})
+	if wgPeer["publicKey"] != "pubKeyMaterialShouldNotBeMasked=" {
+		t.Errorf("WireGuard publicKey should not be masked: %v", wgPeer["publicKey"])
+	}
+	if wgPeer["preSharedKey"] != "pres...ked=" {
+		t.Errorf("WireGuard preSharedKey not masked: %v", wgPeer["preSharedKey"])
+	}
+
+	sanitizedSocks := sanitizeGeneratedConfig(socksOutbound)
+	socksUser := sanitizedSocks["settings"].(map[string]interface{})["servers"].([]interface{})[0].(map[string]interface{})["users"].([]interface{})[0].(map[string]interface{})
+	if socksUser["pass"] != "very...word" {
+		t.Errorf("Socks pass not masked: %v", socksUser["pass"])
+	}
+}

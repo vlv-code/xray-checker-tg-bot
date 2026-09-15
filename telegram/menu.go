@@ -160,7 +160,7 @@ func DisabledProxiesMarkup(items []ProxyToggleItem, page, totalPages int) *teleg
 
 		rows = append(rows, tu.InlineKeyboardRow(
 			prevBtn,
-			btn(fmt.Sprintf("%d / %d", page, totalPages), fmt.Sprintf("menu:disabled_proxies:noop:%d:%d", page, totalPages)),
+			btn(fmt.Sprintf("%d / %d", page, totalPages), "menu:noop"),
 			nextBtn,
 		))
 	}
@@ -210,7 +210,7 @@ func DisabledHostsMarkup(hosts []string, disabledMap map[string]bool, page, tota
 
 		rows = append(rows, tu.InlineKeyboardRow(
 			prevBtn,
-			btn(fmt.Sprintf("%d / %d", page, totalPages), fmt.Sprintf("menu:disabled_hosts:noop:%d:%d", page, totalPages)),
+			btn(fmt.Sprintf("%d / %d", page, totalPages), "menu:noop"),
 			nextBtn,
 		))
 	}
@@ -278,11 +278,22 @@ func QuietHoursMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 			btn(fmt.Sprintf("🔔 Снять паузу (осталось %s)", FormatDowntime(remaining)), "menu:quiet:unsnooze"),
 		))
 	} else {
-		rows = append(rows, tu.InlineKeyboardRow(
+		nowLocal := time.Now().In(cfg.Location())
+		hour := nowLocal.Hour()
+		endH, _, _ := parseTimeOfDay(morningTime)
+		if endH <= 0 {
+			endH = 8
+		}
+		isEveningOrNight := hour >= 18 || hour < endH
+
+		snoozeBtns := []telego.InlineKeyboardButton{
 			btn("💤 Пауза 1ч", "menu:quiet:snooze:1h"),
 			btn("💤 Пауза 4ч", "menu:quiet:snooze:4h"),
-			btn(fmt.Sprintf("🌅 До утра (%s)", morningTime), "menu:quiet:snooze:morning"),
-		))
+		}
+		if isEveningOrNight {
+			snoozeBtns = append(snoozeBtns, btn(fmt.Sprintf("🌅 До утра (%s)", morningTime), "menu:quiet:snooze:morning"))
+		}
+		rows = append(rows, tu.InlineKeyboardRow(snoozeBtns...))
 	}
 
 	rows = append(rows, tu.InlineKeyboardRow(

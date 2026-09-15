@@ -92,10 +92,13 @@ func isBlockedTargetIP(ip net.IP) bool {
 		return true
 	}
 	if ip4 := ip.To4(); ip4 != nil {
-		if ip4.IsLoopback() || ip4.IsPrivate() || ip4.IsLinkLocalUnicast() || ip4.IsUnspecified() {
+		if ip4.IsLoopback() || ip4.IsPrivate() || ip4.IsLinkLocalUnicast() || ip4.IsUnspecified() || ip4.IsMulticast() {
 			return true
 		}
 		if ip4[0] == 0 || (ip4[0] == 169 && ip4[1] == 254) {
+			return true
+		}
+		if ip4[0] == 100 && (ip4[1]&0xc0) == 64 {
 			return true
 		}
 		return false

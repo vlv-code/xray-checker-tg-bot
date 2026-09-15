@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"os/signal"
@@ -156,10 +157,11 @@ func main() {
 			tgBot.ProcessSnapshot(proxyChecker.MetricsSnapshot())
 		}
 
-		// Warn if a cycle overruns the interval: with PROXY_CHECK_CONCURRENCY set,
-		// a large/slow proxy set can take longer than PROXY_CHECK_INTERVAL, so checks
-		// (and metrics) effectively run less often than configured.
-		if interval := config.CLIConfig.Proxy.CheckInterval; interval > 0 && elapsed > time.Duration(interval)*time.Second {
+		var interval int
+		checkSchedulerMu.Lock()
+		interval = config.CLIConfig.Proxy.CheckInterval
+		checkSchedulerMu.Unlock()
+		if interval > 0 && elapsed > time.Duration(interval)*time.Second {
 			// When a concurrency cap is set, raising it (or the interval) helps. When
 			// unlimited (0), the cycle is already as parallel as it gets, so the only
 			// useful lever is a longer interval.
@@ -436,19 +438,39 @@ func main() {
 	}
 
 	if !config.CLIConfig.RunOnce {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
 		if config.CLIConfig.Metrics.Port == "" || config.CLIConfig.Metrics.Port == "0" {
 			logger.Info("HTTP server disabled. Running headless (Telegram bot / scheduler only)")
-			sigChan := make(chan os.Signal, 1)
-			signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-			<-sigChan
-			logger.Info("Shutting down...")
+			sig := <-sigChan
+			logger.Info("Received signal %v, shutting down...", sig)
 		} else {
-			logger.Info("Server listening on %s:%s%s",
-				config.CLIConfig.Metrics.Host,
-				config.CLIConfig.Metrics.Port,
-				config.CLIConfig.Metrics.BasePath,
-			)
-			if err := http.ListenAndServe(config.CLIConfig.Metrics.Host+":"+config.CLIConfig.Metrics.Port, mux); err != nil {
+			addr := config.CLIConfig.Metrics.Host + ":" + config.CLIConfig.Metrics.Port
+			srv := &http.Server{
+				Addr:              addr,
+				Handler:           mux,
+				ReadHeaderTimeout: 10 * time.Second,
+				IdleTimeout:       60 * time.Second,
+			}
+
+			serverErr := make(chan error, 1)
+			go func() {
+				logger.Info("Server listening on %s%s", addr, config.CLIConfig.Metrics.BasePath)
+				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					serverErr <- err
+				}
+			}()
+
+			select {
+			case sig := <-sigChan:
+				logger.Info("Received signal %v, shutting down gracefully...", sig)
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := srv.Shutdown(shutdownCtx); err != nil {
+					logger.Error("Error shutting down HTTP server: %v", err)
+				}
+			case err := <-serverErr:
 				logger.Fatal("Error starting server: %v", err)
 			}
 		}

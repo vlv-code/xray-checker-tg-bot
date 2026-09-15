@@ -72,6 +72,10 @@ func IsQuietTime(now time.Time, cfg BotConfig) bool {
 	startMinutes := startHour*60 + startMin
 	endMinutes := endHour*60 + endMin
 
+	if startMinutes == endMinutes {
+		return false
+	}
+
 	if startMinutes < endMinutes {
 		// e.g. 13:00 to 15:00
 		return nowMinutes >= startMinutes && nowMinutes < endMinutes

@@ -1,6 +1,9 @@
 package checker
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -304,5 +307,44 @@ func TestDetermineVerdict_UDP(t *testing.T) {
 	}
 	if !strings.Contains(verdict, "UDP-порт недоступен") {
 		t.Errorf("expected UDP error verdict, got %s", verdict)
+	}
+}
+
+func TestGetCurrentIP_ConcurrentRace(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Millisecond)
+		w.Write([]byte("203.0.113.199\n"))
+	}))
+	defer ts.Close()
+
+	pc := &ProxyChecker{
+		httpClient: ts.Client(),
+		ipCheck:    ts.URL,
+	}
+
+	var wg sync.WaitGroup
+	const goroutines = 20
+	errChan := make(chan error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ip, err := pc.GetCurrentIP()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			if ip != "203.0.113.199" {
+				errChan <- fmt.Errorf("unexpected IP %q", ip)
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	for err := range errChan {
+		t.Errorf("concurrent GetCurrentIP failed: %v", err)
 	}
 }

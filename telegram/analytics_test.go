@@ -126,9 +126,9 @@ func TestBot_StatsOverviewText(t *testing.T) {
 	}
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 
-	// Record checks and flapping for p1
-	for i := 0; i < 12; i++ {
-		ss.RecordTransition("p1", "PL-flapping", i%2 == 0, "test", now.Add(-time.Duration(12-i)*time.Minute))
+	// Record checks and flapping for p1 (24 transitions = 12 drops > 10)
+	for i := 0; i < 24; i++ {
+		ss.RecordTransition("p1", "PL-flapping", i%2 == 0, "test", now.Add(-time.Duration(24-i)*time.Minute))
 	}
 	for i := 0; i < 10; i++ {
 		ss.RecordCheck("p1", "PL-flapping", true, float64(40+i))

@@ -304,10 +304,10 @@ Username for basic authentication when `METRICS_PROTECTED=true`.
 ### METRICS_PASSWORD
 
 - CLI: `--metrics-password`
-- Required: No
-- Default: `MetricsVeryHardPassword`
+- Required: Yes (when `METRICS_PROTECTED=true`)
+- Default: None
 
-Password for basic authentication when `METRICS_PROTECTED=true`.
+Password for basic authentication when `METRICS_PROTECTED=true`. Must be explicitly set if protection is enabled.
 
 ### METRICS_INSTANCE
 

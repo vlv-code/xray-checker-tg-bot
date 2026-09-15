@@ -303,10 +303,10 @@ URL, используемый для проверки загрузки при `P
 ### METRICS_PASSWORD
 
 - CLI: `--metrics-password`
-- Обязательно: Нет
-- По умолчанию: `MetricsVeryHardPassword`
+- Обязательно: Да (при `METRICS_PROTECTED=true`)
+- По умолчанию: Нет
 
-Пароль для базовой аутентификации при `METRICS_PROTECTED=true`.
+Пароль для базовой аутентификации при `METRICS_PROTECTED=true`. Должен быть обязательно задан, если включена защита метрик.
 
 ### METRICS_INSTANCE
 

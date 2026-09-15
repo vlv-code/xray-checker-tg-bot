@@ -1562,7 +1562,7 @@ func isBlockedIP(ip net.IP) bool {
 	}
 	// Check IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1)
 	if ip4 := ip.To4(); ip4 != nil {
-		if ip4.IsLoopback() || ip4.IsPrivate() || ip4.IsLinkLocalUnicast() || ip4.IsUnspecified() {
+		if ip4.IsLoopback() || ip4.IsPrivate() || ip4.IsLinkLocalUnicast() || ip4.IsUnspecified() || ip4.IsMulticast() {
 			return true
 		}
 		// 0.0.0.0/8
@@ -1571,6 +1571,10 @@ func isBlockedIP(ip net.IP) bool {
 		}
 		// 169.254.0.0/16
 		if ip4[0] == 169 && ip4[1] == 254 {
+			return true
+		}
+		// 100.64.0.0/10 (CGNAT / Shared Address Space)
+		if ip4[0] == 100 && (ip4[1]&0xc0) == 64 {
 			return true
 		}
 		return false

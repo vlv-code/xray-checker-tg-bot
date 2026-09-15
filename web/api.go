@@ -152,7 +152,7 @@ func sanitizeGeneratedValue(value interface{}) interface{} {
 		result := make(map[string]interface{}, len(typed))
 		for key, nested := range typed {
 			switch strings.ToLower(key) {
-			case "id", "password", "auth", "seed":
+			case "id", "password", "auth", "seed", "secretkey", "presharedkey", "privatekey", "pass":
 				if text, ok := nested.(string); ok {
 					result[key] = maskMiddle(text)
 					continue

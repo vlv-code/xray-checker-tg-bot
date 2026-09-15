@@ -159,8 +159,8 @@ func (ss *StatsStore) RecordInitialDown(stableID, name string, timestamp time.Ti
 	}
 }
 
-// RecordTransition logs a state transition (down or up).
-func (ss *StatsStore) RecordTransition(stableID, name string, online bool, reason string, timestamp time.Time) {
+// RecordTransition logs a state transition (down or up) and returns the downtime duration on recovery.
+func (ss *StatsStore) RecordTransition(stableID, name string, online bool, reason string, timestamp time.Time) time.Duration {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
@@ -178,6 +178,7 @@ func (ss *StatsStore) RecordTransition(stableID, name string, online bool, reaso
 		ss.rollingStats.Record(stableID, online, ts)
 	}
 
+	var downtime time.Duration
 	if !online {
 		// Went down
 		ps.DropCount++
@@ -203,6 +204,7 @@ func (ss *StatsStore) RecordTransition(stableID, name string, online bool, reaso
 			if duration < 0 {
 				duration = 0
 			}
+			downtime = time.Duration(duration) * time.Second
 			ps.TotalDowntimeSec += duration
 			ps.CurrentlyDown = false
 			ps.CurrentDownAt = 0
@@ -214,6 +216,36 @@ func (ss *StatsStore) RecordTransition(stableID, name string, online bool, reaso
 					ss.Incidents[i].DurationSec = ts - ss.Incidents[i].DownAt
 					break
 				}
+			}
+		}
+	}
+	return downtime
+}
+
+// SyncOnlineState ensures that if a proxy is online at startup, any open incident from a prior session is closed.
+func (ss *StatsStore) SyncOnlineState(stableID string, timestamp time.Time) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
+	ps, exists := ss.Stats[stableID]
+	if !exists {
+		return
+	}
+	if ps.CurrentlyDown {
+		ts := timestamp.Unix()
+		duration := ts - ps.CurrentDownAt
+		if duration < 0 {
+			duration = 0
+		}
+		ps.TotalDowntimeSec += duration
+		ps.CurrentlyDown = false
+		ps.CurrentDownAt = 0
+
+		for i := range ss.Incidents {
+			if ss.Incidents[i].StableID == stableID && ss.Incidents[i].UpAt == 0 {
+				ss.Incidents[i].UpAt = ts
+				ss.Incidents[i].DurationSec = ts - ss.Incidents[i].DownAt
+				break
 			}
 		}
 	}
@@ -252,6 +284,57 @@ func (ss *StatsStore) RecordLatency(stableID string, latencyMs float64) {
 		return
 	}
 	ss.GetLatencySamples(stableID).Add(latencyMs)
+}
+
+// GetDropCount returns the drop count for a stableID in a thread-safe manner.
+func (ss *StatsStore) GetDropCount(stableID string) int64 {
+	if ss == nil {
+		return 0
+	}
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	if ps, ok := ss.Stats[stableID]; ok {
+		return ps.DropCount
+	}
+	return 0
+}
+
+// GetProxyStats returns a copy of ProxyStats for a stableID in a thread-safe manner.
+func (ss *StatsStore) GetProxyStats(stableID string) *ProxyStats {
+	if ss == nil {
+		return nil
+	}
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	if ps, ok := ss.Stats[stableID]; ok {
+		cp := *ps
+		return &cp
+	}
+	return nil
+}
+
+// PruneInactive removes stats and transition data for proxies no longer in subscriptions.
+func (ss *StatsStore) PruneInactive(activeIDs map[string]bool) {
+	if ss == nil || len(activeIDs) == 0 {
+		return
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
+	for id := range ss.Stats {
+		if !activeIDs[id] {
+			delete(ss.Stats, id)
+			delete(ss.Transitions, id)
+		}
+	}
+
+	ss.latMu.Lock()
+	for id := range ss.latencyMap {
+		if !activeIDs[id] {
+			delete(ss.latencyMap, id)
+		}
+	}
+	ss.latMu.Unlock()
 }
 
 // GetFlapCount24h returns the number of online/offline transitions in the last 24 hours.
@@ -524,7 +607,7 @@ func (r *RollingStats) FlapCount24h(stableID string, now time.Time) int {
 	windowStart := now.Unix() - 86400
 	flaps := 0
 	for _, ev := range evs {
-		if ev.Timestamp >= windowStart && ev.Timestamp <= now.Unix() {
+		if ev.Timestamp >= windowStart && ev.Timestamp <= now.Unix() && !ev.Online {
 			flaps++
 		}
 	}

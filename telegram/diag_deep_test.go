@@ -54,9 +54,9 @@ func TestFormatSingleProxyDiag_SoftHintsAndFlapping(t *testing.T) {
 	statsStore, _ := NewStatsStore(filepath.Join(tmpDir, "stats.json"))
 	now := time.Now()
 
-	// Simulate 12 transitions for "p-flap" to trigger flapping (>10)
-	for i := 0; i < 12; i++ {
-		statsStore.RecordTransition("p-flap", "PL-flap", i%2 == 0, "flap test", now.Add(-time.Duration(12-i)*time.Minute))
+	// Simulate 24 transitions for "p-flap" to trigger flapping (12 drops > 10)
+	for i := 0; i < 24; i++ {
+		statsStore.RecordTransition("p-flap", "PL-flap", i%2 == 0, "flap test", now.Add(-time.Duration(24-i)*time.Minute))
 	}
 
 	// Add latency samples
