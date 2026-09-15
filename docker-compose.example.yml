@@ -10,6 +10,12 @@ services:
     ports:
       - "${METRICS_PORT:-2112}:${METRICS_PORT:-2112}"
     volumes:
-      # Persistent storage for configs, stats, alerts, and dynamic subscriptions
+      # Persistent storage for configs, stats, alerts, and dynamic subscriptions.
+      # NOTE: Docker creates these host directories as root:root on the first
+      # `docker compose up`; the image entrypoint fixes their ownership
+      # automatically (the container starts as root, chowns the mounts, then
+      # drops privileges to appuser). If you override `user:`, fix ownership
+      # yourself: sudo chown -R 1000:1000 data geo
       - ./data:/app/data
+      # GeoIP/GeoSite databases, downloaded on first start and reused after
       - ./geo:/app/geo

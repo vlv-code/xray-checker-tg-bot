@@ -138,6 +138,16 @@ docker compose up -d --build
 ```
 The web dashboard and Prometheus metrics will be available at: `http://<server_ip>:2112`.
 
+> **Note on volume permissions:** Docker creates the `./data` and `./geo` host
+> directories as `root:root` on first start. The image entrypoint fixes their
+> ownership automatically (it starts as root, chowns the mounts, then drops
+> privileges to the unprivileged `appuser`). If you run the container with an
+> explicit `user:` override and see `permission denied` errors, fix ownership
+> on the host once:
+> ```bash
+> mkdir -p data geo && sudo chown -R 1000:1000 data geo
+> ```
+
 ---
 
 ## 🔄 Updating on Server

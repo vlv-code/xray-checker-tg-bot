@@ -35,16 +35,25 @@ ARG WEB_ENABLED=true
 
 LABEL org.opencontainers.image.source=https://github.com/${USERNAME}/${REPOSITORY_NAME}
 
-RUN apk add --no-cache ca-certificates curl tzdata && \
+# su-exec is used by the entrypoint to drop privileges after fixing
+# ownership of bind-mounted volumes (Docker creates them as root:root,
+# which would crash-loop the unprivileged app on fresh deployments).
+RUN apk add --no-cache ca-certificates curl tzdata su-exec && \
     adduser -D -u 1000 appuser && \
-    mkdir -p /app/geo && \
+    mkdir -p /app/geo /app/data && \
     chown -R appuser:appuser /app
 
 WORKDIR /app
 COPY --from=builder /usr/bin/xray-checker /usr/bin/xray-checker
+COPY entrypoint.sh /entrypoint.sh
 
 ENV WEB_ENABLED=${WEB_ENABLED}
 
-USER appuser
-
-ENTRYPOINT ["/usr/bin/xray-checker"]
+# The container intentionally starts as root so the entrypoint can chown
+# the mounted volumes (/app/data, /app/geo) and then drop privileges to
+# appuser (uid 1000) via su-exec before exec'ing the checker. Override with
+# `user:` in compose or `--user` to run unprivileged from the start; in that
+# case the app degrades gracefully (geo download and persistence become
+# best-effort with warnings).
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/usr/bin/xray-checker"]

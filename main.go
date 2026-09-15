@@ -48,7 +48,12 @@ func main() {
 
 	geoManager := xray.NewGeoFileManager("")
 	if err := geoManager.EnsureGeoFiles(); err != nil {
-		logger.Fatal("Failed to ensure geo files: %v", err)
+               // Geo databases are optional for the generated config: routing
+               // rules are tag-based and never reference geoip:/geosite:
+               // categories, so Xray runs fine without them. A failed
+               // download (unreachable github.com, read-only ./geo bind
+               // mount) must not crash-loop the instance.
+               logger.Warn("Geo files unavailable (continuing without them): %v", err)
 	}
 
 	// subURLStore holds every subscription URL the checker fetches from: the
