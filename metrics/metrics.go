@@ -93,11 +93,14 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			"Latency of proxy connection in milliseconds, 0 if failed", names, nil)
 
 		status := 0.0
-		if pm.Online {
+		latency := pm.LatencyMs
+		if pm.Online && !pm.Disabled {
 			status = 1.0
+		} else if pm.Disabled {
+			latency = 0.0
 		}
 		ch <- prometheus.MustNewConstMetric(statusDesc, prometheus.GaugeValue, status, values...)
-		ch <- prometheus.MustNewConstMetric(latencyDesc, prometheus.GaugeValue, pm.LatencyMs, values...)
+		ch <- prometheus.MustNewConstMetric(latencyDesc, prometheus.GaugeValue, latency, values...)
 	}
 }
 

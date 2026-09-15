@@ -51,13 +51,14 @@ func (c ErrorCategory) String() string {
 
 // ClassifyError inspects an error and HTTP status code to determine its category.
 func ClassifyError(err error, httpStatus int) ErrorCategory {
+	if httpStatus >= 400 && httpStatus < 500 {
+		return CatHTTP4xx
+	}
+	if httpStatus >= 500 && httpStatus < 600 {
+		return CatHTTP5xx
+	}
+
 	if err == nil {
-		if httpStatus >= 400 && httpStatus < 500 {
-			return CatHTTP4xx
-		}
-		if httpStatus >= 500 && httpStatus < 600 {
-			return CatHTTP5xx
-		}
 		return CatNone
 	}
 
@@ -97,13 +98,16 @@ func ClassifyError(err error, httpStatus int) ErrorCategory {
 	}
 
 	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "general socks server failure") || strings.Contains(msg, "socks server failure") {
+		return CatTimeout
+	}
 	if strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded") {
 		return CatTimeout
 	}
 	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "refused") {
 		return CatConnRefused
 	}
-	if strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") || strings.Contains(msg, "reset by peer") {
+	if strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") || strings.Contains(msg, "reset by peer") || strings.Contains(msg, "eof") {
 		return CatConnReset
 	}
 	if strings.Contains(msg, "tls") || strings.Contains(msg, "certificate") || strings.Contains(msg, "handshake failure") {
@@ -111,6 +115,12 @@ func ClassifyError(err error, httpStatus int) ErrorCategory {
 	}
 	if strings.Contains(msg, "no such host") || strings.Contains(msg, "dns") {
 		return CatDNSError
+	}
+	if strings.Contains(msg, "http 4") || strings.Contains(msg, "http status: 4") {
+		return CatHTTP4xx
+	}
+	if strings.Contains(msg, "http 5") || strings.Contains(msg, "http status: 5") {
+		return CatHTTP5xx
 	}
 
 	return CatUnknown

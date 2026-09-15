@@ -77,6 +77,9 @@ type Bot struct {
 	lastMenuMu  sync.Mutex
 	lastMenuMsg map[int64]int
 
+	msgSeqMu sync.Mutex
+	msgSeq   map[string]int64
+
 	freshMu      sync.RWMutex
 	subFreshness map[string]SubFreshness
 
@@ -124,6 +127,7 @@ func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRe
 		lastSeen:         make(map[string]bool),
 		lastFlapAlert:    make(map[string]time.Time),
 		lastMenuMsg:      make(map[int64]int),
+		msgSeq:           make(map[string]int64),
 		subFreshness:     make(map[string]SubFreshness),
 		stopChan:         make(chan struct{}),
 	}, nil
@@ -461,17 +465,23 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID))
 	}
 
+	b.invalidateMsgSeq(chatID, msgID)
+
 	switch cb.Data {
-	case "menu:main", "menu:main:refresh":
+	case "menu:main":
 		b.editWithMarkup(chatID, msgID, b.getMenuText(), MainMenuMarkup())
 	case "menu:settings":
-		b.editWithMarkup(chatID, msgID, b.getSettingsText(), SettingsMenuMarkup())
+		b.editWithMarkup(chatID, msgID, b.getSettingsText(), SettingsMenuMarkup(b.subs != nil))
 	case "menu:status":
 		b.editWithMarkup(chatID, msgID, b.getStatusText(), StatusMenuMarkup())
 	case "menu:diag":
+		seq := b.nextMsgSeq(chatID, msgID)
 		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
 		go func() {
 			reports := b.getDiagnosticsReports(true)
+			if !b.isMsgSeqValid(chatID, msgID, seq) {
+				return
+			}
 			if b.isRichMode() {
 				rich := b.buildDiagnosticsRichMessage(reports)
 				b.showRichReport(chatID, msgID, rich)
@@ -479,12 +489,19 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			}
 			pageText, totalPages := b.getDiagnosticsPageText(reports, 1)
 			deepLinks := getDeepLinksForPage(reports, 1)
+			if !b.isMsgSeqValid(chatID, msgID, seq) {
+				return
+			}
 			b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(1, totalPages, deepLinks...))
 		}()
 	case "menu:diag:rich":
+		seq := b.nextMsgSeq(chatID, msgID)
 		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
 		go func() {
 			reports := b.getDiagnosticsReports(false)
+			if !b.isMsgSeqValid(chatID, msgID, seq) {
+				return
+			}
 			rich := b.buildDiagnosticsRichMessage(reports)
 			b.showRichReport(chatID, msgID, rich)
 		}()
@@ -557,8 +574,6 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		b.editWithMarkup(chatID, msgID, b.getIntervalText(), IntervalMenuMarkup(b.getIntervalSec()))
 	case "menu:subs":
 		b.editWithMarkup(chatID, msgID, b.getSubsText(), BackToSettingsMarkup())
-	case "menu:digest:now":
-		b.replyDigest(chatID)
 	case "menu:checkhost":
 		snapshot := b.source.MetricsSnapshot()
 		b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(), CheckHostMenuMarkup(snapshot))
@@ -644,10 +659,19 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			rest := strings.TrimPrefix(cb.Data, "menu:toggle_host:")
 			idx := strings.LastIndex(rest, ":")
 			if idx != -1 {
-				host := rest[:idx]
+				hostKey := rest[:idx]
 				page, _ := strconv.Atoi(rest[idx+1:])
 				if page <= 0 {
 					page = 1
+				}
+				host := hostKey
+				if strings.HasPrefix(hostKey, "h:") && b.diagSource != nil {
+					for _, h := range b.diagSource.GetUniqueHosts() {
+						if HostCallbackKey(h) == hostKey {
+							host = h
+							break
+						}
+					}
 				}
 				if b.configMgr != nil {
 					disabled, err := b.configMgr.ToggleHost(host)
@@ -677,14 +701,26 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			deepLinks := getDeepLinksForPage(reports, page)
 			b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages, deepLinks...))
 		} else if strings.HasPrefix(cb.Data, "menu:diag:deep:") {
-			stableID := strings.TrimPrefix(cb.Data, "menu:diag:deep:")
-			b.handleDeepDiagnostics(chatID, msgID, stableID)
+			rest := strings.TrimPrefix(cb.Data, "menu:diag:deep:")
+			parts := strings.Split(rest, ":")
+			stableID := parts[0]
+			page := 1
+			if len(parts) > 1 {
+				if p, err := strconv.Atoi(parts[1]); err == nil && p > 0 {
+					page = p
+				}
+			}
+			b.handleDeepDiagnostics(chatID, msgID, stableID, page)
 		} else if strings.HasPrefix(cb.Data, "menu:diag:refresh:") {
 			arg := strings.TrimPrefix(cb.Data, "menu:diag:refresh:")
+			seq := b.nextMsgSeq(chatID, msgID)
 			if arg == "rich" {
 				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>", BackToMenuMarkup())
 				go func() {
 					reports := b.getDiagnosticsReports(true)
+					if !b.isMsgSeqValid(chatID, msgID, seq) {
+						return
+					}
 					rich := b.buildDiagnosticsRichMessage(reports)
 					b.showRichReport(chatID, msgID, rich)
 				}()
@@ -696,8 +732,14 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>", BackToMenuMarkup())
 				go func() {
 					reports := b.getDiagnosticsReports(true)
+					if !b.isMsgSeqValid(chatID, msgID, seq) {
+						return
+					}
 					pageText, totalPages := b.getDiagnosticsPageText(reports, page)
 					deepLinks := getDeepLinksForPage(reports, page)
+					if !b.isMsgSeqValid(chatID, msgID, seq) {
+						return
+					}
 					b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages, deepLinks...))
 				}()
 			}
@@ -806,7 +848,29 @@ func (b *Bot) getSettingsText() string {
 		intervalStr = FormatDowntime(time.Duration(intervalSec) * time.Second)
 	}
 
-	disabledCount := len(cfg.DisabledHosts) + len(cfg.DisabledProxies)
+	disabledCount := 0
+	if b.source != nil {
+		for _, pm := range b.source.MetricsSnapshot() {
+			if pm.Disabled {
+				disabledCount++
+			}
+		}
+	} else {
+		disabledCount = len(cfg.DisabledProxies)
+	}
+	if b.diagSource != nil {
+		disabledMap := make(map[string]bool, len(cfg.DisabledHosts))
+		for _, h := range cfg.DisabledHosts {
+			disabledMap[strings.ToLower(h)] = true
+		}
+		for _, h := range b.diagSource.GetUniqueHosts() {
+			if disabledMap[strings.ToLower(h)] {
+				disabledCount++
+			}
+		}
+	} else {
+		disabledCount += len(cfg.DisabledHosts)
+	}
 
 	chBgStatus := "выключен"
 	if cfg.CheckHostBgEnabled {
@@ -1033,7 +1097,7 @@ func (b *Bot) getDisabledHostsView(page int) (string, *telego.InlineKeyboardMark
 }
 
 func (b *Bot) replySettings(chatID int64) {
-	b.sendOrUpdateMenu(chatID, b.getSettingsText(), SettingsMenuMarkup())
+	b.sendOrUpdateMenu(chatID, b.getSettingsText(), SettingsMenuMarkup(b.subs != nil))
 }
 
 func (b *Bot) handleToggleHostCommand(msg *telego.Message) {
@@ -2146,9 +2210,9 @@ func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeH
 
 	// 5. HTTP-ответ
 	if pm.CanTransfer || pm.Online {
-		sb.WriteString("  5. HTTP-ответ ........... 200 OK\n")
+		sb.WriteString("  5. HTTP-ответ ........... ✅ получен\n")
 	} else {
-		sb.WriteString("  5. HTTP-ответ ........... —      (не достигнуто)\n")
+		sb.WriteString("  5. HTTP-ответ ........... —      (не получен)\n")
 	}
 
 	// 6. Полный ответ
@@ -2232,7 +2296,12 @@ func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeH
 	return sb.String()
 }
 
-func (b *Bot) handleDeepDiagnostics(chatID int64, msgID int, stableID string) {
+func (b *Bot) handleDeepDiagnostics(chatID int64, msgID int, stableID string, page ...int) {
+	seq := b.nextMsgSeq(chatID, msgID)
+	curPage := 1
+	if len(page) > 0 && page[0] > 1 {
+		curPage = page[0]
+	}
 	b.editWithMarkup(chatID, msgID, "⏳ <b>Выполняется углублённая проверка...</b>", BackToMenuMarkup())
 
 	go func() {
@@ -2270,6 +2339,10 @@ func (b *Bot) handleDeepDiagnostics(chatID int64, msgID int, stableID string) {
 			found = true
 		}
 
+		if !b.isMsgSeqValid(chatID, msgID, seq) {
+			return
+		}
+
 		if !found {
 			b.editWithMarkup(chatID, msgID, "⚠️ Прокси не найден.", BackToMenuMarkup())
 			return
@@ -2289,8 +2362,12 @@ func (b *Bot) handleDeepDiagnostics(chatID int64, msgID int, stableID string) {
 			health = checker.ProbeNodeHealth(host, port, targetMetric.Protocol, "", "", false)
 		}
 
+		if !b.isMsgSeqValid(chatID, msgID, seq) {
+			return
+		}
+
 		text := b.formatDeepDiagnostics(targetMetric, health, ch)
-		b.editWithMarkup(chatID, msgID, text, DeepDiagnosticsMarkup(stableID))
+		b.editWithMarkup(chatID, msgID, text, DeepDiagnosticsMarkup(stableID, curPage))
 	}()
 }
 
@@ -2888,13 +2965,44 @@ func (b *Bot) sendWithMarkup(chatID int64, text string, markup *telego.InlineKey
 	return sent, nil
 }
 
+func (b *Bot) nextMsgSeq(chatID int64, msgID int) int64 {
+	b.msgSeqMu.Lock()
+	defer b.msgSeqMu.Unlock()
+	if b.msgSeq == nil {
+		b.msgSeq = make(map[string]int64)
+	}
+	key := fmt.Sprintf("%d:%d", chatID, msgID)
+	b.msgSeq[key]++
+	return b.msgSeq[key]
+}
+
+func (b *Bot) isMsgSeqValid(chatID int64, msgID int, seq int64) bool {
+	b.msgSeqMu.Lock()
+	defer b.msgSeqMu.Unlock()
+	if b.msgSeq == nil {
+		return true
+	}
+	key := fmt.Sprintf("%d:%d", chatID, msgID)
+	return b.msgSeq[key] == seq
+}
+
+func (b *Bot) invalidateMsgSeq(chatID int64, msgID int) {
+	b.msgSeqMu.Lock()
+	defer b.msgSeqMu.Unlock()
+	if b.msgSeq != nil {
+		key := fmt.Sprintf("%d:%d", chatID, msgID)
+		b.msgSeq[key]++
+	}
+}
+
 func (b *Bot) sendOrUpdateMenu(chatID int64, text string, markup *telego.InlineKeyboardMarkup) {
 	b.lastMenuMu.Lock()
+	defer b.lastMenuMu.Unlock()
+
 	if b.lastMenuMsg == nil {
 		b.lastMenuMsg = make(map[int64]int)
 	}
 	oldMsgID, hasOld := b.lastMenuMsg[chatID]
-	b.lastMenuMu.Unlock()
 
 	if hasOld && oldMsgID > 0 && b.api != nil {
 		_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
@@ -2905,9 +3013,7 @@ func (b *Bot) sendOrUpdateMenu(chatID int64, text string, markup *telego.InlineK
 
 	sent, _ := b.sendWithMarkup(chatID, text, markup)
 	if sent != nil && sent.GetMessageID() > 0 {
-		b.lastMenuMu.Lock()
 		b.lastMenuMsg[chatID] = sent.GetMessageID()
-		b.lastMenuMu.Unlock()
 	}
 }
 
@@ -2952,13 +3058,6 @@ func (b *Bot) buildAddSubReport(count int) string {
 }
 
 func (b *Bot) editWithMarkup(chatID int64, messageID int, text string, markup *telego.InlineKeyboardMarkup) {
-	b.lastMenuMu.Lock()
-	if b.lastMenuMsg == nil {
-		b.lastMenuMsg = make(map[int64]int)
-	}
-	b.lastMenuMsg[chatID] = messageID
-	b.lastMenuMu.Unlock()
-
 	if b.api == nil {
 		return
 	}
@@ -3175,6 +3274,7 @@ func (b *Bot) handleCheckHostCommand(msg *telego.Message) {
 }
 
 func (b *Bot) handleCheckHostProxy(chatID int64, msgID int, stableID string) {
+	seq := b.nextMsgSeq(chatID, msgID)
 	snapshot := b.source.MetricsSnapshot()
 	var targetProxy *metrics.ProxyMetric
 	for i := range snapshot {
@@ -3203,13 +3303,16 @@ func (b *Bot) handleCheckHostProxy(chatID int64, msgID int, stableID string) {
 	defer cancel()
 
 	summary, err := chClient.CheckTCP(ctx, target, checker.DefaultWorldwideNodes)
+	if !b.isMsgSeqValid(chatID, msgID, seq) {
+		return
+	}
 	if err != nil {
 		b.editWithMarkup(chatID, msgID, fmt.Sprintf("❌ <b>Ошибка Check-Host:</b> %s", escapeHTML(err.Error())), BackToMenuMarkup())
 		return
 	}
 
 	report := checker.FormatCheckHostReport(summary)
-	b.editWithMarkup(chatID, msgID, report, BackToMenuMarkup())
+	b.editWithMarkup(chatID, msgID, report, CheckHostResultMarkup())
 }
 
 func (b *Bot) getCheckHostSettingsText() string {

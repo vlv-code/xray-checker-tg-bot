@@ -306,18 +306,27 @@ func ProbeNodeHealth(server string, port int, protocol string, security string, 
 		// Check if remote actively rejects via ICMP port unreachable or responds
 		buf := make([]byte, 512)
 		n, rErr := conn.Read(buf)
-		health.UDPPing = time.Since(udpStart)
-		if health.UDPPing == 0 {
-			health.UDPPing = time.Microsecond
-		}
 		if rErr != nil {
 			errMsg := strings.ToLower(rErr.Error())
 			if errors.Is(rErr, syscall.ECONNREFUSED) || strings.Contains(errMsg, "refused") {
 				health.UDPErr = "connection refused (ICMP unreachable)"
 				return health
 			}
-		} else if n > 0 {
+			var netErr net.Error
+			if errors.As(rErr, &netErr) && netErr.Timeout() {
+				health.UDPErr = "no response (timeout)"
+				health.UDPPing = 0
+				return health
+			}
+			health.UDPErr = simplifyError(rErr)
+			health.UDPPing = 0
+			return health
+		}
+		if n > 0 {
 			health.UDPPing = time.Since(udpStart)
+			if health.UDPPing == 0 {
+				health.UDPPing = time.Microsecond
+			}
 		}
 		return health
 	}
@@ -504,12 +513,16 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 				return
 			}
 
+			diagTimeout := time.Duration(pc.ipCheckTimeout) * time.Second
+			if diagTimeout <= 0 {
+				diagTimeout = 10 * time.Second
+			}
 			client := &http.Client{
 				Transport: &http.Transport{
 					Proxy:             http.ProxyURL(proxyURLParsed),
 					DisableKeepAlives: true,
 				},
-				Timeout: time.Second * 10,
+				Timeout: diagTimeout,
 			}
 
 			// Run Node health probe in parallel with target tests

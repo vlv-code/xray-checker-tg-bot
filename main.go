@@ -147,7 +147,16 @@ func main() {
 		}
 	}
 
+	// checkRunnerMu synchronizes proxy check iterations with runner restarts.
+	// Check cycles hold an RLock while making connections through Xray; configuration
+	// updates hold a Lock while stopping and restarting the runner to prevent connection
+	// resets and false down alerts during subscription reloads.
+	var checkRunnerMu sync.RWMutex
+
 	runCheckIteration = func() {
+		checkRunnerMu.RLock()
+		defer checkRunnerMu.RUnlock()
+
 		logger.Info("Starting proxy check iteration")
 		start := time.Now()
 		proxyChecker.CheckAllProxies()
@@ -231,8 +240,13 @@ func main() {
 			return false, len(*proxyConfigs), nil
 		}
 
-		if err := updateConfiguration(newConfigs, proxyConfigs, xrayRunner, proxyChecker); err != nil {
-			return false, len(*proxyConfigs), err
+		updateErr := func() error {
+			checkRunnerMu.Lock()
+			defer checkRunnerMu.Unlock()
+			return updateConfiguration(newConfigs, proxyConfigs, xrayRunner, proxyChecker)
+		}()
+		if updateErr != nil {
+			return false, len(*proxyConfigs), updateErr
 		}
 
 		// Immediately re-check the new proxy set so /metrics is repopulated

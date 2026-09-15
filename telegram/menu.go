@@ -1,6 +1,8 @@
 package telegram
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -13,6 +15,27 @@ import (
 
 func btn(text, data string) telego.InlineKeyboardButton {
 	return tu.InlineKeyboardButton(text).WithCallbackData(data)
+}
+
+// truncateButtonText truncates text to maxRunes, adding an ellipsis if exceeded.
+func truncateButtonText(text string, maxRunes int) string {
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	if maxRunes <= 3 {
+		return string(runes[:maxRunes])
+	}
+	return string(runes[:maxRunes-3]) + "..."
+}
+
+// HostCallbackKey returns a callback-safe key for a host, hashing if longer than 36 bytes.
+func HostCallbackKey(host string) string {
+	if len(host) <= 36 {
+		return host
+	}
+	h := sha256.Sum256([]byte(strings.ToLower(host)))
+	return "h:" + hex.EncodeToString(h[:6])
 }
 
 // MainMenuMarkup returns the inline keyboard for the top-level bot menu.
@@ -34,10 +57,22 @@ func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 }
 
 // SettingsMenuMarkup returns buttons for the settings view.
-func SettingsMenuMarkup() *telego.InlineKeyboardMarkup {
+func SettingsMenuMarkup(showSubs ...bool) *telego.InlineKeyboardMarkup {
+	includeSubs := true
+	if len(showSubs) > 0 {
+		includeSubs = showSubs[0]
+	}
+
+	var alertRow []telego.InlineKeyboardButton
+	alertRow = append(alertRow, btn("🧹 Режим алертов", "menu:alert_mode"))
+	if includeSubs {
+		alertRow = append(alertRow, btn("📋 Подписки", "menu:subs"))
+	}
+
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🚫 Управление прокси-хостами", "menu:disabled_proxies:1"),
+			btn("🚫 Управление прокси", "menu:disabled_proxies:1"),
+			btn("🌐 Управление хостами", "menu:disabled_hosts:1"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🌐 Фоновый Check-Host", "menu:checkhost_cfg"),
@@ -47,10 +82,7 @@ func SettingsMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("🎯 Целевые серверы", "menu:targets"),
 			btn("🌙 Тихий режим", "menu:quiet"),
 		),
-		tu.InlineKeyboardRow(
-			btn("🧹 Режим алертов", "menu:alert_mode"),
-			btn("📋 Подписки", "menu:subs"),
-		),
+		alertRow,
 		tu.InlineKeyboardRow(
 			btn("📈 Статистика инцидентов", "menu:stats"),
 			btn("🕒 Часовой пояс", "menu:timezone"),
@@ -189,7 +221,7 @@ func DisabledHostsMarkup(hosts []string, disabledMap map[string]bool, page, tota
 		}
 		btnText := fmt.Sprintf("%s %s", statusIcon, displayHost)
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn(btnText, fmt.Sprintf("menu:toggle_host:%s:%d", host, page)),
+			btn(btnText, fmt.Sprintf("menu:toggle_host:%s:%d", HostCallbackKey(host), page)),
 		))
 	}
 
@@ -456,12 +488,12 @@ func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMa
 	for i := 0; i < limit; i += 2 {
 		if i+1 < limit {
 			rows = append(rows, tu.InlineKeyboardRow(
-				btn(proxies[i].Name, "menu:checkhost:run:"+proxies[i].StableID),
-				btn(proxies[i+1].Name, "menu:checkhost:run:"+proxies[i+1].StableID),
+				btn(truncateButtonText(proxies[i].Name, 24), "menu:checkhost:run:"+proxies[i].StableID),
+				btn(truncateButtonText(proxies[i+1].Name, 24), "menu:checkhost:run:"+proxies[i+1].StableID),
 			))
 		} else {
 			rows = append(rows, tu.InlineKeyboardRow(
-				btn(proxies[i].Name, "menu:checkhost:run:"+proxies[i].StableID),
+				btn(truncateButtonText(proxies[i].Name, 24), "menu:checkhost:run:"+proxies[i].StableID),
 			))
 		}
 	}
@@ -499,7 +531,7 @@ func DiagPaginationMarkup(page, totalPages int, deepLinks ...DiagDeepLink) *tele
 	// Deep diagnostics buttons for problematic proxies on current page
 	for _, dl := range deepLinks {
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn(fmt.Sprintf("🔬 Углублённая: %s", dl.Name), fmt.Sprintf("menu:diag:deep:%s", dl.StableID)),
+			btn(fmt.Sprintf("🔬 Углублённая: %s", truncateButtonText(dl.Name, 24)), fmt.Sprintf("menu:diag:deep:%s:%d", dl.StableID, page)),
 		))
 	}
 
@@ -541,13 +573,27 @@ func DiagPaginationMarkup(page, totalPages int, deepLinks ...DiagDeepLink) *tele
 }
 
 // DeepDiagnosticsMarkup returns navigation buttons for Level 2 Deep diagnostics.
-func DeepDiagnosticsMarkup(stableID string) *telego.InlineKeyboardMarkup {
+func DeepDiagnosticsMarkup(stableID string, page ...int) *telego.InlineKeyboardMarkup {
+	curPage := 1
+	if len(page) > 0 && page[0] > 1 {
+		curPage = page[0]
+	}
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🔙 К детальному отчёту", "menu:diag:p:1"),
-			btn("🔄 Перепроверить", fmt.Sprintf("menu:diag:deep:%s", stableID)),
+			btn("🔙 К детальному отчёту", fmt.Sprintf("menu:diag:p:%d", curPage)),
+			btn("🔄 Перепроверить", fmt.Sprintf("menu:diag:deep:%s:%d", stableID, curPage)),
 		),
 		tu.InlineKeyboardRow(
+			btn("🏠 Главное меню", "menu:main"),
+		),
+	)
+}
+
+// CheckHostResultMarkup returns keyboard after a Check-Host scan.
+func CheckHostResultMarkup() *telego.InlineKeyboardMarkup {
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("🌐 К выбору прокси", "menu:checkhost"),
 			btn("🏠 Главное меню", "menu:main"),
 		),
 	)

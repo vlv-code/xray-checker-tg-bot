@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -65,6 +66,7 @@ type checkOutcome struct {
 	latency        time.Duration
 	tlsHandshakeMs int64
 	ttfbMs         int64
+	httpStatus     int
 	err            error
 }
 
@@ -101,6 +103,10 @@ func (pc *ProxyChecker) GetUniqueHosts() []string {
 }
 
 func NewProxyChecker(proxies []*models.ProxyConfig, startPort int, ipCheckURL string, ipCheckTimeout int, genMethodURL string, downloadURL string, downloadTimeout int, downloadMinSize int64, checkMethod string, checkConcurrency int) *ProxyChecker {
+	if checkMethod != "ip" && checkMethod != "status" && checkMethod != "download" {
+		logger.Warn("Invalid check method %q specified, falling back to 'ip'", checkMethod)
+		checkMethod = "ip"
+	}
 	return &ProxyChecker{
 		proxies:   proxies,
 		startPort: startPort,
@@ -127,11 +133,22 @@ func (pc *ProxyChecker) GetCurrentIP() (string, error) {
 	}
 	pc.mu.RUnlock()
 
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	if pc.ipInitialized && pc.currentIP != "" {
+		return pc.currentIP, nil
+	}
+
 	resp, err := pc.httpClient.Get(pc.ipCheck)
 	if err != nil {
 		return "", fmt.Errorf("error getting current IP: %v", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("error getting current IP: unexpected HTTP status %d", resp.StatusCode)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -139,10 +156,12 @@ func (pc *ProxyChecker) GetCurrentIP() (string, error) {
 	}
 
 	ipStr := strings.TrimSpace(string(body))
-	pc.mu.Lock()
+	if parsed := net.ParseIP(ipStr); parsed == nil {
+		return "", fmt.Errorf("error getting current IP: invalid IP %q returned", ipStr)
+	}
+
 	pc.currentIP = ipStr
 	pc.ipInitialized = true
-	pc.mu.Unlock()
 
 	return ipStr, nil
 }
@@ -184,7 +203,7 @@ func (pc *ProxyChecker) checkProxyInternal(proxy *models.ProxyConfig) {
 	if pc.IsProxyDisabled(proxy) {
 		logger.Debug("%s (%s) is disabled from checks, skipping", proxy.Name, proxy.Server)
 		pc.results.Store(metricKey, proxyResult{
-			status:    true,
+			status:    false,
 			latency:   0,
 			lastCheck: time.Now(),
 			disabled:  true,
@@ -243,10 +262,10 @@ func (pc *ProxyChecker) checkProxyInternal(proxy *models.ProxyConfig) {
 		var errCat ErrorCategory
 		var errMsg string
 		if outcome.err != nil {
-			errCat = ClassifyError(outcome.err, 0)
+			errCat = ClassifyError(outcome.err, outcome.httpStatus)
 			errMsg = outcome.err.Error()
 		} else {
-			errCat = ClassifyError(nil, 500)
+			errCat = CatUnknown
 			errMsg = outcome.logMessage
 		}
 
@@ -339,6 +358,18 @@ func (pc *ProxyChecker) checkByIP(client *http.Client) checkOutcome {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return checkOutcome{
+			canConnect:     true,
+			canTransfer:    false,
+			latency:        time.Duration(ttfbMs) * time.Millisecond,
+			tlsHandshakeMs: tlsHandshakeMs,
+			ttfbMs:         ttfbMs,
+			httpStatus:     resp.StatusCode,
+			err:            fmt.Errorf("HTTP %d from %s", resp.StatusCode, pc.ipCheck),
+		}
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return checkOutcome{
@@ -347,13 +378,35 @@ func (pc *ProxyChecker) checkByIP(client *http.Client) checkOutcome {
 			latency:        time.Duration(ttfbMs) * time.Millisecond,
 			tlsHandshakeMs: tlsHandshakeMs,
 			ttfbMs:         ttfbMs,
+			httpStatus:     resp.StatusCode,
 			err:            err,
 		}
 	}
 
-	proxyIP := string(body)
-	logMessage := fmt.Sprintf("Source IP: %s | Proxy IP: %s", pc.currentIP, proxyIP)
-	success := proxyIP != pc.currentIP
+	proxyIP := strings.TrimSpace(string(body))
+	if net.ParseIP(proxyIP) == nil {
+		return checkOutcome{
+			canConnect:     true,
+			canTransfer:    false,
+			latency:        time.Duration(ttfbMs) * time.Millisecond,
+			tlsHandshakeMs: tlsHandshakeMs,
+			ttfbMs:         ttfbMs,
+			httpStatus:     resp.StatusCode,
+			err:            fmt.Errorf("invalid IP %q returned via proxy", proxyIP),
+		}
+	}
+
+	pc.mu.RLock()
+	currentHostIP := pc.currentIP
+	pc.mu.RUnlock()
+
+	logMessage := fmt.Sprintf("Source IP: %s | Proxy IP: %s", currentHostIP, proxyIP)
+	success := currentHostIP != "" && proxyIP != currentHostIP
+	var checkErr error
+	if !success {
+		checkErr = fmt.Errorf("proxy returned host IP %s (transparent or routing leak)", proxyIP)
+	}
+
 	latency := time.Duration(ttfbMs) * time.Millisecond
 	if latency == 0 {
 		latency = time.Since(start)
@@ -366,6 +419,8 @@ func (pc *ProxyChecker) checkByIP(client *http.Client) checkOutcome {
 		latency:        latency,
 		tlsHandshakeMs: tlsHandshakeMs,
 		ttfbMs:         ttfbMs,
+		httpStatus:     resp.StatusCode,
+		err:            checkErr,
 	}
 }
 
@@ -449,6 +504,7 @@ func (pc *ProxyChecker) checkByGen(client *http.Client) checkOutcome {
 				latency:        latency,
 				tlsHandshakeMs: tlsHandshakeMs,
 				ttfbMs:         ttfbMs,
+				httpStatus:     status,
 			}
 		}
 		lastOutcome = checkOutcome{
@@ -459,6 +515,7 @@ func (pc *ProxyChecker) checkByGen(client *http.Client) checkOutcome {
 			latency:        latency,
 			tlsHandshakeMs: tlsHandshakeMs,
 			ttfbMs:         ttfbMs,
+			httpStatus:     status,
 			err:            fmt.Errorf("HTTP %d from %s", status, targetURL),
 		}
 	}
@@ -525,6 +582,7 @@ func (pc *ProxyChecker) checkByDownload(client *http.Client) checkOutcome {
 			latency:        time.Duration(ttfbMs) * time.Millisecond,
 			tlsHandshakeMs: tlsHandshakeMs,
 			ttfbMs:         ttfbMs,
+			httpStatus:     resp.StatusCode,
 			err:            fmt.Errorf("HTTP status: %d", resp.StatusCode),
 		}
 	}

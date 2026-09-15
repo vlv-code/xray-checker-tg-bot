@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/alecthomas/kong"
 )
@@ -19,6 +20,10 @@ func Parse(version string) {
 		},
 	)
 	_ = ctx
+	if err := CLIConfig.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "Configuration error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 type CLI struct {
@@ -99,6 +104,13 @@ type CLI struct {
 }
 
 func (c *CLI) Validate() error {
+	checkMethod := c.Proxy.CheckMethod
+	if checkMethod == "" {
+		checkMethod = "ip"
+	}
+	if checkMethod != "ip" && checkMethod != "status" && checkMethod != "download" {
+		return fmt.Errorf("invalid proxy-check-method / PROXY_CHECK_METHOD %q: must be 'ip', 'status', or 'download'", c.Proxy.CheckMethod)
+	}
 	if c.Web.Enabled && c.Web.Public && !c.Metrics.Protected {
 		return fmt.Errorf("--web-public requires --metrics-protected to be enabled")
 	}

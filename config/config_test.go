@@ -34,4 +34,22 @@ func TestCLIValidate(t *testing.T) {
 			t.Errorf("unexpected error when port is 0: %v", err)
 		}
 	})
+
+	t.Run("fails when check method is invalid", func(t *testing.T) {
+		var cli CLI
+		cli.Proxy.CheckMethod = "unknown_method"
+		if err := cli.Validate(); err == nil {
+			t.Error("expected error for invalid check method, got nil")
+		}
+	})
+
+	t.Run("passes for valid check methods", func(t *testing.T) {
+		for _, m := range []string{"ip", "status", "download"} {
+			var cli CLI
+			cli.Proxy.CheckMethod = m
+			if err := cli.Validate(); err != nil {
+				t.Errorf("expected %s to be valid, got %v", m, err)
+			}
+		}
+	})
 }

@@ -91,6 +91,30 @@ func TestClassifyError(t *testing.T) {
 			expected:   CatHTTP5xx,
 		},
 		{
+			name:       "http 502 Bad Gateway with err and status",
+			err:        errors.New("HTTP 502 from https://cp.cloudflare.com/generate_204"),
+			httpStatus: 502,
+			expected:   CatHTTP5xx,
+		},
+		{
+			name:       "http 503 from error string with status 0",
+			err:        errors.New("HTTP 503 from https://cp.cloudflare.com/generate_204"),
+			httpStatus: 0,
+			expected:   CatHTTP5xx,
+		},
+		{
+			name:       "http 403 from error string with status 0",
+			err:        errors.New("HTTP 403 from https://cp.cloudflare.com/generate_204"),
+			httpStatus: 0,
+			expected:   CatHTTP4xx,
+		},
+		{
+			name:       "general socks server failure",
+			err:        errors.New("socks connect tcp 127.0.0.1:1080->target:443: general SOCKS server failure"),
+			httpStatus: 0,
+			expected:   CatTimeout,
+		},
+		{
 			name:       "unknown error",
 			err:        errors.New("some strange internal failure"),
 			httpStatus: 0,

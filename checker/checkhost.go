@@ -243,20 +243,18 @@ func (c *CheckHostClient) checkInternal(ctx context.Context, checkType, host str
 				continue
 			}
 
-			// Check if all requested nodes have results (non-nil)
+			// Check if all requested nodes have finished (non-nil results)
 			allFinished := true
-			hasAnyResult := false
 			for _, nID := range nodes {
 				val, exists := resultMap[nID]
 				if !exists || val == nil {
 					allFinished = false
-				} else {
-					hasAnyResult = true
+					break
 				}
 			}
 
 			finalResults = resultMap
-			if allFinished || (hasAnyResult && len(resultMap) >= len(nodes)) {
+			if allFinished {
 				goto DonePolling
 			}
 		}

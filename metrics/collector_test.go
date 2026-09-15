@@ -147,3 +147,63 @@ func TestSanitizeLabelName(t *testing.T) {
 		}
 	}
 }
+
+func TestCollectorDisabledProxy(t *testing.T) {
+	src := fakeSource{pms: []ProxyMetric{
+		{
+			Protocol: "vless", Address: "1.1.1.1:443", Name: "Proxy1", StableID: "id1",
+			Online: true, LatencyMs: 150, Disabled: true,
+		},
+		{
+			Protocol: "vless", Address: "2.2.2.2:443", Name: "Proxy2", StableID: "id2",
+			Online: true, LatencyMs: 120, Disabled: false,
+		},
+	}}
+	c := NewCollector("", src)
+	reg := prometheus.NewRegistry()
+	if err := reg.Register(c); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+
+	for _, mf := range mfs {
+		if mf.GetName() == "xray_proxy_status" {
+			for _, m := range mf.GetMetric() {
+				var stableID string
+				for _, l := range m.GetLabel() {
+					if l.GetName() == "stable_id" {
+						stableID = l.GetValue()
+					}
+				}
+				val := m.GetGauge().GetValue()
+				if stableID == "id1" && val != 0 {
+					t.Errorf("expected status 0 for disabled proxy id1, got %f", val)
+				}
+				if stableID == "id2" && val != 1 {
+					t.Errorf("expected status 1 for enabled online proxy id2, got %f", val)
+				}
+			}
+		}
+		if mf.GetName() == "xray_proxy_latency_ms" {
+			for _, m := range mf.GetMetric() {
+				var stableID string
+				for _, l := range m.GetLabel() {
+					if l.GetName() == "stable_id" {
+						stableID = l.GetValue()
+					}
+				}
+				val := m.GetGauge().GetValue()
+				if stableID == "id1" && val != 0 {
+					t.Errorf("expected latency 0 for disabled proxy id1, got %f", val)
+				}
+				if stableID == "id2" && val != 120 {
+					t.Errorf("expected latency 120 for enabled online proxy id2, got %f", val)
+				}
+			}
+		}
+	}
+}
+

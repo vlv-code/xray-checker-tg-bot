@@ -348,3 +348,94 @@ func TestGetCurrentIP_ConcurrentRace(t *testing.T) {
 		t.Errorf("concurrent GetCurrentIP failed: %v", err)
 	}
 }
+
+func TestGetCurrentIP_Rejects502HTML(t *testing.T) {
+	status := http.StatusBadGateway
+	body := "<html><head><title>502 Bad Gateway</title></head><body>Cloudflare 502</body></html>"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	pc := &ProxyChecker{
+		httpClient: ts.Client(),
+		ipCheck:    ts.URL,
+	}
+
+	// First attempt: 502 HTML must fail and not be cached
+	ip, err := pc.GetCurrentIP()
+	if err == nil {
+		t.Fatalf("expected error on 502 HTML, got ip %q", ip)
+	}
+	if pc.ipInitialized {
+		t.Errorf("expected ipInitialized to remain false after error")
+	}
+
+	// Server recovers: returns 200 OK with valid IP
+	status = http.StatusOK
+	body = "198.51.100.42\n"
+
+	ip, err = pc.GetCurrentIP()
+	if err != nil {
+		t.Fatalf("expected success after server recovery, got error: %v", err)
+	}
+	if ip != "198.51.100.42" {
+		t.Errorf("expected trimmed IP 198.51.100.42, got %q", ip)
+	}
+	if !pc.ipInitialized {
+		t.Errorf("expected ipInitialized to be true after success")
+	}
+}
+
+func TestCheckByIP_TransparentAndValidation(t *testing.T) {
+	pc := &ProxyChecker{
+		currentIP: "198.51.100.1",
+		ipCheck:   "http://mock-ip",
+	}
+
+	// 1. Same IP returned (transparent proxy / direct routing leak)
+	mockSameIP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("198.51.100.1\n"))
+	}))
+	defer mockSameIP.Close()
+	pc.ipCheck = mockSameIP.URL
+
+	outcome := pc.checkByIP(mockSameIP.Client())
+	if outcome.success {
+		t.Errorf("expected checkByIP to fail when proxy returns same host IP")
+	}
+	if outcome.err == nil || !strings.Contains(outcome.err.Error(), "proxy returned host IP") {
+		t.Errorf("expected descriptive routing leak error, got %v", outcome.err)
+	}
+
+	// 2. Different valid IP returned (successful proxy)
+	mockDiffIP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("203.0.113.50\n"))
+	}))
+	defer mockDiffIP.Close()
+	pc.ipCheck = mockDiffIP.URL
+
+	outcome = pc.checkByIP(mockDiffIP.Client())
+	if !outcome.success {
+		t.Errorf("expected checkByIP to succeed for different IP, got: %v", outcome.err)
+	}
+
+	// 3. HTML error returned through proxy
+	mockHTML := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte("<html>502 Bad Gateway</html>"))
+	}))
+	defer mockHTML.Close()
+	pc.ipCheck = mockHTML.URL
+
+	outcome = pc.checkByIP(mockHTML.Client())
+	if outcome.success {
+		t.Errorf("expected checkByIP to fail on 502 HTML")
+	}
+	if outcome.httpStatus != 502 {
+		t.Errorf("expected httpStatus 502, got %d", outcome.httpStatus)
+	}
+}
+

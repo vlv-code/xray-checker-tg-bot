@@ -3,6 +3,8 @@ package telegram
 import (
 	"strings"
 	"testing"
+
+	"github.com/mymmrac/telego"
 )
 
 func TestMenuMarkups(t *testing.T) {
@@ -141,3 +143,27 @@ func TestTimezoneMarkup(t *testing.T) {
 		t.Errorf("expected to find back button to menu:settings")
 	}
 }
+
+func TestSettingsMenuSubscriptionsVisibility(t *testing.T) {
+	hasSubsBtn := func(markup *telego.InlineKeyboardMarkup) bool {
+		for _, row := range markup.InlineKeyboard {
+			for _, b := range row {
+				if b.CallbackData == "menu:subs" {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	if !hasSubsBtn(SettingsMenuMarkup(true)) {
+		t.Errorf("expected SettingsMenuMarkup(true) to include menu:subs")
+	}
+	if !hasSubsBtn(SettingsMenuMarkup()) {
+		t.Errorf("expected default SettingsMenuMarkup() to include menu:subs for backward compatibility")
+	}
+	if hasSubsBtn(SettingsMenuMarkup(false)) {
+		t.Errorf("expected SettingsMenuMarkup(false) to omit menu:subs")
+	}
+}
+
