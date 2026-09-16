@@ -26,6 +26,7 @@ type ProxyChecker struct {
 	httpClient       *http.Client
 	results          sync.Map // proxyMetricLabels -> proxyResult
 	ipInitialized    bool
+	ipCheckedAt      time.Time
 	ipCheckTimeout   int
 	genMethodURL     string
 	downloadURL      string
@@ -41,6 +42,10 @@ type ProxyChecker struct {
 	// outside pc.mu so a slow IP service can't stall snapshot readers.
 	ipFetchMu sync.Mutex
 }
+
+// hostIPCacheTTL bounds how long the checker's own public IP is trusted. The
+// IP still serves as a fallback after expiry when re-fetching fails.
+const hostIPCacheTTL = time.Hour
 
 // proxyResult is the latest check outcome for one proxy. Metrics are rendered from
 // these at scrape time (a pull model), so there is no separate metric state to keep
@@ -136,7 +141,10 @@ func NewProxyChecker(proxies []*models.ProxyConfig, startPort int, ipCheckURL st
 
 func (pc *ProxyChecker) GetCurrentIP() (string, error) {
 	pc.mu.RLock()
-	if pc.ipInitialized && pc.currentIP != "" {
+	// Re-resolve after a TTL: a long-running host's public IP can change
+	// (DHCP/ISP), and a cached-forever IP turns into false "transparent
+	// proxy" verdicts and wrong error text.
+	if pc.ipInitialized && pc.currentIP != "" && time.Since(pc.ipCheckedAt) < hostIPCacheTTL {
 		ip := pc.currentIP
 		pc.mu.RUnlock()
 		return ip, nil
@@ -181,6 +189,7 @@ func (pc *ProxyChecker) GetCurrentIP() (string, error) {
 	pc.mu.Lock()
 	pc.currentIP = ipStr
 	pc.ipInitialized = true
+	pc.ipCheckedAt = time.Now()
 	pc.mu.Unlock()
 
 	return ipStr, nil
@@ -420,7 +429,13 @@ func (pc *ProxyChecker) checkByIP(client *http.Client) checkOutcome {
 	success := currentHostIP != "" && proxyIP != currentHostIP
 	var checkErr error
 	if !success {
-		checkErr = fmt.Errorf("proxy returned host IP %s (transparent or routing leak)", proxyIP)
+		if currentHostIP == "" {
+			// Without a known host IP the comparison is meaningless; don't
+			// misdiagnose it as a transparent-proxy leak.
+			checkErr = fmt.Errorf("host IP unknown (IP check endpoint unreachable), cannot verify source IP %s", proxyIP)
+		} else {
+			checkErr = fmt.Errorf("proxy returned host IP %s (transparent or routing leak)", proxyIP)
+		}
 	}
 
 	latency := time.Duration(ttfbMs) * time.Millisecond

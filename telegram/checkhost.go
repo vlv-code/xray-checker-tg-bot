@@ -262,7 +262,11 @@ func (b *Bot) RunCheckHostAudit() {
 	}
 	fastNodes := b.checkHostNodes
 	if len(fastNodes) == 0 {
-		fastNodes = append(checker.DefaultFastRUNodes, checker.DefaultFastWorldNodes...)
+		// Explicit copy: appending to the package-level defaults would share
+		// (and on growth, corrupt) their backing array.
+		fastNodes = make([]string, 0, len(checker.DefaultFastRUNodes)+len(checker.DefaultFastWorldNodes))
+		fastNodes = append(fastNodes, checker.DefaultFastRUNodes...)
+		fastNodes = append(fastNodes, checker.DefaultFastWorldNodes...)
 	}
 
 	for i, target := range targets {

@@ -132,6 +132,10 @@ func BasicAuthMiddleware(username, password string) func(http.Handler) http.Hand
 	}
 }
 
+// maxSimulatedLatency caps the artificial delay added by SIMULATE_LATENCY so
+// badge requests can't hold a goroutine for a full check timeout.
+const maxSimulatedLatency = 2 * time.Second
+
 func ConfigStatusHandler(proxyChecker *checker.ProxyChecker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path[len("/config/"):]
@@ -152,7 +156,15 @@ func ConfigStatusHandler(proxyChecker *checker.ProxyChecker) http.HandlerFunc {
 		}
 
 		if config.CLIConfig.Proxy.SimulateLatency {
-			time.Sleep(time.Duration(latency))
+			// Cap the simulated delay: real latency can approach the full
+			// check timeout (up to a minute with download checks), and this
+			// endpoint is unauthenticated in public mode — unbounded sleeps
+			// let concurrent requests pin goroutines and memory.
+			sleep := latency
+			if sleep > maxSimulatedLatency || sleep < 0 {
+				sleep = maxSimulatedLatency
+			}
+			time.Sleep(sleep)
 		}
 
 		if status {

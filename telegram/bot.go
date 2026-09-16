@@ -276,7 +276,7 @@ func (b *Bot) StartCommands() {
 	}()
 }
 
-// Stop halts long-polling and scheduled routines.
+// Stop halts long-polling and scheduled routines and flushes stats to disk.
 func (b *Bot) Stop() {
 	select {
 	case <-b.stopChan:
@@ -285,6 +285,13 @@ func (b *Bot) Stop() {
 	}
 	if b.cancel != nil {
 		b.cancel()
+	}
+	// The periodic save runs every 5 minutes; without this flush everything
+	// since the last tick is lost on shutdown.
+	if b.statsStore != nil {
+		if err := b.statsStore.Save(); err != nil {
+			logger.Error("Telegram: failed to save stats on shutdown: %v", err)
+		}
 	}
 }
 
