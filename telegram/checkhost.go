@@ -293,7 +293,7 @@ func (b *Bot) RunCheckHostAudit() {
 			isQuiet := IsQuietTime(now, cfg)
 
 			for _, chatID := range b.chatIDs {
-				if b.tracker.HasAlert(chatID, alertKey) {
+				if b.tracker.HasAlert(chatID, 0, alertKey) {
 					continue
 				}
 
@@ -321,14 +321,14 @@ func (b *Bot) RunCheckHostAudit() {
 					})
 				} else {
 					if sent, err := b.sendAndReturn(chatID, alertText); err == nil {
-						b.tracker.Track(chatID, sent.MessageID, alertKey, target.proxyName, now, "CheckHost RU Block")
+						b.tracker.Track(chatID, 0, sent.MessageID, alertKey, target.proxyName, now, "CheckHost RU Block")
 					}
 				}
 			}
 		} else {
 			// RU is available: resolve any previous alert
 			for _, chatID := range b.chatIDs {
-				alert, hadAlert := b.tracker.Resolve(chatID, alertKey)
+				alert, hadAlert := b.tracker.Resolve(chatID, 0, alertKey)
 				if !hadAlert {
 					continue
 				}

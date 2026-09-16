@@ -12,6 +12,7 @@ import (
 // ActiveAlert represents an alert message sent for an offline proxy.
 type ActiveAlert struct {
 	ChatID    int64     `json:"chat_id"`
+	ThreadID  int       `json:"thread_id,omitempty"` // forum topic the alert was sent to (0 = General / non-forum)
 	MessageID int       `json:"message_id"`
 	StableID  string    `json:"stable_id"`
 	ProxyName string    `json:"proxy_name"`
@@ -23,7 +24,7 @@ type ActiveAlert struct {
 type AlertTracker struct {
 	mu     sync.Mutex
 	path   string
-	alerts map[string]*ActiveAlert // key: "chatID:stableID"
+	alerts map[string]*ActiveAlert // key: "chatID:threadID:stableID"
 }
 
 // NewAlertTracker creates a new AlertTracker, optionally with disk persistence.
@@ -54,7 +55,15 @@ func (at *AlertTracker) load() error {
 		return err
 	}
 	if loaded != nil {
-		at.alerts = loaded
+		// Re-key entries from their fields so that stores written by
+		// older versions (key "chatID:stableID", no ThreadID) migrate
+		// transparently to the thread-aware key format.
+		for _, a := range loaded {
+			if a == nil || a.ChatID == 0 {
+				continue
+			}
+			at.alerts[alertKey(a.ChatID, a.ThreadID, a.StableID)] = a
+		}
 	}
 	return nil
 }
@@ -80,27 +89,28 @@ func (at *AlertTracker) saveLocked() error {
 	return os.Rename(tmp, at.path)
 }
 
-func alertKey(chatID int64, stableID string) string {
-	return fmt.Sprintf("%d:%s", chatID, stableID)
+func alertKey(chatID int64, threadID int, stableID string) string {
+	return fmt.Sprintf("%d:%d:%s", chatID, threadID, stableID)
 }
 
-// HasAlert returns true if there is an active alert for the given chat and proxy.
-func (at *AlertTracker) HasAlert(chatID int64, stableID string) bool {
+// HasAlert returns true if there is an active alert for the given chat, topic and proxy.
+func (at *AlertTracker) HasAlert(chatID int64, threadID int, stableID string) bool {
 	at.mu.Lock()
 	defer at.mu.Unlock()
 
-	_, found := at.alerts[alertKey(chatID, stableID)]
+	_, found := at.alerts[alertKey(chatID, threadID, stableID)]
 	return found
 }
 
 // Track stores an active outage alert message and persists if path is configured.
-func (at *AlertTracker) Track(chatID int64, messageID int, stableID, proxyName string, downAt time.Time, reason string) {
+func (at *AlertTracker) Track(chatID int64, threadID int, messageID int, stableID, proxyName string, downAt time.Time, reason string) {
 	at.mu.Lock()
 	defer at.mu.Unlock()
 
-	key := alertKey(chatID, stableID)
+	key := alertKey(chatID, threadID, stableID)
 	at.alerts[key] = &ActiveAlert{
 		ChatID:    chatID,
+		ThreadID:  threadID,
 		MessageID: messageID,
 		StableID:  stableID,
 		ProxyName: proxyName,
@@ -110,12 +120,12 @@ func (at *AlertTracker) Track(chatID int64, messageID int, stableID, proxyName s
 	_ = at.saveLocked()
 }
 
-// Resolve removes, persists, and returns the active alert for a specific chat and proxy.
-func (at *AlertTracker) Resolve(chatID int64, stableID string) (*ActiveAlert, bool) {
+// Resolve removes, persists, and returns the active alert for a specific chat, topic and proxy.
+func (at *AlertTracker) Resolve(chatID int64, threadID int, stableID string) (*ActiveAlert, bool) {
 	at.mu.Lock()
 	defer at.mu.Unlock()
 
-	key := alertKey(chatID, stableID)
+	key := alertKey(chatID, threadID, stableID)
 	alert, found := at.alerts[key]
 	if found {
 		delete(at.alerts, key)

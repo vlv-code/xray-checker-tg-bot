@@ -524,24 +524,24 @@ func TestBot_RunCheckHostAudit_RUBlock(t *testing.T) {
 	bot.RunCheckHostAudit()
 
 	alertKey := "checkhost:1.1.1.1:443"
-	if !tracker.HasAlert(12345, alertKey) {
+	if !tracker.HasAlert(12345, 0, alertKey) {
 		t.Errorf("expected active alert for %s after RU block", alertKey)
 	}
 	// Verify disabled node-2 was not audited or tracked
-	if tracker.HasAlert(12345, "checkhost:2.2.2.2:443") {
+	if tracker.HasAlert(12345, 0, "checkhost:2.2.2.2:443") {
 		t.Errorf("disabled node should not have active alert")
 	}
 
 	// 2. Second audit with same down state -> deduplicated
 	bot.RunCheckHostAudit()
-	if !tracker.HasAlert(12345, alertKey) {
+	if !tracker.HasAlert(12345, 0, alertKey) {
 		t.Errorf("expected alert to remain active")
 	}
 
 	// 3. RU recovers -> alert resolved
 	ruSuccess = true
 	bot.RunCheckHostAudit()
-	if tracker.HasAlert(12345, alertKey) {
+	if tracker.HasAlert(12345, 0, alertKey) {
 		t.Errorf("expected alert to be resolved after RU recovery")
 	}
 }

@@ -50,7 +50,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 			}
 			if pm.Online {
 				for _, chatID := range b.chatIDs {
-					b.tracker.Resolve(chatID, pm.StableID)
+					b.tracker.Resolve(chatID, 0, pm.StableID)
 				}
 			}
 		}
@@ -68,7 +68,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 		if pm.Disabled {
 			// Proxy is disabled: resolve/clean any active alerts and ignore
 			for _, chatID := range b.chatIDs {
-				if alert, hadAlert := b.tracker.Resolve(chatID, pm.StableID); hadAlert {
+				if alert, hadAlert := b.tracker.Resolve(chatID, 0, pm.StableID); hadAlert {
 					disabledDeletions = append(disabledDeletions, deleteAction{chatID: chatID, messageID: alert.MessageID})
 				}
 			}
@@ -135,7 +135,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				})
 			} else {
 				for _, chatID := range b.chatIDs {
-					alert, hadAlert := b.tracker.Resolve(chatID, pm.StableID)
+					alert, hadAlert := b.tracker.Resolve(chatID, 0, pm.StableID)
 					if hadAlert && alert != nil && !alert.DownAt.IsZero() {
 						downtime = now.Sub(alert.DownAt)
 					}
@@ -197,7 +197,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 		}
 		outageText := fmt.Sprintf("🔴 <b>%s</b> — не отвечает%s\n⏱ %s · %d-й сбой\n%s%s", escapeHTML(pm.Name), softHint, timeStr, dropCount, escapeHTML(pm.Address), flapNote)
 		for _, chatID := range b.chatIDs {
-			if b.tracker.HasAlert(chatID, pm.StableID) {
+			if b.tracker.HasAlert(chatID, 0, pm.StableID) {
 				continue
 			}
 			if sent, err := b.sendAndReturn(chatID, outageText); err == nil && sent != nil && sent.MessageID != 0 {
@@ -213,7 +213,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 					}
 					continue
 				}
-				b.tracker.Track(chatID, sent.MessageID, pm.StableID, pm.Name, now, "Offline")
+				b.tracker.Track(chatID, 0, sent.MessageID, pm.StableID, pm.Name, now, "Offline")
 			}
 		}
 	}

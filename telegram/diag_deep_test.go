@@ -16,8 +16,8 @@ func TestSortDiagnosticsReports_SeverityOrder(t *testing.T) {
 
 	// Setup fake downtime in tracker
 	now := time.Now()
-	tracker.Track(1, 100, "off-short", "OfflineShort", now.Add(-10*time.Minute), "timeout")
-	tracker.Track(1, 101, "off-long", "OfflineLong", now.Add(-2*time.Hour), "timeout")
+	tracker.Track(1, 0, 100, "off-short", "OfflineShort", now.Add(-10*time.Minute), "timeout")
+	tracker.Track(1, 0, 101, "off-long", "OfflineLong", now.Add(-2*time.Hour), "timeout")
 
 	b := &Bot{
 		tracker: tracker,
