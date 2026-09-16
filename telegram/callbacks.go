@@ -23,6 +23,11 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 
 	msgID := cb.Message.GetMessageID()
 
+	ct := ChatTarget{ChatID: chatID}
+	if m := cb.Message.Message(); m != nil {
+		ct.ThreadID = m.MessageThreadID
+	}
+
 	// Handle non-modifying callbacks with informational toasts
 	if strings.HasPrefix(cb.Data, "menu:diag:noop:") {
 		parts := strings.Split(strings.TrimPrefix(cb.Data, "menu:diag:noop:"), ":")
@@ -66,7 +71,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			}
 			if b.isRichMode() {
 				rich := b.buildDiagnosticsRichMessage(reports)
-				b.showRichReport(chatID, msgID, rich)
+				b.showRichReport(ct, msgID, rich)
 				return
 			}
 			pageText, totalPages := b.getDiagnosticsPageText(reports, 1)
@@ -85,7 +90,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				return
 			}
 			rich := b.buildDiagnosticsRichMessage(reports)
-			b.showRichReport(chatID, msgID, rich)
+			b.showRichReport(ct, msgID, rich)
 		}()
 	case "menu:stats":
 		b.editWithMarkup(chatID, msgID, b.getStatsOverviewText(), StatsMenuMarkup())
@@ -304,7 +309,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 						return
 					}
 					rich := b.buildDiagnosticsRichMessage(reports)
-					b.showRichReport(chatID, msgID, rich)
+					b.showRichReport(ct, msgID, rich)
 				}()
 			} else {
 				page, _ := strconv.Atoi(arg)

@@ -36,7 +36,7 @@ type Bot struct {
 	api            *telego.Bot
 	ctx            context.Context
 	cancel         context.CancelFunc
-	chatIDs        []int64
+	targets        []ChatTarget
 	allowedChatIDs map[int64]bool
 	source         metrics.MetricsSource
 	subs           SubscriptionManager
@@ -71,7 +71,7 @@ type Bot struct {
 	checkHostNodes     []string
 
 	lastMenuMu  sync.Mutex
-	lastMenuMsg map[int64]int
+	lastMenuMsg map[string]int
 
 	msgSeqMu sync.Mutex
 	msgSeq   map[string]int64
@@ -83,7 +83,7 @@ type Bot struct {
 }
 
 // New creates a Bot and verifies the token against the Telegram API.
-func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRecovery, commandsEnabled bool, subs SubscriptionManager) (*Bot, error) {
+func New(token string, targets []ChatTarget, source metrics.MetricsSource, notifyOnRecovery, commandsEnabled bool, subs SubscriptionManager) (*Bot, error) {
 	httpClient := &http.Client{
 		Timeout:   75 * time.Second,
 		Transport: http.DefaultTransport,
@@ -101,9 +101,9 @@ func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRe
 		return nil, fmt.Errorf("telegram: getMe failed: %w", err)
 	}
 
-	allowed := make(map[int64]bool, len(chatIDs))
-	for _, id := range chatIDs {
-		allowed[id] = true
+	allowed := make(map[int64]bool, len(targets))
+	for _, t := range targets {
+		allowed[t.ChatID] = true
 	}
 
 	logger.Info("Telegram bot authorized as @%s", user.Username)
@@ -112,7 +112,7 @@ func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRe
 		api:              api,
 		ctx:              ctx,
 		cancel:           cancel,
-		chatIDs:          chatIDs,
+		targets:          targets,
 		allowedChatIDs:   allowed,
 		source:           source,
 		subs:             subs,
@@ -122,7 +122,7 @@ func New(token string, chatIDs []int64, source metrics.MetricsSource, notifyOnRe
 		eventBuffer:      NewEventBuffer(),
 		lastSeen:         make(map[string]bool),
 		lastFlapAlert:    make(map[string]time.Time),
-		lastMenuMsg:      make(map[int64]int),
+		lastMenuMsg:      make(map[string]int),
 		msgSeq:           make(map[string]int64),
 		subFreshness:     make(map[string]SubFreshness),
 		stopChan:         make(chan struct{}),
@@ -392,37 +392,43 @@ func (b *Bot) now() time.Time {
 }
 
 func (b *Bot) broadcast(text string) {
-	for _, chatID := range b.chatIDs {
-		b.send(chatID, text)
+	for _, t := range b.targets {
+		b.send(t, text)
 	}
 }
 
-func (b *Bot) send(chatID int64, text string) {
+func (b *Bot) send(t ChatTarget, text string) {
 	if b.api == nil {
 		return
 	}
 	for _, chunk := range splitMessage(text, maxMessageLen) {
-		params := tu.Message(tu.ID(chatID), chunk).WithParseMode(telego.ModeHTML)
+		params := tu.Message(tu.ID(t.ChatID), chunk).WithParseMode(telego.ModeHTML)
+		if t.ThreadID > 0 {
+			params = params.WithMessageThreadID(t.ThreadID)
+		}
 		if _, err := b.api.SendMessage(b.ctx, params); err != nil {
-			logger.Error("Telegram: failed to send message to %d: %v", chatID, err)
+			logger.Error("Telegram: failed to send message to %s: %v", t.targetKey(), err)
 		}
 	}
 }
 
-func (b *Bot) sendAndReturn(chatID int64, text string) (*telego.Message, error) {
+func (b *Bot) sendAndReturn(t ChatTarget, text string) (*telego.Message, error) {
 	if b.api == nil {
 		return &telego.Message{MessageID: 0}, nil
 	}
-	params := tu.Message(tu.ID(chatID), text).WithParseMode(telego.ModeHTML)
+	params := tu.Message(tu.ID(t.ChatID), text).WithParseMode(telego.ModeHTML)
+	if t.ThreadID > 0 {
+		params = params.WithMessageThreadID(t.ThreadID)
+	}
 	sent, err := b.api.SendMessage(b.ctx, params)
 	if err != nil {
-		logger.Error("Telegram: failed to send message to %d: %v", chatID, err)
+		logger.Error("Telegram: failed to send message to %s: %v", t.targetKey(), err)
 		return nil, err
 	}
 	return sent, nil
 }
 
-func (b *Bot) sendWithMarkup(chatID int64, text string, markup *telego.InlineKeyboardMarkup) (*telego.Message, error) {
+func (b *Bot) sendWithMarkup(t ChatTarget, text string, markup *telego.InlineKeyboardMarkup) (*telego.Message, error) {
 	if b.api == nil {
 		return &telego.Message{MessageID: 0}, nil
 	}
@@ -431,26 +437,35 @@ func (b *Bot) sendWithMarkup(chatID int64, text string, markup *telego.InlineKey
 		return &telego.Message{MessageID: 0}, nil
 	}
 	if len(chunks) == 1 {
-		params := tu.Message(tu.ID(chatID), chunks[0]).WithParseMode(telego.ModeHTML).WithReplyMarkup(markup)
+		params := tu.Message(tu.ID(t.ChatID), chunks[0]).WithParseMode(telego.ModeHTML).WithReplyMarkup(markup)
+		if t.ThreadID > 0 {
+			params = params.WithMessageThreadID(t.ThreadID)
+		}
 		sent, err := b.api.SendMessage(b.ctx, params)
 		if err != nil {
-			logger.Error("Telegram: failed to send message to %d: %v", chatID, err)
+			logger.Error("Telegram: failed to send message to %s: %v", t.targetKey(), err)
 			return nil, err
 		}
 		return sent, nil
 	}
 
 	for i := 0; i < len(chunks)-1; i++ {
-		params := tu.Message(tu.ID(chatID), chunks[i]).WithParseMode(telego.ModeHTML)
+		params := tu.Message(tu.ID(t.ChatID), chunks[i]).WithParseMode(telego.ModeHTML)
+		if t.ThreadID > 0 {
+			params = params.WithMessageThreadID(t.ThreadID)
+		}
 		if _, err := b.api.SendMessage(b.ctx, params); err != nil {
-			logger.Error("Telegram: failed to send chunk to %d: %v", chatID, err)
+			logger.Error("Telegram: failed to send chunk to %s: %v", t.targetKey(), err)
 		}
 	}
 
-	params := tu.Message(tu.ID(chatID), chunks[len(chunks)-1]).WithParseMode(telego.ModeHTML).WithReplyMarkup(markup)
+	params := tu.Message(tu.ID(t.ChatID), chunks[len(chunks)-1]).WithParseMode(telego.ModeHTML).WithReplyMarkup(markup)
+	if t.ThreadID > 0 {
+		params = params.WithMessageThreadID(t.ThreadID)
+	}
 	sent, err := b.api.SendMessage(b.ctx, params)
 	if err != nil {
-		logger.Error("Telegram: failed to send final chunk with markup to %d: %v", chatID, err)
+		logger.Error("Telegram: failed to send final chunk with markup to %s: %v", t.targetKey(), err)
 		return nil, err
 	}
 	return sent, nil
@@ -486,25 +501,26 @@ func (b *Bot) invalidateMsgSeq(chatID int64, msgID int) {
 	}
 }
 
-func (b *Bot) sendOrUpdateMenu(chatID int64, text string, markup *telego.InlineKeyboardMarkup) {
+func (b *Bot) sendOrUpdateMenu(t ChatTarget, text string, markup *telego.InlineKeyboardMarkup) {
 	b.lastMenuMu.Lock()
 	defer b.lastMenuMu.Unlock()
 
 	if b.lastMenuMsg == nil {
-		b.lastMenuMsg = make(map[int64]int)
+		b.lastMenuMsg = make(map[string]int)
 	}
-	oldMsgID, hasOld := b.lastMenuMsg[chatID]
+	key := t.targetKey()
+	oldMsgID, hasOld := b.lastMenuMsg[key]
 
 	if hasOld && oldMsgID > 0 && b.api != nil {
 		_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-			ChatID:    tu.ID(chatID),
+			ChatID:    tu.ID(t.ChatID),
 			MessageID: oldMsgID,
 		})
 	}
 
-	sent, _ := b.sendWithMarkup(chatID, text, markup)
+	sent, _ := b.sendWithMarkup(t, text, markup)
 	if sent != nil && sent.GetMessageID() > 0 {
-		b.lastMenuMsg[chatID] = sent.GetMessageID()
+		b.lastMenuMsg[key] = sent.GetMessageID()
 	}
 }
 
@@ -536,7 +552,7 @@ func (b *Bot) editWithMarkup(chatID int64, messageID int, text string, markup *t
 				ReplyMarkup: markup,
 			}
 			_, _ = b.api.EditMessageText(b.ctx, fallbackParams)
-			b.send(chatID, text)
+			b.send(ChatTarget{ChatID: chatID}, text)
 			return
 		}
 		logger.Error("Telegram: failed to edit message %d in chat %d: %v", messageID, chatID, err)
@@ -560,28 +576,31 @@ func (b *Bot) editWithRichMarkup(chatID int64, messageID int, rich *telego.Input
 	return err
 }
 
-func (b *Bot) sendRich(chatID int64, rich *telego.InputRichMessage, markup *telego.InlineKeyboardMarkup) (*telego.Message, error) {
+func (b *Bot) sendRich(t ChatTarget, rich *telego.InputRichMessage, markup *telego.InlineKeyboardMarkup) (*telego.Message, error) {
 	if rich == nil {
 		return nil, fmt.Errorf("rich message is nil")
 	}
 	params := &telego.SendRichMessageParams{
-		ChatID:      tu.ID(chatID),
+		ChatID:      tu.ID(t.ChatID),
 		RichMessage: *rich,
 		ReplyMarkup: markup,
 	}
+	if t.ThreadID > 0 {
+		params.MessageThreadID = t.ThreadID
+	}
 	sent, err := b.api.SendRichMessage(b.ctx, params)
 	if err != nil {
-		logger.Error("Telegram: failed to send rich message to %d: %v", chatID, err)
+		logger.Error("Telegram: failed to send rich message to %s: %v", t.targetKey(), err)
 		return nil, err
 	}
 	return sent, nil
 }
 
-func (b *Bot) showRichReport(chatID int64, messageID int, rich *telego.InputRichMessage) {
+func (b *Bot) showRichReport(t ChatTarget, messageID int, rich *telego.InputRichMessage) {
 	if messageID > 0 {
-		if err := b.editWithRichMarkup(chatID, messageID, rich, RichReportMarkup()); err == nil {
+		if err := b.editWithRichMarkup(t.ChatID, messageID, rich, RichReportMarkup()); err == nil {
 			return
 		}
 	}
-	_, _ = b.sendRich(chatID, rich, RichReportMarkup())
+	_, _ = b.sendRich(t, rich, RichReportMarkup())
 }

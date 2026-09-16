@@ -78,7 +78,7 @@ type CLI struct {
 
 	Telegram struct {
 		BotToken               string   `name:"telegram-bot-token" help:"Telegram bot token (from @BotFather); enables the bot when set" default:"" env:"TELEGRAM_BOT_TOKEN"`
-		ChatIDs                []int64  `name:"telegram-chat-id" help:"Chat ID(s) allowed to use the bot and receive alerts (can be specified multiple times)" env:"TELEGRAM_CHAT_IDS"`
+		ChatTargets            []string `name:"telegram-chat-id" help:"Chat ID(s) allowed to use the bot and receive alerts; append :<topic_id> to target a forum topic (e.g. -100123:42)" env:"TELEGRAM_CHAT_IDS"`
 		NotifyOnRecovery       bool     `name:"telegram-notify-on-recovery" help:"Send a message when a proxy comes back online, not just when it goes down" default:"true" env:"TELEGRAM_NOTIFY_ON_RECOVERY"`
 		Commands               bool     `name:"telegram-commands" help:"Enable interactive bot commands (/status, /help)" default:"true" env:"TELEGRAM_COMMANDS_ENABLED"`
 		ManageSubscriptions    bool     `name:"telegram-manage-subscriptions" help:"Allow /addsub, /delsub and /subs so allowed chats can add or remove subscriptions at runtime" default:"true" env:"TELEGRAM_MANAGE_SUBSCRIPTIONS"`
@@ -117,7 +117,7 @@ func (c *CLI) Validate() error {
 	if c.Metrics.Protected && c.Metrics.Port != "" && c.Metrics.Port != "0" && c.Metrics.Password == "" {
 		return fmt.Errorf("METRICS_PROTECTED is true but METRICS_PASSWORD is empty. Please set a secure METRICS_PASSWORD via environment variable or --metrics-password flag")
 	}
-	if c.Telegram.BotToken != "" && len(c.Telegram.ChatIDs) == 0 {
+	if c.Telegram.BotToken != "" && len(c.Telegram.ChatTargets) == 0 {
 		return fmt.Errorf("--telegram-bot-token requires at least one --telegram-chat-id")
 	}
 	return nil

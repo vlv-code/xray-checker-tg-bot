@@ -19,19 +19,21 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		return
 	}
 
+	t := targetFromMessage(msg)
+
 	switch {
 	case strings.HasPrefix(msg.Text, "/start"), strings.HasPrefix(msg.Text, "/menu"):
-		b.replyMenu(msg.Chat.ID)
+		b.replyMenu(t)
 	case strings.HasPrefix(msg.Text, "/status"):
-		b.replyStatus(msg.Chat.ID)
+		b.replyStatus(t)
 	case strings.HasPrefix(msg.Text, "/diag"), strings.HasPrefix(msg.Text, "/check_now"):
-		go b.replyDiagnostics(msg.Chat.ID, commandArg(msg.Text))
+		go b.replyDiagnostics(t, commandArg(msg.Text))
 	case strings.HasPrefix(msg.Text, "/stats"):
-		b.replyStats(msg.Chat.ID)
+		b.replyStats(t)
 	case strings.HasPrefix(msg.Text, "/quiet"), strings.HasPrefix(msg.Text, "/sleep"):
-		b.replyQuiet(msg.Chat.ID)
+		b.replyQuiet(t)
 	case strings.HasPrefix(msg.Text, "/targets"):
-		b.replyTargets(msg.Chat.ID)
+		b.replyTargets(t)
 	case strings.HasPrefix(msg.Text, "/tz"), strings.HasPrefix(msg.Text, "/timezone"):
 		b.handleTimezoneCommand(msg)
 	case strings.HasPrefix(msg.Text, "/interval"):
@@ -41,21 +43,21 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 	case strings.HasPrefix(msg.Text, "/checkhost"):
 		go b.handleCheckHostCommand(msg)
 	case strings.HasPrefix(msg.Text, "/settings"):
-		b.replySettings(msg.Chat.ID)
+		b.replySettings(t)
 	case strings.HasPrefix(msg.Text, "/togglehost"):
 		b.handleToggleHostCommand(msg)
 	case strings.HasPrefix(msg.Text, "/togglenode"), strings.HasPrefix(msg.Text, "/disablenode"):
 		b.handleToggleNodeCommand(msg)
 	case strings.HasPrefix(msg.Text, "/digest"):
-		b.replyDigest(msg.Chat.ID)
+		b.replyDigest(t)
 	case strings.HasPrefix(msg.Text, "/subs"):
-		b.replySubs(msg.Chat.ID)
+		b.replySubs(t)
 	case strings.HasPrefix(msg.Text, "/addsub"):
 		go b.handleAddSub(msg)
 	case strings.HasPrefix(msg.Text, "/delsub"), strings.HasPrefix(msg.Text, "/removesub"):
 		go b.handleDelSub(msg)
 	case strings.HasPrefix(msg.Text, "/help"):
-		b.replyHelp(msg.Chat.ID)
+		b.replyHelp(t)
 	}
 }
 
@@ -71,8 +73,11 @@ func (b *Bot) replyCommand(msg *telego.Message, text string) {
 		WithReplyParameters(&telego.ReplyParameters{
 			MessageID: msg.MessageID,
 		})
+	if msg.MessageThreadID > 0 {
+		params = params.WithMessageThreadID(msg.MessageThreadID)
+	}
 	if _, err := b.api.SendMessage(b.ctx, params); err != nil {
-		b.send(msg.Chat.ID, text)
+		b.send(targetFromMessage(msg), text)
 	}
 }
 
@@ -166,7 +171,7 @@ func (b *Bot) handleToggleHostCommand(msg *telego.Message) {
 func (b *Bot) handleIntervalCommand(msg *telego.Message) {
 	arg := commandArg(msg.Text)
 	if arg == "" {
-		b.replyInterval(msg.Chat.ID)
+		b.replyInterval(targetFromMessage(msg))
 		return
 	}
 
@@ -189,7 +194,7 @@ func (b *Bot) handleIntervalCommand(msg *telego.Message) {
 func (b *Bot) handleTimezoneCommand(msg *telego.Message) {
 	arg := strings.TrimSpace(commandArg(msg.Text))
 	if arg == "" {
-		b.replyTimezone(msg.Chat.ID)
+		b.replyTimezone(targetFromMessage(msg))
 		return
 	}
 
@@ -206,40 +211,40 @@ func (b *Bot) handleTimezoneCommand(msg *telego.Message) {
 	b.replyCommand(msg, fmt.Sprintf("✅ Часовой пояс успешно изменён на <b>%s</b>.\nТекущее время бота: <b>%s</b>", escapeHTML(arg), b.now().Format("15:04:05 02.01.2006")))
 }
 
-func (b *Bot) replySettings(chatID int64) {
-	b.sendOrUpdateMenu(chatID, b.getSettingsText(), SettingsMenuMarkup(b.subs != nil))
+func (b *Bot) replySettings(t ChatTarget) {
+	b.sendOrUpdateMenu(t, b.getSettingsText(), SettingsMenuMarkup(b.subs != nil))
 }
 
-func (b *Bot) replyInterval(chatID int64) {
-	b.sendOrUpdateMenu(chatID, b.getIntervalText(), IntervalMenuMarkup(b.getIntervalSec()))
+func (b *Bot) replyInterval(t ChatTarget) {
+	b.sendOrUpdateMenu(t, b.getIntervalText(), IntervalMenuMarkup(b.getIntervalSec()))
 }
 
-func (b *Bot) replyMenu(chatID int64) {
-	b.sendOrUpdateMenu(chatID, b.getMenuText(), MainMenuMarkup())
+func (b *Bot) replyMenu(t ChatTarget) {
+	b.sendOrUpdateMenu(t, b.getMenuText(), MainMenuMarkup())
 }
 
-func (b *Bot) replyStatus(chatID int64) {
-	b.sendOrUpdateMenu(chatID, b.getStatusText(), StatusMenuMarkup())
+func (b *Bot) replyStatus(t ChatTarget) {
+	b.sendOrUpdateMenu(t, b.getStatusText(), StatusMenuMarkup())
 }
 
-func (b *Bot) replyStats(chatID int64) {
-	b.sendOrUpdateMenu(chatID, b.getStatsOverviewText(), StatsMenuMarkup())
+func (b *Bot) replyStats(t ChatTarget) {
+	b.sendOrUpdateMenu(t, b.getStatsOverviewText(), StatsMenuMarkup())
 }
 
-func (b *Bot) replyQuiet(chatID int64) {
-	b.sendOrUpdateMenu(chatID, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
+func (b *Bot) replyQuiet(t ChatTarget) {
+	b.sendOrUpdateMenu(t, b.getQuietHoursText(), QuietHoursMarkup(b.GetConfig()))
 }
 
-func (b *Bot) replyTargets(chatID int64) {
-	b.sendOrUpdateMenu(chatID, b.getTargetsText(), TargetsMenuMarkup())
+func (b *Bot) replyTargets(t ChatTarget) {
+	b.sendOrUpdateMenu(t, b.getTargetsText(), TargetsMenuMarkup())
 }
 
-func (b *Bot) replyTimezone(chatID int64) {
-	b.sendOrUpdateMenu(chatID, b.getTimezoneText(), TimezoneMarkup(b.GetConfig().Timezone))
+func (b *Bot) replyTimezone(t ChatTarget) {
+	b.sendOrUpdateMenu(t, b.getTimezoneText(), TimezoneMarkup(b.GetConfig().Timezone))
 }
 
-func (b *Bot) replyDiagnostics(chatID int64, arg string) {
-	sent, _ := b.sendAndReturn(chatID, "⏳ <b>Формирование детального отчёта...</b>\nПожалуйста, подождите несколько секунд...")
+func (b *Bot) replyDiagnostics(t ChatTarget, arg string) {
+	sent, _ := b.sendAndReturn(t, "⏳ <b>Формирование детального отчёта...</b>\nПожалуйста, подождите несколько секунд...")
 	reports := b.getDiagnosticsReports(true)
 	msgID := 0
 	if sent != nil {
@@ -248,19 +253,19 @@ func (b *Bot) replyDiagnostics(chatID int64, arg string) {
 
 	if b.isRichMode() || strings.ToLower(strings.TrimSpace(arg)) == "rich" {
 		rich := b.buildDiagnosticsRichMessage(reports)
-		b.showRichReport(chatID, msgID, rich)
+		b.showRichReport(t, msgID, rich)
 		return
 	}
 
 	pageText, totalPages := b.getDiagnosticsPageText(reports, 1)
 	if msgID > 0 {
-		b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(1, totalPages))
+		b.editWithMarkup(t.ChatID, msgID, pageText, DiagPaginationMarkup(1, totalPages))
 	} else {
-		b.sendWithMarkup(chatID, pageText, DiagPaginationMarkup(1, totalPages))
+		b.sendWithMarkup(t, pageText, DiagPaginationMarkup(1, totalPages))
 	}
 }
 
-func (b *Bot) replyDigest(chatID int64) {
+func (b *Bot) replyDigest(t ChatTarget) {
 	snapshot := b.source.MetricsSnapshot()
 	online := 0
 	totalActive := 0
@@ -282,7 +287,7 @@ func (b *Bot) replyDigest(chatID int64) {
 		text += fmt.Sprintf("• Средний аптайм: <b>%.1f%%</b>\n", avg)
 	}
 
-	b.sendWithMarkup(chatID, text, BackToMenuMarkup())
+	b.sendWithMarkup(t, text, BackToMenuMarkup())
 }
 
 func (b *Bot) sendMorningDigest(now time.Time) {
@@ -326,8 +331,8 @@ func (b *Bot) sendDaytimeDigest(now time.Time) {
 	if b.isRichMode() {
 		reports := b.getDiagnosticsReports(false)
 		rich := b.buildDiagnosticsRichMessage(reports)
-		for chatID := range b.allowedChatIDs {
-			b.showRichReport(chatID, 0, rich)
+		for _, t := range b.targets {
+			b.showRichReport(t, 0, rich)
 		}
 		return
 	}
@@ -352,7 +357,7 @@ func (b *Bot) sendDaytimeDigest(now time.Time) {
 	b.broadcast(text)
 }
 
-func (b *Bot) replyHelp(chatID int64) {
+func (b *Bot) replyHelp(t ChatTarget) {
 	text := "🤖 <b>Xray Checker Bot — справка</b>\n\n" +
 		"/menu — главное интерактивное меню\n" +
 		"/status — статус всех прокси-хостов\n" +
@@ -373,5 +378,5 @@ func (b *Bot) replyHelp(chatID int64) {
 	}
 	text += "/help — эта справка\n\n" +
 		"🔔 Уведомления о сбоях отправляются автоматически."
-	b.sendOrUpdateMenu(chatID, text, MainMenuMarkup())
+	b.sendOrUpdateMenu(t, text, MainMenuMarkup())
 }

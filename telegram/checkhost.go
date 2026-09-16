@@ -25,9 +25,10 @@ func (b *Bot) getCheckHostMenuText() string {
 }
 
 func (b *Bot) handleCheckHostCommand(msg *telego.Message) {
+	t := targetFromMessage(msg)
 	target := commandArg(msg.Text)
 	if target == "" {
-		b.send(msg.Chat.ID, "💡 <b>Использование:</b> <code>/checkhost &lt;хост[:порт]&gt;</code>\n\n"+
+		b.send(t, "💡 <b>Использование:</b> <code>/checkhost &lt;хост[:порт]&gt;</code>\n\n"+
 			"Примеры:\n"+
 			"• <code>/checkhost 185.120.45.10:443</code>\n"+
 			"• <code>/checkhost mydomain.com</code>\n\n"+
@@ -39,7 +40,7 @@ func (b *Bot) handleCheckHostCommand(msg *telego.Message) {
 		target = target + ":443"
 	}
 
-	sentMsg, _ := b.sendAndReturn(msg.Chat.ID, fmt.Sprintf("⏳ <b>Запрос отправлен в Check-Host.net...</b>\n"+
+	sentMsg, _ := b.sendAndReturn(t, fmt.Sprintf("⏳ <b>Запрос отправлен в Check-Host.net...</b>\n"+
 		"Проверяем <code>%s</code> (TCP) по глобальной сети узлов (РФ, Европа, США, Азия)...\n"+
 		"Пожалуйста, подождите 4–6 секунд...", escapeHTML(target)))
 
@@ -51,18 +52,18 @@ func (b *Bot) handleCheckHostCommand(msg *telego.Message) {
 	if err != nil {
 		errMsg := fmt.Sprintf("❌ <b>Ошибка Check-Host:</b> %s", escapeHTML(err.Error()))
 		if sentMsg != nil {
-			b.editWithMarkup(msg.Chat.ID, sentMsg.GetMessageID(), errMsg, nil)
+			b.editWithMarkup(t.ChatID, sentMsg.GetMessageID(), errMsg, nil)
 		} else {
-			b.send(msg.Chat.ID, errMsg)
+			b.send(t, errMsg)
 		}
 		return
 	}
 
 	report := checker.FormatCheckHostReport(summary)
 	if sentMsg != nil {
-		b.editWithMarkup(msg.Chat.ID, sentMsg.GetMessageID(), report, nil)
+		b.editWithMarkup(t.ChatID, sentMsg.GetMessageID(), report, nil)
 	} else {
-		b.send(msg.Chat.ID, report)
+		b.send(t, report)
 	}
 }
 
@@ -135,10 +136,11 @@ func (b *Bot) getCheckHostSettingsText() string {
 }
 
 func (b *Bot) handleCheckHostBgCommand(msg *telego.Message) {
+	t := targetFromMessage(msg)
 	arg := strings.TrimSpace(commandArg(msg.Text))
 	cfg := b.GetConfig()
 	if arg == "" {
-		b.sendWithMarkup(msg.Chat.ID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(cfg))
+		b.sendWithMarkup(t, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(cfg))
 		return
 	}
 
@@ -147,24 +149,24 @@ func (b *Bot) handleCheckHostBgCommand(msg *telego.Message) {
 		_ = b.updateConfig(func(c *BotConfig) {
 			c.CheckHostBgEnabled = true
 		})
-		b.send(msg.Chat.ID, "✅ Фоновая проверка Check-Host <b>включена</b>.")
+		b.send(t, "✅ Фоновая проверка Check-Host <b>включена</b>.")
 	case "off", "disable", "0":
 		_ = b.updateConfig(func(c *BotConfig) {
 			c.CheckHostBgEnabled = false
 		})
-		b.send(msg.Chat.ID, "❌ Фоновая проверка Check-Host <b>выключена</b>.")
+		b.send(t, "❌ Фоновая проверка Check-Host <b>выключена</b>.")
 	case "alert_on", "alerts_on":
 		_ = b.updateConfig(func(c *BotConfig) {
 			c.CheckHostAlertEnabled = true
 		})
-		b.send(msg.Chat.ID, "🔔 Алерты по недоступности из РФ <b>включены</b>.")
+		b.send(t, "🔔 Алерты по недоступности из РФ <b>включены</b>.")
 	case "alert_off", "alerts_off":
 		_ = b.updateConfig(func(c *BotConfig) {
 			c.CheckHostAlertEnabled = false
 		})
-		b.send(msg.Chat.ID, "🔕 Алерты по недоступности из РФ <b>выключены</b>.")
+		b.send(t, "🔕 Алерты по недоступности из РФ <b>выключены</b>.")
 	case "run", "now":
-		b.send(msg.Chat.ID, "🚀 Запуск фоновой проверки Check-Host...")
+		b.send(t, "🚀 Запуск фоновой проверки Check-Host...")
 		go b.RunCheckHostAudit()
 	default:
 		cleanArg := strings.TrimSuffix(strings.ToLower(arg), "h")
@@ -173,9 +175,9 @@ func (b *Bot) handleCheckHostBgCommand(msg *telego.Message) {
 			_ = b.updateConfig(func(c *BotConfig) {
 				c.CheckHostIntervalHours = hours
 			})
-			b.send(msg.Chat.ID, fmt.Sprintf("⏱️ Интервал фонового Check-Host установлен на <b>каждые %d ч.</b>", hours))
+			b.send(t, fmt.Sprintf("⏱️ Интервал фонового Check-Host установлен на <b>каждые %d ч.</b>", hours))
 		} else {
-			b.send(msg.Chat.ID, "Использование: <code>/checkhost_bg [on|off|alert_on|alert_off|1h|2h|run]</code>")
+			b.send(t, "Использование: <code>/checkhost_bg [on|off|alert_on|alert_off|1h|2h|run]</code>")
 		}
 	}
 }
@@ -292,8 +294,8 @@ func (b *Bot) RunCheckHostAudit() {
 			}
 			isQuiet := IsQuietTime(now, cfg)
 
-			for _, chatID := range b.chatIDs {
-				if b.tracker.HasAlert(chatID, 0, alertKey) {
+			for _, ct := range b.targets {
+				if b.tracker.HasAlert(ct.ChatID, ct.ThreadID, alertKey) {
 					continue
 				}
 
@@ -320,15 +322,15 @@ func (b *Bot) RunCheckHostAudit() {
 						Reason:    "Недоступен из РФ",
 					})
 				} else {
-					if sent, err := b.sendAndReturn(chatID, alertText); err == nil {
-						b.tracker.Track(chatID, 0, sent.MessageID, alertKey, target.proxyName, now, "CheckHost RU Block")
+					if sent, err := b.sendAndReturn(ct, alertText); err == nil {
+						b.tracker.Track(ct.ChatID, ct.ThreadID, sent.MessageID, alertKey, target.proxyName, now, "CheckHost RU Block")
 					}
 				}
 			}
 		} else {
 			// RU is available: resolve any previous alert
-			for _, chatID := range b.chatIDs {
-				alert, hadAlert := b.tracker.Resolve(chatID, 0, alertKey)
+			for _, ct := range b.targets {
+				alert, hadAlert := b.tracker.Resolve(ct.ChatID, ct.ThreadID, alertKey)
 				if !hadAlert {
 					continue
 				}
@@ -337,7 +339,7 @@ func (b *Bot) RunCheckHostAudit() {
 				if cfg.AlertMode == AlertModeClean {
 					if b.api != nil {
 						_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-							ChatID:    tu.ID(chatID),
+							ChatID:    tu.ID(ct.ChatID),
 							MessageID: alert.MessageID,
 						})
 					}
@@ -347,7 +349,7 @@ func (b *Bot) RunCheckHostAudit() {
 						if downtime > 0 {
 							recText += fmt.Sprintf("\n• Был недоступен: <b>%s</b>", FormatDowntime(downtime))
 						}
-						if sent, err := b.sendAndReturn(chatID, recText); err == nil {
+						if sent, err := b.sendAndReturn(ct, recText); err == nil {
 							go func(cID int64, mID int) {
 								time.Sleep(2 * time.Minute)
 								if b.api != nil {
@@ -356,7 +358,7 @@ func (b *Bot) RunCheckHostAudit() {
 										MessageID: mID,
 									})
 								}
-							}(chatID, sent.MessageID)
+							}(ct.ChatID, sent.MessageID)
 						}
 					}
 				} else { // AlertModeLive
@@ -364,7 +366,7 @@ func (b *Bot) RunCheckHostAudit() {
 						liveText := fmt.Sprintf("✅ <b>[Check-Host] Доступность из РФ восстановилась</b>\n\n• Сервер: <code>%s</code> <i>(%s)</i> (был недоступен %s)",
 							escapeHTML(target.targetAddr), escapeHTML(target.proxyName), FormatDowntime(downtime))
 						params := &telego.EditMessageTextParams{
-							ChatID:    tu.ID(chatID),
+							ChatID:    tu.ID(ct.ChatID),
 							MessageID: alert.MessageID,
 							Text:      liveText,
 							ParseMode: telego.ModeHTML,

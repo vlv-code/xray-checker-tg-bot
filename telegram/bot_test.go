@@ -514,7 +514,7 @@ func TestBot_RunCheckHostAudit_RUBlock(t *testing.T) {
 		source:          ms,
 		configMgr:       cm,
 		tracker:         tracker,
-		chatIDs:         []int64{12345},
+		targets:         []ChatTarget{{ChatID: 12345}},
 		checkHostClient: chClient,
 		checkHostNodes:  []string{"ru2.node.check-host.net", "de1.node.check-host.net"},
 		ctx:             context.Background(),
