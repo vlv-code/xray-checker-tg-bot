@@ -166,7 +166,7 @@ docker compose up -d --build
 | Variable | Default | Description |
 |---|---|---|
 | `SUBSCRIPTION_URL` | `""` | Proxy subscription link(s) (Base64/JSON URLs, share links) |
-| `SUBSCRIPTION_STORE_PATH` | `/app/data/subscriptions.json` | Persistent storage path for `/addsub` subscriptions |
+| `SUBSCRIPTION_STORE_PATH` | `subscriptions.json` | Persistent storage path for `/addsub` subscriptions |
 | `TELEGRAM_BOT_TOKEN` | `""` | Telegram bot token from @BotFather (enables the bot) |
 | `TELEGRAM_CHAT_IDS` | `""` | Comma-separated list of authorized Telegram chat IDs |
 | `TELEGRAM_ALERT_MODE` | `clean` | Alert mode: `clean` (auto-deletes) or `live` (edits outage alert) |
@@ -174,13 +174,13 @@ docker compose up -d --build
 | `CHECKHOST_BG_ENABLED` | `true` | Periodic background Reachability audit via Check-Host.net |
 | `CHECKHOST_INTERVAL_HOURS` | `1` | Background Check-Host audit interval in hours (1, 2, 4, 6, 12) |
 | `CHECKHOST_ALERT_ENABLED` | `true` | Send Telegram alert if a node is unreachable from Russia |
-| `ALERT_STORE_PATH` | `/app/data/alerts.json` | Persistent storage path for active alerts (anti-flapping across restarts) |
+| `ALERT_STORE_PATH` | `alerts.json` | Persistent storage path for active alerts (anti-flapping across restarts) |
 | `TELEGRAM_QUIET_HOURS_ENABLED`| `true` | Suppress alert sound pings overnight |
 | `TELEGRAM_QUIET_HOURS_START`  | `23:00` | Start of quiet hours (HH:MM) |
 | `TELEGRAM_QUIET_HOURS_END`    | `08:00` | End of quiet hours (HH:MM) and morning digest trigger |
 | `TELEGRAM_DAY_DIGEST_ENABLED` | `true` | Send periodic daytime health summaries |
-| `STATS_STORE_PATH` | `/app/data/stats.json` | Persistent storage path for outage history and stats |
-| `BOT_CONFIG_STORE_PATH` | `/app/data/bot_config.json` | Persistent storage path for runtime bot settings (including disabled nodes) |
+| `STATS_STORE_PATH` | `stats.json` | Persistent storage path for outage history and stats |
+| `BOT_CONFIG_STORE_PATH` | `bot_config.json` | Persistent storage path for runtime bot settings (including disabled nodes) |
 | `PROXY_CHECK_INTERVAL` | `300` | Check interval in seconds (also tunable via `/interval`) |
 | `PROXY_TARGET_URLS` | Cloudflare/Google 204 | Custom fallback endpoints for checking proxy availability |
 | `WEB_ENABLED` | `true` | Enable web dashboard panel (`false` for headless mode) |
@@ -189,6 +189,12 @@ docker compose up -d --build
 | `METRICS_USERNAME` | `admin` | Web UI login username |
 | `METRICS_PASSWORD` | — | Web UI login password |
 | `HTTP_PROXY` / `ALL_PROXY` | `""` | Outbound proxy (`socks5://...` or `http://...`) for Telegram and external APIs |
+
+> [!NOTE]
+> The **Default** column shows the code default applied when a variable is unset. The bundled
+> `.env.example` pins the store paths to `/app/data/*.json` so that state survives Docker
+> container rebuilds (only `/app/data` and `/app/geo` are bind-mounted in
+> `docker-compose.example.yml`). Keep those overrides if you deploy via Docker Compose.
 
 ### Outbound Proxy (for restricted networks)
 If your server is in an environment where Telegram API is blocked (e.g. Russian VPS), configure SOCKS5 or HTTP outbound proxy variables in `.env`:

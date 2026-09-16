@@ -167,7 +167,7 @@ docker compose up -d --build
 | Переменная | По умолчанию | Описание |
 |---|---|---|
 | `SUBSCRIPTION_URL` | `""` | Ссылка на подписку (Base64/JSON URL, share-ссылки) |
-| `SUBSCRIPTION_STORE_PATH` | `/app/data/subscriptions.json` | Файл сохранения подписок, добавленных через `/addsub` |
+| `SUBSCRIPTION_STORE_PATH` | `subscriptions.json` | Файл сохранения подписок, добавленных через `/addsub` |
 | `TELEGRAM_BOT_TOKEN` | `""` | Токен Telegram-бота от @BotFather (включает бота) |
 | `TELEGRAM_CHAT_IDS` | `""` | Список Chat ID через запятую, допущенных к боту |
 | `TELEGRAM_ALERT_MODE` | `clean` | Режим алертов: `clean` (автоочистка) или `live` (редактирование сообщения) |
@@ -175,13 +175,13 @@ docker compose up -d --build
 | `CHECKHOST_BG_ENABLED` | `true` | Фоновый периодический аудит всех хостов из подписок через Check-Host.net |
 | `CHECKHOST_INTERVAL_HOURS` | `1` | Интервал фонового Check-Host аудита в часах (1, 2, 4, 6, 12) |
 | `CHECKHOST_ALERT_ENABLED` | `true` | Отправлять предупреждение в бота, если нода недоступна из РФ |
-| `ALERT_STORE_PATH` | `/app/data/alerts.json` | Файл сохранения активных алертов (анти-флаппинг при рестартах) |
+| `ALERT_STORE_PATH` | `alerts.json` | Файл сохранения активных алертов (анти-флаппинг при рестартах) |
 | `TELEGRAM_QUIET_HOURS_ENABLED`| `true` | Включить тихий ночной режим (без звуковых алертов) |
 | `TELEGRAM_QUIET_HOURS_START`  | `23:00` | Начало тихого режима (HH:MM) |
 | `TELEGRAM_QUIET_HOURS_END`    | `08:00` | Окончание тихого режима (HH:MM) и утренняя сводка |
 | `TELEGRAM_DAY_DIGEST_ENABLED` | `true` | Периодические дневные сводки |
-| `STATS_STORE_PATH` | `/app/data/stats.json` | Файл сохранения истории инцидентов и аптайма |
-| `BOT_CONFIG_STORE_PATH` | `/app/data/bot_config.json` | Файл сохранения настроек бота (интервал, тихий режим, список отключённых нод) |
+| `STATS_STORE_PATH` | `stats.json` | Файл сохранения истории инцидентов и аптайма |
+| `BOT_CONFIG_STORE_PATH` | `bot_config.json` | Файл сохранения настроек бота (интервал, тихий режим, список отключённых нод) |
 | `PROXY_CHECK_INTERVAL` | `300` | Интервал проверок в секундах (настраивается также через `/interval`) |
 | `PROXY_TARGET_URLS` | Cloudflare/Google 204 | Резервные целевые сервисы для проверки прокси |
 | `WEB_ENABLED` | `true` | Включить веб-панель (установите `false` для headless-режима) |
@@ -190,6 +190,12 @@ docker compose up -d --build
 | `METRICS_USERNAME` | `admin` | Логин для веб-панели |
 | `METRICS_PASSWORD` | — | Пароль для веб-панели |
 | `HTTP_PROXY` / `ALL_PROXY` | `""` | Исходящий прокси (`socks5://...` или `http://...`) для Telegram и API |
+
+> [!NOTE]
+> Колонка «По умолчанию» показывает дефолт из кода, применяемый когда переменная не задана.
+> Поставляемый `.env.example` закрепляет пути хранения в `/app/data/*.json`, чтобы состояние
+> переживало пересборку контейнера (в `docker-compose.example.yml` монтируются только
+> `/app/data` и `/app/geo`). При деплое через Docker Compose сохраняйте эти переопределения.
 
 ### Работа через исходящий прокси (для серверов в РФ)
 Если Telegram API заблокирован на сервере (например, на российских VPS), укажите SOCKS5/HTTP-прокси в `.env`:
