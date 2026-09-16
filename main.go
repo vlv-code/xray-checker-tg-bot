@@ -324,9 +324,14 @@ func main() {
 				alertTracker = telegram.NewAlertTracker(config.CLIConfig.Telegram.AlertStorePath)
 			}
 
+			chatTargets, err := telegram.ParseChatTargets(config.CLIConfig.Telegram.ChatTargets)
+			if err != nil {
+				logger.Fatal("Invalid TELEGRAM_CHAT_IDS entry: %v", err)
+			}
+
 			if bot, err := telegram.New(
 				config.CLIConfig.Telegram.BotToken,
-				config.CLIConfig.Telegram.ChatIDs,
+				chatTargets,
 				proxyChecker,
 				config.CLIConfig.Telegram.NotifyOnRecovery,
 				config.CLIConfig.Telegram.Commands,

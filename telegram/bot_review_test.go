@@ -157,16 +157,16 @@ func TestBot_BuildAddSubReport(t *testing.T) {
 
 func TestBot_SendOrUpdateMenu_TracksLastMessage(t *testing.T) {
 	b := &Bot{
-		lastMenuMsg: make(map[int64]int),
+		lastMenuMsg: make(map[string]int),
 	}
 
 	// First call simulates sending a menu (mock returns MessageID: 0 or we set directly)
 	b.lastMenuMu.Lock()
-	b.lastMenuMsg[12345] = 42
+	b.lastMenuMsg["12345"] = 42
 	b.lastMenuMu.Unlock()
 
 	b.lastMenuMu.Lock()
-	got := b.lastMenuMsg[12345]
+	got := b.lastMenuMsg["12345"]
 	b.lastMenuMu.Unlock()
 
 	if got != 42 {

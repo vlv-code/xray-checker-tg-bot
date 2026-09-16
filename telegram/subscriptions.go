@@ -39,6 +39,7 @@ type SubscriptionManager interface {
 
 func (b *Bot) handleAddSub(msg *telego.Message) {
 	chatID := msg.Chat.ID
+	t := targetFromMessage(msg)
 	url := commandArg(msg.Text)
 	if url == "" {
 		b.replyCommand(msg, "Использование: /addsub &lt;URL подписки&gt;")
@@ -49,7 +50,7 @@ func (b *Bot) handleAddSub(msg *telego.Message) {
 		return
 	}
 
-	sent, _ := b.sendAndReturn(chatID, "⏳ Проверка и добавление подписки…")
+	sent, _ := b.sendAndReturn(t, "⏳ Проверка и добавление подписки…")
 	placeholderID := 0
 	if sent != nil {
 		placeholderID = sent.GetMessageID()
@@ -98,8 +99,8 @@ func (b *Bot) handleDelSub(msg *telego.Message) {
 	b.replyCommand(msg, fmt.Sprintf("✅ Подписка удалена. Прокси-хостов: %d", count))
 }
 
-func (b *Bot) replySubs(chatID int64) {
-	b.sendOrUpdateMenu(chatID, b.getSubsText(), BackToSettingsMarkup())
+func (b *Bot) replySubs(t ChatTarget) {
+	b.sendOrUpdateMenu(t, b.getSubsText(), BackToSettingsMarkup())
 }
 
 // commandArg returns the first whitespace-separated argument after a

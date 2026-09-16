@@ -349,7 +349,7 @@ Telegram bot token obtained from [@BotFather](https://t.me/BotFather). Setting t
 - Required: Yes (when `TELEGRAM_BOT_TOKEN` is set)
 - Default: None
 
-Chat ID(s) allowed to receive alerts and execute interactive commands. Can be specified multiple times via CLI or as comma-separated values in the environment variable.
+Delivery targets for alerts, digests and interactive commands: `<chat_id>` for a whole chat (the General topic in forum groups) or `<chat_id>:<topic_id>` for a single forum topic (e.g. `-100987654321:42`). Can be specified multiple times via CLI or as comma-separated values in the environment variable. Run `/id` inside a chat or topic to get a ready-made entry. Every target receives its own copy of alerts and digests; commands reply in the chat or topic where they were invoked.
 
 ### TELEGRAM_NOTIFY_ON_RECOVERY
 

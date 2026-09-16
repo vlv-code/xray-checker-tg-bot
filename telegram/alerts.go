@@ -17,7 +17,7 @@ type deleteAction struct {
 }
 
 type recoveryAction struct {
-	chatID    int64
+	target    ChatTarget
 	pm        metrics.ProxyMetric
 	alert     *ActiveAlert
 	hadAlert  bool
@@ -49,8 +49,8 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				}
 			}
 			if pm.Online {
-				for _, chatID := range b.chatIDs {
-					b.tracker.Resolve(chatID, pm.StableID)
+				for _, t := range b.targets {
+					b.tracker.Resolve(t.ChatID, t.ThreadID, pm.StableID)
 				}
 			}
 		}
@@ -67,9 +67,9 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 	for _, pm := range snapshot {
 		if pm.Disabled {
 			// Proxy is disabled: resolve/clean any active alerts and ignore
-			for _, chatID := range b.chatIDs {
-				if alert, hadAlert := b.tracker.Resolve(chatID, pm.StableID); hadAlert {
-					disabledDeletions = append(disabledDeletions, deleteAction{chatID: chatID, messageID: alert.MessageID})
+			for _, t := range b.targets {
+				if alert, hadAlert := b.tracker.Resolve(t.ChatID, t.ThreadID, pm.StableID); hadAlert {
+					disabledDeletions = append(disabledDeletions, deleteAction{chatID: t.ChatID, messageID: alert.MessageID})
 				}
 			}
 			delete(b.lastSeen, pm.StableID)
@@ -134,13 +134,13 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 					Downtime:  downtime,
 				})
 			} else {
-				for _, chatID := range b.chatIDs {
-					alert, hadAlert := b.tracker.Resolve(chatID, pm.StableID)
+				for _, t := range b.targets {
+					alert, hadAlert := b.tracker.Resolve(t.ChatID, t.ThreadID, pm.StableID)
 					if hadAlert && alert != nil && !alert.DownAt.IsZero() {
 						downtime = now.Sub(alert.DownAt)
 					}
 					recoveries = append(recoveries, recoveryAction{
-						chatID:    chatID,
+						target:    t,
 						pm:        pm,
 						alert:     alert,
 						hadAlert:  hadAlert,
@@ -196,24 +196,24 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 			flapNote = fmt.Sprintf("\n⚠️ <i>Частые сбои (%d за 24ч). Алерты приостановлены на 15 мин.</i>", b.statsStore.GetFlapCount24h(pm.StableID, now))
 		}
 		outageText := fmt.Sprintf("🔴 <b>%s</b> — не отвечает%s\n⏱ %s · %d-й сбой\n%s%s", escapeHTML(pm.Name), softHint, timeStr, dropCount, escapeHTML(pm.Address), flapNote)
-		for _, chatID := range b.chatIDs {
-			if b.tracker.HasAlert(chatID, pm.StableID) {
+		for _, t := range b.targets {
+			if b.tracker.HasAlert(t.ChatID, t.ThreadID, pm.StableID) {
 				continue
 			}
-			if sent, err := b.sendAndReturn(chatID, outageText); err == nil && sent != nil && sent.MessageID != 0 {
+			if sent, err := b.sendAndReturn(t, outageText); err == nil && sent != nil && sent.MessageID != 0 {
 				b.mu.Lock()
 				stillDown := !b.lastSeen[pm.StableID]
 				b.mu.Unlock()
 				if !stillDown {
 					if b.api != nil {
 						_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-							ChatID:    tu.ID(chatID),
+							ChatID:    tu.ID(t.ChatID),
 							MessageID: sent.MessageID,
 						})
 					}
 					continue
 				}
-				b.tracker.Track(chatID, sent.MessageID, pm.StableID, pm.Name, now, "Offline")
+				b.tracker.Track(t.ChatID, t.ThreadID, sent.MessageID, pm.StableID, pm.Name, now, "Offline")
 			}
 		}
 	}
@@ -223,7 +223,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 		if rec.alertMode == AlertModeClean {
 			if rec.hadAlert && b.api != nil {
 				_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-					ChatID:    tu.ID(rec.chatID),
+					ChatID:    tu.ID(rec.target.ChatID),
 					MessageID: rec.alert.MessageID,
 				})
 			}
@@ -232,8 +232,8 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				if rec.downtime > 0 {
 					recoveryText += fmt.Sprintf(" (простой: %s)", FormatDowntime(rec.downtime))
 				}
-				if sent, err := b.sendAndReturn(rec.chatID, recoveryText); err == nil && sent != nil && sent.MessageID != 0 {
-					cID := rec.chatID
+				if sent, err := b.sendAndReturn(rec.target, recoveryText); err == nil && sent != nil && sent.MessageID != 0 {
+					cID := rec.target.ChatID
 					mID := sent.MessageID
 					time.AfterFunc(2*time.Minute, func() {
 						if b.api != nil {
@@ -250,7 +250,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				liveText := fmt.Sprintf("✅ <b>%s</b> восстановлен — %.0f ms (простой: %s)",
 					escapeHTML(rec.pm.Name), rec.pm.LatencyMs, FormatDowntime(rec.downtime))
 				params := &telego.EditMessageTextParams{
-					ChatID:    tu.ID(rec.chatID),
+					ChatID:    tu.ID(rec.target.ChatID),
 					MessageID: rec.alert.MessageID,
 					Text:      liveText,
 					ParseMode: telego.ModeHTML,
@@ -258,7 +258,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				_, _ = b.api.EditMessageText(b.ctx, params)
 			} else if b.notifyOnRecovery {
 				recoveryText := fmt.Sprintf("✅ <b>%s</b> восстановлен — %.0f ms", escapeHTML(rec.pm.Name), rec.pm.LatencyMs)
-				b.send(rec.chatID, recoveryText)
+				b.send(rec.target, recoveryText)
 			}
 		}
 	}

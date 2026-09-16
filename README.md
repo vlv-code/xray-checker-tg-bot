@@ -56,7 +56,25 @@ All features are accessible via the interactive **`/menu`** or direct chat comma
 | `/addsub <URL>` | Dynamically add a new subscription URL without restarting |
 | `/delsub <URL>` | Remove a previously added dynamic subscription |
 | `/digest` | Trigger an immediate status digest in chat |
+| `/id` | Print this chat's `chat_id` and `topic_id` for `TELEGRAM_CHAT_IDS` |
 | `/help` | Display quick help summary |
+
+### Groups and Forum Topics
+
+The bot serves private chats, plain groups and forum supergroups. Each `TELEGRAM_CHAT_IDS` entry is an independent delivery target:
+
+* `123456789` — a private chat or a whole group (the General topic in forum groups)
+* `-100987654321:42` — topic `42` of a forum supergroup
+
+Every target receives its own copy of alerts, recovery notes and digests, and commands always reply in the chat or topic where they were invoked.
+
+**Setup:**
+
+1. Add the bot to the group and allow it to send messages.
+2. Run `/id` in the group or in a specific topic — it replies with a ready-to-paste `TELEGRAM_CHAT_IDS` entry.
+3. Put that value into `.env` and restart.
+
+**Privacy mode.** By default Telegram bots in groups only see commands that mention the bot (for example `/menu@YourBot`) and replies to its messages; outgoing alerts are not affected. To use short commands like `/menu`, disable privacy via [@BotFather](https://t.me/BotFather) (`/mybots` → Bot Settings → Group Privacy → Off, then remove and re-add the bot to existing groups), or simply make the bot a group admin.
 
 ---
 
@@ -129,7 +147,7 @@ nano .env
 Fill in the essential variables:
 * `SUBSCRIPTION_URL` — your proxy subscription link.
 * `TELEGRAM_BOT_TOKEN` — bot token from [@BotFather](https://t.me/BotFather).
-* `TELEGRAM_CHAT_IDS` — your Telegram user ID or group ID.
+* `TELEGRAM_CHAT_IDS` — your Telegram user ID, group ID, or `group:topic` (see [Groups and Forum Topics](#groups-and-forum-topics)).
 
 ### 3. Start with Docker Compose
 ```bash
@@ -168,7 +186,7 @@ docker compose up -d --build
 | `SUBSCRIPTION_URL` | `""` | Proxy subscription link(s) (Base64/JSON URLs, share links) |
 | `SUBSCRIPTION_STORE_PATH` | `subscriptions.json` | Persistent storage path for `/addsub` subscriptions |
 | `TELEGRAM_BOT_TOKEN` | `""` | Telegram bot token from @BotFather (enables the bot) |
-| `TELEGRAM_CHAT_IDS` | `""` | Comma-separated list of authorized Telegram chat IDs |
+| `TELEGRAM_CHAT_IDS` | `""` | Comma-separated delivery targets: chat IDs and `chat:topic` forum topics (e.g. `-100987654321:42`) |
 | `TELEGRAM_ALERT_MODE` | `clean` | Alert mode: `clean` (auto-deletes) or `live` (edits outage alert) |
 | `TELEGRAM_RICH_MODE`  | `false` | Enable Telegram Bot API 10.1 rich messages for diagnostics (table + collapsible details) |
 | `CHECKHOST_BG_ENABLED` | `true` | Periodic background Reachability audit via Check-Host.net |
