@@ -56,6 +56,8 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		go b.handleAddSub(msg)
 	case strings.HasPrefix(msg.Text, "/delsub"), strings.HasPrefix(msg.Text, "/removesub"):
 		go b.handleDelSub(msg)
+	case strings.HasPrefix(msg.Text, "/id"):
+		b.replyID(msg)
 	case strings.HasPrefix(msg.Text, "/help"):
 		b.replyHelp(t)
 	}
@@ -79,6 +81,30 @@ func (b *Bot) replyCommand(msg *telego.Message, text string) {
 	if _, err := b.api.SendMessage(b.ctx, params); err != nil {
 		b.send(targetFromMessage(msg), text)
 	}
+}
+
+// replyID reports the identifiers of the chat the command was issued in so
+// operators can fill TELEGRAM_CHAT_IDS without digging through deep links.
+func (b *Bot) replyID(msg *telego.Message) {
+	if msg == nil {
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("🆔 <b>Идентификаторы этого чата</b>\n\n")
+	fmt.Fprintf(&sb, "• chat_id: <code>%d</code>\n", msg.Chat.ID)
+	if msg.Chat.Title != "" {
+		fmt.Fprintf(&sb, "• Название: %s\n", escapeHTML(msg.Chat.Title))
+	}
+
+	if msg.MessageThreadID > 0 {
+		fmt.Fprintf(&sb, "• topic_id: <code>%d</code>\n", msg.MessageThreadID)
+		fmt.Fprintf(&sb, "\nЧтобы бот писал в этот топик, добавьте в <code>TELEGRAM_CHAT_IDS</code>:\n<code>%d:%d</code>", msg.Chat.ID, msg.MessageThreadID)
+	} else {
+		fmt.Fprintf(&sb, "\nЧтобы бот писал в этот чат, добавьте в <code>TELEGRAM_CHAT_IDS</code>:\n<code>%d</code>", msg.Chat.ID)
+	}
+
+	b.send(targetFromMessage(msg), sb.String())
 }
 
 func (b *Bot) handleToggleNodeCommand(msg *telego.Message) {
@@ -370,7 +396,8 @@ func (b *Bot) replyHelp(t ChatTarget) {
 		"/interval [сек] — интервал проверок прокси-хостов\n" +
 		"/quiet — настройки тихого режима\n" +
 		"/tz [пояс] — часовой пояс бота (Europe/Moscow, UTC и др.)\n" +
-		"/targets — список целевых серверов проверки\n"
+		"/targets — список целевых серверов проверки\n" +
+		"/id — ID чата и топика (для TELEGRAM_CHAT_IDS)\n"
 	if b.subs != nil {
 		text += "/subs — список подписок\n" +
 			"/addsub &lt;URL&gt; — добавить подписку\n" +

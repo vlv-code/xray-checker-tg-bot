@@ -295,6 +295,7 @@ func (b *Bot) setupBotMenuButton() {
 		{Command: "checkhost", Description: "Проверка Check-Host"},
 		{Command: "settings", Description: "Настройки бота"},
 		{Command: "status", Description: "Статус прокси-хостов"},
+		{Command: "id", Description: "ID чата и топика для настроек"},
 	}
 	_ = b.api.SetMyCommands(b.ctx, &telego.SetMyCommandsParams{
 		Commands: commands,
