@@ -314,8 +314,11 @@ func ProbeNodeHealth(server string, port int, protocol string, security string, 
 			}
 			var netErr net.Error
 			if errors.As(rErr, &netErr) && netErr.Timeout() {
-				health.UDPErr = "no response (timeout)"
-				health.UDPPing = 0
+				// Silence after a garbage datagram is EXPECTED from QUIC
+				// (Hysteria2/TUIC) and WireGuard servers — they drop invalid
+				// packets without answering. A timeout proves nothing either
+				// way, so report it as inconclusive (no error, no ping)
+				// instead of condemning healthy nodes.
 				return health
 			}
 			health.UDPErr = simplifyError(rErr)

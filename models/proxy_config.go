@@ -285,7 +285,9 @@ func (pc *ProxyConfig) DebugString() string {
 
 	switch pc.Protocol {
 	case "vless", "vmess":
-		sb.WriteString(fmt.Sprintf("      UUID:     %s\n", pc.UUID))
+		// The UUID is the bearer credential of the connection; debug dumps
+		// must mask it like any other secret.
+		sb.WriteString(fmt.Sprintf("      UUID:     %s\n", maskSecret(pc.UUID)))
 		if pc.Protocol == "vmess" {
 			sb.WriteString(fmt.Sprintf("      AlterId:  %d\n", pc.GetAlterId()))
 		}
@@ -395,8 +397,14 @@ func (pc *ProxyConfig) DebugString() string {
 }
 
 func maskSecret(s string) string {
-	if len(s) <= 4 {
-		return "****"
+	if s == "" {
+		return ""
 	}
-	return s[:2] + "****" + s[len(s)-2:]
+	runes := []rune(s)
+	// Short secrets stay fully masked: showing first/last characters would
+	// reveal most of a 5-8 character password.
+	if len(runes) <= 8 {
+		return "********"
+	}
+	return string(runes[:2]) + "****" + string(runes[len(runes)-2:])
 }

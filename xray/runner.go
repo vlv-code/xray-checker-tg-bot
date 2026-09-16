@@ -64,6 +64,10 @@ func (r *Runner) Start() error {
 	}
 
 	if err := instance.Start(); err != nil {
+		// core.New allocates listeners/features that only Close() releases;
+		// a failed Start must not strand them (updateConfiguration retries
+		// Start on the next subscription reload).
+		instance.Close()
 		return fmt.Errorf("error starting Xray: %v", err)
 	}
 
