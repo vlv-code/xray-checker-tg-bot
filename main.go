@@ -413,8 +413,18 @@ func main() {
 	protectedHandler.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 
 	if config.CLIConfig.Web.Enabled {
-		mux.Handle("/static/", web.StaticHandler())
-		mux.Handle("/api/v1/public/proxies", web.APIPublicProxiesHandler(proxyChecker))
+		// The status page's assets and public API stay unauthenticated only in
+		// --web-public mode. Otherwise they mount on the protected mux below:
+		// /api/v1/public/proxies is an exact-match route that would otherwise
+		// bypass the basic-auth wrapper mounted at "/" and leak the proxy list
+		// of a private deployment.
+		if config.CLIConfig.Web.Public {
+			mux.Handle("/static/", web.StaticHandler())
+			mux.Handle("/api/v1/public/proxies", web.APIPublicProxiesHandler(proxyChecker))
+		} else {
+			protectedHandler.Handle("/static/", web.StaticHandler())
+			protectedHandler.Handle("/api/v1/public/proxies", web.APIPublicProxiesHandler(proxyChecker))
+		}
 
 		web.RegisterConfigEndpoints(*proxyConfigs, proxyChecker, config.CLIConfig.Xray.StartPort)
 

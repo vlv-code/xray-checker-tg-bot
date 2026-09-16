@@ -312,7 +312,7 @@ func (b *Bot) RunCheckHostAudit() {
 					"• Вердикт: <b>%s</b>\n"+
 					"🔗 <a href=\"%s\">Отчёт Check-Host</a>",
 					escapeHTML(target.targetAddr), escapeHTML(target.proxyName),
-					worldStatus, escapeHTML(verdict), summary.PermanentLink)
+					worldStatus, escapeHTML(verdict), escapeHTML(summary.PermanentLink))
 
 				if isQuiet {
 					b.eventBuffer.Add(BufferedEvent{

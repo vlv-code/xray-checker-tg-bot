@@ -175,11 +175,10 @@ func RegisterConfigEndpoints(proxies []*models.ProxyConfig, proxyChecker *checke
 
 	endpoints := make([]EndpointInfo, 0, len(proxies))
 
+	// StableID is assumed assigned: the checker fills it in NewProxyChecker /
+	// UpdateProxies (the only writers of the proxy set), so mutating shared
+	// configs from this request path would be a data race.
 	for _, proxy := range proxies {
-		if proxy.StableID == "" {
-			proxy.StableID = proxy.GenerateStableID()
-		}
-
 		endpoint := fmt.Sprintf("./config/%s", proxy.StableID)
 
 		status, latency, _, _ := proxyChecker.GetProxyResultByStableID(proxy.StableID)

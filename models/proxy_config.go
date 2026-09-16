@@ -190,10 +190,17 @@ func (pc *ProxyConfig) GenerateStableID() string {
 // Index), so the resulting IDs are unique and stable across subscription reordering.
 // The first member of each colliding group keeps the bare hash, so single configs
 // (the common case) are unaffected.
+//
+// Configs that already carry a StableID keep it: callers that assign IDs
+// explicitly (e.g. tests targeting a specific proxy by ID) own their values,
+// and re-running this function over an assigned set is a no-op.
 func AssignStableIDs(proxies []*ProxyConfig) {
 	groups := make(map[string][]*ProxyConfig)
 	order := make([]string, 0)
 	for _, p := range proxies {
+		if p.StableID != "" {
+			continue
+		}
 		base := p.GenerateStableID()
 		if _, seen := groups[base]; !seen {
 			order = append(order, base)
