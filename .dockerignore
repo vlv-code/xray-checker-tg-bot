@@ -1,0 +1,36 @@
+# VCS / CI metadata — never needed inside the build context
+.git
+.gitignore
+.github
+
+# Documentation (Astro site + markdown) — not referenced by the Go build
+docs
+*.md
+LICENSE
+
+# Docker / release tooling itself
+Dockerfile
+docker-compose*.yml
+.dockerignore
+.goreleaser.yaml
+
+# Local runtime state & secrets — must never leak into the image
+.env
+.env.*
+data
+geo
+xray_config.json
+subscriptions.json
+bot_config.json
+stats.json
+alerts.json
+*.log
+*.json.tmp
+
+# Local dev leftovers (mirror .gitignore)
+test-files
+configs
+
+# Go test / coverage artifacts
+*.test
+*.out
