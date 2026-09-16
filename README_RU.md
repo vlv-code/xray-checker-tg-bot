@@ -186,8 +186,8 @@ docker compose up -d --build
 | `PROXY_TARGET_URLS` | Cloudflare/Google 204 | Резервные целевые сервисы для проверки прокси |
 | `WEB_ENABLED` | `true` | Включить веб-панель (установите `false` для headless-режима) |
 | `METRICS_PORT` | `2112` | Порт дашборда и Prometheus-метрик |
-| `METRICS_PROTECTED` | `true` | Включить Basic Auth защиту веб-панели |
-| `METRICS_USERNAME` | `admin` | Логин для веб-панели |
+| `METRICS_PROTECTED` | `false` | Включить Basic Auth защиту веб-панели |
+| `METRICS_USERNAME` | `metricsUser` | Логин для веб-панели |
 | `METRICS_PASSWORD` | — | Пароль для веб-панели |
 | `HTTP_PROXY` / `ALL_PROXY` | `""` | Исходящий прокси (`socks5://...` или `http://...`) для Telegram и API |
 

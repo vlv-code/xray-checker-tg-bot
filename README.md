@@ -185,8 +185,8 @@ docker compose up -d --build
 | `PROXY_TARGET_URLS` | Cloudflare/Google 204 | Custom fallback endpoints for checking proxy availability |
 | `WEB_ENABLED` | `true` | Enable web dashboard panel (`false` for headless mode) |
 | `METRICS_PORT` | `2112` | Web dashboard and Prometheus metrics port |
-| `METRICS_PROTECTED` | `true` | Enable Basic Auth protection for web dashboard |
-| `METRICS_USERNAME` | `admin` | Web UI login username |
+| `METRICS_PROTECTED` | `false` | Enable Basic Auth protection for web dashboard |
+| `METRICS_USERNAME` | `metricsUser` | Web UI login username |
 | `METRICS_PASSWORD` | — | Web UI login password |
 | `HTTP_PROXY` / `ALL_PROXY` | `""` | Outbound proxy (`socks5://...` or `http://...`) for Telegram and external APIs |
 
