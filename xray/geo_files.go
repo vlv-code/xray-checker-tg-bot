@@ -17,10 +17,10 @@ const (
 	geoSiteFile = "geo/geosite.dat"
 	geoIPFile   = "geo/geoip.dat"
 
-       // minDatFileSize: geo databases are multi-megabyte protobuf files, so
-       // anything tiny is a corrupted leftover (an interrupted download from a
-       // pre-atomic version or a failed proxy fetch) and must be re-downloaded.
-       minDatFileSize = 1024
+	// minDatFileSize: geo databases are multi-megabyte protobuf files, so
+	// anything tiny is a corrupted leftover (an interrupted download from a
+	// pre-atomic version or a failed proxy fetch) and must be re-downloaded.
+	minDatFileSize = 1024
 )
 
 type GeoFileManager struct {
@@ -56,22 +56,22 @@ func (gfm *GeoFileManager) EnsureGeoFiles() error {
 func (gfm *GeoFileManager) ensureFile(filename, url string) error {
 	filePath := filepath.Join(gfm.baseDir, filename)
 
-       if info, err := os.Stat(filePath); err == nil {
-               if info.Size() >= minDatFileSize {
-                       return nil
-               }
-               logger.Warn("%s is only %d bytes (corrupted?), re-downloading", filename, info.Size())
+	if info, err := os.Stat(filePath); err == nil {
+		if info.Size() >= minDatFileSize {
+			return nil
+		}
+		logger.Warn("%s is only %d bytes (corrupted?), re-downloading", filename, info.Size())
 	}
 
 	logger.Info("Downloading %s...", filename)
 
 	fileDir := filepath.Dir(filePath)
 	if err := os.MkdirAll(fileDir, 0755); err != nil {
-               return fmt.Errorf("failed to create directory %s: %v (bind-mounted Docker volume? fix ownership on the host: sudo chown -R 1000:1000 %s)", fileDir, err, fileDir)
+		return fmt.Errorf("failed to create directory %s: %v (bind-mounted Docker volume? fix ownership on the host: sudo chown -R 1000:1000 %s)", fileDir, err, fileDir)
 	}
 
 	if err := gfm.downloadFile(url, filePath); err != nil {
-               return fmt.Errorf("failed to download %s: %v (bind-mounted Docker volume? fix ownership on the host: sudo chown -R 1000:1000 %s)", filename, err, fileDir)
+		return fmt.Errorf("failed to download %s: %v (bind-mounted Docker volume? fix ownership on the host: sudo chown -R 1000:1000 %s)", filename, err, fileDir)
 	}
 
 	logger.Info("Downloaded %s", filename)
@@ -92,30 +92,30 @@ func (gfm *GeoFileManager) downloadFile(url, filePath string) error {
 		return fmt.Errorf("HTTP request failed with status: %d", resp.StatusCode)
 	}
 
-       // Write to a temp file and rename into place so an interrupted download
-       // (network drop, OOM kill, container restart) never leaves a truncated
-       // .dat behind: os.Stat would treat it as a valid file on later starts
-       // and Xray would fail to parse it.
-       tmpPath := filePath + ".tmp"
-       file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	// Write to a temp file and rename into place so an interrupted download
+	// (network drop, OOM kill, container restart) never leaves a truncated
+	// .dat behind: os.Stat would treat it as a valid file on later starts
+	// and Xray would fail to parse it.
+	tmpPath := filePath + ".tmp"
+	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to create file: %v", err)
 	}
 
-       if _, err := io.Copy(file, resp.Body); err != nil {
-               file.Close()
-               os.Remove(tmpPath)
+	if _, err := io.Copy(file, resp.Body); err != nil {
+		file.Close()
+		os.Remove(tmpPath)
 		return fmt.Errorf("failed to write file: %v", err)
 	}
-       if err := file.Close(); err != nil {
-               os.Remove(tmpPath)
-               return fmt.Errorf("failed to close file: %v", err)
-       }
+	if err := file.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to close file: %v", err)
+	}
 
-       if err := os.Rename(tmpPath, filePath); err != nil {
-               os.Remove(tmpPath)
-               return fmt.Errorf("failed to move file into place: %v", err)
-       }
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to move file into place: %v", err)
+	}
 
 	return nil
 }
