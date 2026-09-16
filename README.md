@@ -206,6 +206,23 @@ NO_PROXY=localhost,127.0.0.1
 ```
 All outgoing bot requests to Telegram API and Check-Host will be routed through the proxy.
 
+### Subscription Sources & SSRF Protection
+`SUBSCRIPTION_URL` accepts remote `http(s)://` URLs, local sources (`file:///path/sub.txt`,
+`folder:///path/configs/`, `base64://...`), and raw share links (`vless://...`, `vmess://...`)
+pasted directly.
+
+Remote subscription URLs are guarded by built-in SSRF protection: targets on `localhost`,
+private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local, CGNAT and other reserved
+ranges are rejected — both at URL validation time and at connection time, including hostnames
+that resolve to such addresses. There is no opt-out switch, and routing the fetch through
+`HTTP_PROXY` does not bypass it (validation happens before the proxy is consulted).
+
+Consequence: a panel hosted on your LAN (e.g. Marzban/Remnawave behind `192.168.x.x`)
+cannot be used as a remote subscription source. Either expose the panel on a public
+address, or sync its subscription output to a local file and reference it via `file://`.
+Note that the proxies themselves may point at private addresses — the restriction applies
+only to fetching the subscription.
+
 ### Headless Mode (No Web Dashboard)
 If you only need the Telegram Bot and Prometheus metrics without the web panel:
 Set in `.env`:
