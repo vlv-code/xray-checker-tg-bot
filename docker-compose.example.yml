@@ -8,6 +8,9 @@ services:
     environment:
       - TZ=${TZ:-Europe/Moscow}
     ports:
+      # Dashboard + Prometheus metrics. Note: METRICS_PORT=0 (headless) is not
+      # compatible with a port mapping — for a headless container set
+      # WEB_ENABLED=false in .env and comment these lines out instead.
       - "${METRICS_PORT:-2112}:${METRICS_PORT:-2112}"
     volumes:
       # Persistent storage for configs, stats, alerts, and dynamic subscriptions.

@@ -47,6 +47,27 @@ error decoding Base64: illegal base64 data...
 2. Try URL-safe Base64 decode if standard fails
 3. Check if content needs to be decoded multiple times
 
+#### Subscription URL Rejected by SSRF Protection
+
+```
+Error initializing configuration: failed to fetch URL content: SSRF: access to private/reserved IP 192.168.1.10 is blocked
+```
+
+**Possible causes:**
+
+- The subscription URL points to `localhost`, a private network (`10.x.x.x`, `172.16.x.x`, `192.168.x.x`), link-local, or CGNAT address
+- A hostname that resolves to one of the above ranges
+
+**Solutions:**
+
+1. Expose the panel on a public address and use that URL
+2. Sync the subscription to a local file and use a `file:///path/sub.txt` source
+3. Paste share links directly into `SUBSCRIPTION_URL`
+
+> Note: this check cannot be disabled and `HTTP_PROXY` does not bypass it. Proxy node
+> addresses inside the subscription are not affected — the restriction applies only to
+> fetching the subscription itself.
+
 ### Proxy Check Issues
 
 #### Running on Proxy Server
