@@ -237,6 +237,71 @@ Returns the server's current detected IP address.
 }
 ```
 
+### Remote Nodes Health
+
+```http
+GET /api/v1/nodes
+```
+
+Returns health status, network metadata (IP, ASN) and check statistics for all configured remote checker nodes.
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "name": "node-spb",
+      "up": true,
+      "everReported": true,
+      "version": "v2.0.1",
+      "hostIP": "95.173.136.1",
+      "asn": "AS12389 PJSC Rostelecom",
+      "online": 8,
+      "total": 8,
+      "lastReport": "2026-09-17T21:23:17Z",
+      "checkIntervalSec": 60
+    }
+  ]
+}
+```
+
+### Ingest Node Check Report (Push Reporting)
+
+```http
+POST /api/v1/nodes/report
+```
+
+Master ingest endpoint for receiving check report snapshots from remote headless checker nodes.
+
+**Authentication:** `Authorization: Bearer <REPORT_TOKEN>` (matching this node's token in master's `NODES`).
+
+**Request Body (JSON):**
+```json
+{
+  "node": "node-spb",
+  "version": "v2.0.1",
+  "checkIntervalSec": 60,
+  "proxies": [
+    {
+      "name": "SPB-01",
+      "address": "1.2.3.4:443",
+      "protocol": "vless",
+      "stableId": "spb_01",
+      "status": 1,
+      "latencyMs": 42
+    }
+  ]
+}
+```
+
+**Response:** `200 OK` with list of desired managed subscriptions:
+```json
+{
+  "managedSubs": ["https://sub.example.com/spb"]
+}
+```
+
 ### API Documentation
 
 ```http

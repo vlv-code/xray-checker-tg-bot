@@ -237,6 +237,71 @@ GET /api/v1/system/ip
 }
 ```
 
+### Статус удалённых нод
+
+```http
+GET /api/v1/nodes
+```
+
+Возвращает статус здоровья, сетевые метаданные (IP, ASN) и статистику всех зарегистрированных удалённых нод.
+
+**Ответ:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "name": "node-spb",
+      "up": true,
+      "everReported": true,
+      "version": "v2.0.1",
+      "hostIP": "95.173.136.1",
+      "asn": "AS12389 PJSC Rostelecom",
+      "online": 8,
+      "total": 8,
+      "lastReport": "2026-09-17T21:23:17Z",
+      "checkIntervalSec": 60
+    }
+  ]
+}
+```
+
+### Приём отчётов нод (Push Reporting)
+
+```http
+POST /api/v1/nodes/report
+```
+
+Эндпоинт мастера для приёма снапшотов проверок от удалённых headless-нод.
+
+**Аутентификация:** `Authorization: Bearer <REPORT_TOKEN>` (соответствует токену ноды в `NODES`).
+
+**Тело запроса (JSON):**
+```json
+{
+  "node": "node-spb",
+  "version": "v2.0.1",
+  "checkIntervalSec": 60,
+  "proxies": [
+    {
+      "name": "SPB-01",
+      "address": "1.2.3.4:443",
+      "protocol": "vless",
+      "stableId": "spb_01",
+      "status": 1,
+      "latencyMs": 42
+    }
+  ]
+}
+```
+
+**Ответ:** `200 OK` со списком назначенных ноде подписок:
+```json
+{
+  "managedSubs": ["https://sub.example.com/spb"]
+}
+```
+
 ### Документация API
 
 ```http

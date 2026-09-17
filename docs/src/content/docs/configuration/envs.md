@@ -375,8 +375,173 @@ Enables interactive bot commands such as `/status`, `/help`, and `/start`.
 
 Enables dynamic subscription management commands (`/subs`, `/addsub`, `/delsub`) from authorized chats.
 
-## Other
+### TELEGRAM_ALERT_MODE
 
+- CLI: `--telegram-alert-mode`
+- Required: No
+- Default: `clean`
+- Values: `clean`, `live`
+
+Alert handling mode: `clean` (auto-deletes outage notifications once proxy recovers) or `live` (edits the outage alert message in-place with downtime timer).
+
+### TELEGRAM_RICH_MODE
+
+- CLI: `--telegram-rich-mode`
+- Required: No
+- Default: `false`
+
+Use Telegram Bot API 10.1 rich formatting (table rendering + collapsible details spoilers) for `/diag` reports.
+
+### ALERT_STORE_PATH
+
+- CLI: `--telegram-alert-store-path`
+- Required: No
+- Default: `alerts.json`
+
+JSON file path for persistent storage of active outage alerts across container restarts (prevents alert spam on restarts).
+
+### STATS_STORE_PATH
+
+- CLI: `--telegram-stats-store-path`
+- Required: No
+- Default: `stats.json`
+
+JSON file path for persistent storage of outage history, incident logs, and reliability statistics (`/stats`).
+
+### BOT_CONFIG_STORE_PATH
+
+- CLI: `--telegram-config-store-path`
+- Required: No
+- Default: `bot_config.json`
+
+JSON file path for runtime bot configuration (check interval, quiet hours, disabled nodes list).
+
+### TELEGRAM_QUIET_HOURS_ENABLED
+
+- CLI: `--telegram-quiet-hours`
+- Required: No
+- Default: `true`
+
+Enables quiet hours schedule (outage notifications sent without sound pings).
+
+### TELEGRAM_QUIET_HOURS_START
+
+- CLI: `--telegram-quiet-hours-start`
+- Required: No
+- Default: `23:00`
+
+Quiet hours start time in `HH:MM` format.
+
+### TELEGRAM_QUIET_HOURS_END
+
+- CLI: `--telegram-quiet-hours-end`
+- Required: No
+- Default: `08:00`
+
+Quiet hours end time in `HH:MM` format. Triggers the morning summary digest.
+
+### TELEGRAM_DAY_DIGEST_ENABLED
+
+- CLI: `--telegram-day-digest`
+- Required: No
+- Default: `true`
+
+Enables periodic daytime status summaries.
+
+### TELEGRAM_DAY_DIGEST_INTERVAL_HOURS
+
+- CLI: `--telegram-day-digest-interval`
+- Required: No
+- Default: `6`
+
+Interval in hours between daytime status summaries.
+
+## Check-Host
+
+### CHECKHOST_BG_ENABLED
+
+- CLI: `--checkhost-bg-enabled`
+- Required: No
+- Default: `true`
+
+Enables background periodic reachability auditing for all subscription hosts via Check-Host.net nodes.
+
+### CHECKHOST_INTERVAL_HOURS
+
+- CLI: `--checkhost-interval-hours`
+- Required: No
+- Default: `1`
+- Values: `1`, `2`, `4`, `6`, `12`
+
+Interval in hours between background Check-Host audits.
+
+### CHECKHOST_ALERT_ENABLED
+
+- CLI: `--checkhost-alert-enabled`
+- Required: No
+- Default: `true`
+
+Send Telegram alert when a proxy host becomes unreachable from Russian probe nodes (`RUAvailable == false`).
+
+## Remote Nodes (Push Reporting)
+
+### NODES
+
+- CLI: `--node`
+- Required: No (for master)
+- Default: ""
+
+Comma-separated list of trusted remote checker nodes in `name|token` format (e.g. `node-spb|secret_tok_1,node-nl|secret_tok_2`). Configured on master to accept push reports.
+
+### NODES_STORE_PATH
+
+- CLI: `--nodes-store-path`
+- Required: No
+- Default: `node_subs.json`
+
+JSON file for storing desired managed subscriptions assigned to remote nodes via `/nodeaddsub` and `/nodedelsub`.
+
+### REPORT_URL
+
+- CLI: `--report-url`
+- Required: No (required for remote node)
+- Default: ""
+
+Master ingest endpoint URL for pushing node check snapshots (e.g. `https://master.example.com:2112/api/v1/nodes/report`).
+
+### REPORT_TOKEN
+
+- CLI: `--report-token`
+- Required: Yes (when `REPORT_URL` is set)
+- Default: ""
+
+Bearer authentication token matching this node's entry in master's `NODES` list.
+
+### ASN_DB_URL
+
+- CLI: `--asn-db-url`
+- Required: No
+- Default: `https://download.db-ip.com/free/dbip-asn-lite-2026-08.mmdb.gz`
+
+URL for automatic download of Autonomous System Numbers (ASN) mmdb database in db-ip asn-lite format (gzipped).
+
+## Outbound Proxy
+
+### HTTP_PROXY / HTTPS_PROXY / ALL_PROXY
+
+- Required: No
+- Default: ""
+
+Outbound HTTP/SOCKS5 proxy settings (e.g. `socks5://127.0.0.1:1080` or `http://proxy:8080`) for routing Telegram Bot API and external audit traffic.
+
+### NO_PROXY
+
+- Required: No
+- Default: `localhost,127.0.0.1`
+
+Comma-separated list of hosts and IP ranges bypassing the outbound proxy.
+
+## Other
 
 ### LOG_LEVEL
 
@@ -394,3 +559,4 @@ Controls Xray Checker application logging verbosity. Note: This is separate from
 - Default: `false`
 
 Performs single check cycle and exits. Useful for scheduled execution environments.
+
