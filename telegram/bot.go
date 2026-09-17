@@ -40,6 +40,10 @@ type Bot struct {
 	allowedChatIDs map[int64]bool
 	source         metrics.MetricsSource
 	subs           SubscriptionManager
+	nodeMgr        NodeManager
+
+	nodeHealthMu   sync.Mutex
+	lastNodeHealth map[string]nodeHealthState
 
 	notifyOnRecovery bool
 	commandsEnabled  bool
@@ -122,6 +126,7 @@ func New(token string, targets []ChatTarget, source metrics.MetricsSource, notif
 		eventBuffer:      NewEventBuffer(),
 		lastSeen:         make(map[string]bool),
 		lastFlapAlert:    make(map[string]time.Time),
+		lastNodeHealth:   make(map[string]nodeHealthState),
 		lastMenuMsg:      make(map[string]int),
 		msgSeq:           make(map[string]int64),
 		subFreshness:     make(map[string]SubFreshness),
