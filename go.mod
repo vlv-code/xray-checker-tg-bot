@@ -6,6 +6,7 @@ require (
 	github.com/alecthomas/kong v1.15.0
 	github.com/go-co-op/gocron v1.37.0
 	github.com/mymmrac/telego v1.12.1
+	github.com/oschwald/maxminddb-golang v1.13.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.69.0
 	github.com/xtls/libxray v1.260627.0
