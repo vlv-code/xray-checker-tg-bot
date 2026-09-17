@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"xray-checker/nodes"
+
 	"github.com/alecthomas/kong"
 )
 
@@ -98,6 +100,20 @@ type CLI struct {
 		CheckHostAlertEnabled  bool     `name:"checkhost-alert-enabled" help:"Send alert when host is unreachable from Russia in background check" default:"true" env:"CHECKHOST_ALERT_ENABLED"`
 	} `embed:"" prefix:""`
 
+	Nodes struct {
+		List      []string `name:"node" help:"Remote checker node as 'name|token' (repeatable; env: comma-separated). Empty disables the node feature" env:"NODES"`
+		StorePath string   `name:"nodes-store-path" help:"File with the desired managed subscriptions per node, edited via the bot" default:"node_subs.json" env:"NODES_STORE_PATH"`
+	} `embed:"" prefix:""`
+
+	Report struct {
+		URL   string `name:"report-url" help:"Master ingest URL to push check snapshots to (enables node reporting when set)" default:"" env:"REPORT_URL"`
+		Token string `name:"report-token" help:"Bearer token matching this node's entry in the master's NODES list" default:"" env:"REPORT_TOKEN"`
+	} `embed:"" prefix:""`
+
+	ASN struct {
+		DBURL string `name:"asn-db-url" help:"URL of the gzipped ASN mmdb database (db-ip asn-lite format)" default:"https://download.db-ip.com/free/dbip-asn-lite-2026-08.mmdb.gz" env:"ASN_DB_URL"`
+	} `embed:"" prefix:""`
+
 	Version  VersionFlag `name:"version" help:"Print version information and quit"`
 	RunOnce  bool        `name:"run-once" help:"Run one check cycle and exit" default:"false" env:"RUN_ONCE"`
 	LogLevel string      `name:"log-level" help:"Log level (debug|info|warn|error|none)" default:"info" env:"LOG_LEVEL"`
@@ -119,6 +135,17 @@ func (c *CLI) Validate() error {
 	}
 	if c.Telegram.BotToken != "" && len(c.Telegram.ChatTargets) == 0 {
 		return fmt.Errorf("--telegram-bot-token requires at least one --telegram-chat-id")
+	}
+	if len(c.Nodes.List) > 0 {
+		if _, err := nodes.ParseNodes(c.Nodes.List); err != nil {
+			return err
+		}
+		if c.Metrics.Port == "" || c.Metrics.Port == "0" {
+			return fmt.Errorf("NODES requires a listening HTTP port for the ingest endpoint (METRICS_PORT is empty or 0)")
+		}
+	}
+	if (c.Report.URL == "") != (c.Report.Token == "") {
+		return fmt.Errorf("REPORT_URL and REPORT_TOKEN must be set together")
 	}
 	return nil
 }
