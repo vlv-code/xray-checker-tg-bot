@@ -195,7 +195,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 		if b.statsStore != nil && b.statsStore.GetFlapCount24h(pm.StableID, now) > 10 {
 			flapNote = fmt.Sprintf("\n⚠️ <i>Частые сбои (%d за 24ч). Алерты приостановлены на 15 мин.</i>", b.statsStore.GetFlapCount24h(pm.StableID, now))
 		}
-		outageText := fmt.Sprintf("🔴 <b>%s</b> — не отвечает%s\n⏱ %s · %d-й сбой\n%s%s", escapeHTML(pm.Name), softHint, timeStr, dropCount, escapeHTML(pm.Address), flapNote)
+		outageText := fmt.Sprintf("🔴 <b>%s</b> — не отвечает%s%s\n⏱ %s · %d-й сбой\n%s%s", escapeHTML(pm.Name), softHint, nodeLineFor(pm), timeStr, dropCount, escapeHTML(pm.Address), flapNote)
 		for _, t := range b.targets {
 			if b.tracker.HasAlert(t.ChatID, t.ThreadID, pm.StableID) {
 				continue
@@ -232,6 +232,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				if rec.downtime > 0 {
 					recoveryText += fmt.Sprintf(" (простой: %s)", FormatDowntime(rec.downtime))
 				}
+				recoveryText += nodeLineFor(rec.pm)
 				if sent, err := b.sendAndReturn(rec.target, recoveryText); err == nil && sent != nil && sent.MessageID != 0 {
 					cID := rec.target.ChatID
 					mID := sent.MessageID
@@ -247,8 +248,8 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 			}
 		} else { // AlertModeLive
 			if rec.hadAlert && b.api != nil {
-				liveText := fmt.Sprintf("✅ <b>%s</b> восстановлен — %.0f ms (простой: %s)",
-					escapeHTML(rec.pm.Name), rec.pm.LatencyMs, FormatDowntime(rec.downtime))
+				liveText := fmt.Sprintf("✅ <b>%s</b> восстановлен — %.0f ms (простой: %s)%s",
+					escapeHTML(rec.pm.Name), rec.pm.LatencyMs, FormatDowntime(rec.downtime), nodeLineFor(rec.pm))
 				params := &telego.EditMessageTextParams{
 					ChatID:    tu.ID(rec.target.ChatID),
 					MessageID: rec.alert.MessageID,
@@ -257,9 +258,22 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				}
 				_, _ = b.api.EditMessageText(b.ctx, params)
 			} else if b.notifyOnRecovery {
-				recoveryText := fmt.Sprintf("✅ <b>%s</b> восстановлен — %.0f ms", escapeHTML(rec.pm.Name), rec.pm.LatencyMs)
+				recoveryText := fmt.Sprintf("✅ <b>%s</b> восстановлен — %.0f ms%s", escapeHTML(rec.pm.Name), rec.pm.LatencyMs, nodeLineFor(rec.pm))
 				b.send(rec.target, recoveryText)
 			}
 		}
 	}
+}
+
+// nodeLineFor renders the "via node" line for remote-proxy alerts; empty
+// for locally checked proxies.
+func nodeLineFor(pm metrics.ProxyMetric) string {
+	if pm.NodeName == "" {
+		return ""
+	}
+	s := "\n📍 via " + escapeHTML(pm.NodeName)
+	if pm.NodeASN != "" {
+		s += " · " + escapeHTML(pm.NodeASN)
+	}
+	return s
 }

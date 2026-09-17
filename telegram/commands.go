@@ -50,6 +50,14 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		b.handleToggleNodeCommand(msg)
 	case strings.HasPrefix(msg.Text, "/digest"):
 		b.replyDigest(t)
+	case strings.HasPrefix(msg.Text, "/nodesubs"):
+		b.replyNodeSubs(msg)
+	case strings.HasPrefix(msg.Text, "/nodeaddsub"):
+		go b.handleNodeAddSub(msg)
+	case strings.HasPrefix(msg.Text, "/nodedelsub"):
+		go b.handleNodeDelSub(msg)
+	case strings.HasPrefix(msg.Text, "/nodes"):
+		b.replyNodes(t)
 	case strings.HasPrefix(msg.Text, "/subs"):
 		b.replySubs(t)
 	case strings.HasPrefix(msg.Text, "/addsub"):
@@ -389,7 +397,7 @@ func (b *Bot) replyHelp(t ChatTarget) {
 		"/status — статус всех прокси-хостов\n" +
 		"/diag — детальный отчёт о прокси-хостах\n" +
 		"/settings — настройки бота и управление прокси-хостами\n" +
-		"/togglenode <имя|ID> — включить/отключить проверку прокси-хоста\n" +
+		"/togglenode <имя|ID> — включить/отключить проверку хоста (не ноды-инстанса)\n" +
 		"/checkhost <хост[:порт]> — глобальная проверка через Check-Host.net\n" +
 		"/checkhost_bg [on|off|1h|run] — фоновая проверка Check-Host\n" +
 		"/stats — статистика аптайма и инцидентов\n" +
@@ -402,6 +410,12 @@ func (b *Bot) replyHelp(t ChatTarget) {
 		text += "/subs — список подписок\n" +
 			"/addsub &lt;URL&gt; — добавить подписку\n" +
 			"/delsub &lt;URL&gt; — удалить добавленную подписку\n"
+	}
+	if b.nodeMgr != nil {
+		text += "/nodes — ноды-инстансы чекера: статус, ASN, сводка\n" +
+			"/nodesubs &lt;имя&gt; — подписки ноды, назначенные с мастера\n" +
+			"/nodeaddsub &lt;имя&gt; &lt;URL&gt; — назначить подписку ноде\n" +
+			"/nodedelsub &lt;имя&gt; &lt;URL&gt; — снять подписку с ноды\n"
 	}
 	text += "/help — эта справка\n\n" +
 		"🔔 Уведомления о сбоях отправляются автоматически."
