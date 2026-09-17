@@ -62,6 +62,24 @@ func (p *Parser) Parse(subscriptionData string) (*ParseResult, error) {
 	}
 
 	trimmedData := strings.TrimSpace(string(rawData))
+
+	// A common panel format is a base64-encoded JSON array. The JSON prefix
+	// only becomes visible after decoding, so re-check for it once
+	// cleanEmptyLines has run the base64 pass (below, on the share-link path).
+	// Keep the original bytes for share-link parsing so a body that is BOTH
+	// valid base64 and valid share-links (e.g. the literal "vmess://" lines)
+	// still takes the link path.
+	if !strings.HasPrefix(trimmedData, "[") && !strings.HasPrefix(trimmedData, "{") {
+		if decoded := p.tryDecodeBase64(rawData); len(decoded) > 0 && string(decoded) != string(rawData) {
+			decodedTrimmed := strings.TrimSpace(string(decoded))
+			if strings.HasPrefix(decodedTrimmed, "[") || strings.HasPrefix(decodedTrimmed, "{") {
+				logger.Debug("Detected base64-encoded JSON subscription")
+				rawData = decoded
+				trimmedData = decodedTrimmed
+			}
+		}
+	}
+
 	if strings.HasPrefix(trimmedData, "[") {
 		logger.Debug("Detected JSON array format")
 		configs, jsonErr := p.parseJSONConfigs(rawData)

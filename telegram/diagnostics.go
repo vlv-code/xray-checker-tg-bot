@@ -267,7 +267,7 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 		}
 		fmt.Fprintf(sb, "  • Check-Host: РФ %s, Мир %s\n", ruStatus, worldStatus)
 		if rep.CheckHost.PermanentLink != "" {
-			fmt.Fprintf(sb, "    🔗 <a href=\"%s\">отчёт Check-Host</a>\n", rep.CheckHost.PermanentLink)
+			fmt.Fprintf(sb, "    🔗 <a href=\"%s\">отчёт Check-Host</a>\n", escapeHTML(rep.CheckHost.PermanentLink))
 		}
 	}
 
@@ -508,7 +508,7 @@ func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeH
 			fmt.Fprintf(&sb, "  Вывод: %s\n", escapeHTML(ch.Verdict))
 		}
 		if ch.PermanentLink != "" {
-			fmt.Fprintf(&sb, "  Ссылка: 🔗 <a href=\"%s\">отчёт Check-Host</a>\n", ch.PermanentLink)
+			fmt.Fprintf(&sb, "  Ссылка: 🔗 <a href=\"%s\">отчёт Check-Host</a>\n", escapeHTML(ch.PermanentLink))
 		}
 	}
 

@@ -200,19 +200,38 @@ docker compose up -d --build
 | `STATS_STORE_PATH` | `stats.json` | Persistent storage path for outage history and stats |
 | `BOT_CONFIG_STORE_PATH` | `bot_config.json` | Persistent storage path for runtime bot settings (including disabled nodes) |
 | `PROXY_CHECK_INTERVAL` | `300` | Check interval in seconds (also tunable via `/interval`) |
+| `PROXY_CHECK_METHOD` | `ip` | Check method: `ip` (IP echo), `status` (HTTP 204), or `download` (file download) |
+| `PROXY_TIMEOUT` | `30` | Per-proxy check timeout in seconds |
+| `PROXY_CHECK_CONCURRENCY` | `0` | Max proxies checked in parallel per cycle (0 = unlimited) |
 | `PROXY_TARGET_URLS` | Cloudflare/Google 204 | Custom fallback endpoints for checking proxy availability |
+| `SUBSCRIPTION_UPDATE` | `true` | Periodically re-fetch subscriptions and apply changes |
+| `SUBSCRIPTION_UPDATE_INTERVAL` | `300` | Seconds between subscription re-fetches |
 | `WEB_ENABLED` | `true` | Enable web dashboard panel (`false` for headless mode) |
+| `WEB_PUBLIC` | `false` | Public status page mode (requires `METRICS_PROTECTED=true`) |
 | `METRICS_PORT` | `2112` | Web dashboard and Prometheus metrics port |
 | `METRICS_PROTECTED` | `false` | Enable Basic Auth protection for web dashboard |
 | `METRICS_USERNAME` | `metricsUser` | Web UI login username |
 | `METRICS_PASSWORD` | — | Web UI login password |
+| `METRICS_PUSH_URL` | `""` | Push metrics to a Prometheus Pushgateway instead of exposing `/metrics` |
+| `SIMULATE_LATENCY` | `true` | Add measured latency (capped at 2s) to `/config/{id}` badge responses |
+| `LOG_LEVEL` | `info` | Application log level (`debug\|info\|warn\|error\|none`) |
+| `RUN_ONCE` | `false` | Run a single check cycle and exit (for cron/scheduled jobs) |
 | `HTTP_PROXY` / `ALL_PROXY` | `""` | Outbound proxy (`socks5://...` or `http://...`) for Telegram and external APIs |
 
 > [!NOTE]
 > The **Default** column shows the code default applied when a variable is unset. The bundled
-> `.env.example` pins the store paths to `/app/data/*.json` so that state survives Docker
-> container rebuilds (only `/app/data` and `/app/geo` are bind-mounted in
-> `docker-compose.example.yml`). Keep those overrides if you deploy via Docker Compose.
+> `.env.example` documents every variable with comments (and pins the store paths to
+> `/app/data/*.json` so that state survives Docker container rebuilds — only `/app/data` and
+> `/app/geo` are bind-mounted in `docker-compose.example.yml`). A per-variable reference
+> also lives in the [documentation site](docs/src/content/docs/configuration/envs.md).
+
+### Authentication & Public Routes
+With `METRICS_PROTECTED=true`, Basic Auth covers everything the HTTP server exposes — the
+dashboard, `/metrics`, `/config/{id}` pages, `/static/` assets and all `/api/` routes; only
+`/health` stays open for load-balancer probes. The public status page mode (`WEB_PUBLIC=true`,
+which requires `METRICS_PROTECTED=true`) opens the dashboard, config pages and
+`GET /api/v1/public/proxies` to unauthenticated visitors, while `/metrics` and the management
+API remain password-protected.
 
 ### Outbound Proxy (for restricted networks)
 If your server is in an environment where Telegram API is blocked (e.g. Russian VPS), configure SOCKS5 or HTTP outbound proxy variables in `.env`:
@@ -230,8 +249,9 @@ All outgoing bot requests to Telegram API and Check-Host will be routed through 
 pasted directly.
 
 Remote subscription URLs are guarded by built-in SSRF protection: targets on `localhost`,
-private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local, CGNAT and other reserved
-ranges are rejected — both at URL validation time and at connection time, including hostnames
+private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local, CGNAT, IPv6 transition
+(NAT64 / 6to4 / Teredo — addresses that wrap an IPv4 host) and other reserved ranges are
+rejected — both at URL validation time and at connection time, including hostnames
 that resolve to such addresses. There is no opt-out switch, and routing the fetch through
 `HTTP_PROXY` does not bypass it (validation happens before the proxy is consulted).
 

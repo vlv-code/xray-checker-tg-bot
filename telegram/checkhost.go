@@ -262,7 +262,11 @@ func (b *Bot) RunCheckHostAudit() {
 	}
 	fastNodes := b.checkHostNodes
 	if len(fastNodes) == 0 {
-		fastNodes = append(checker.DefaultFastRUNodes, checker.DefaultFastWorldNodes...)
+		// Explicit copy: appending to the package-level defaults would share
+		// (and on growth, corrupt) their backing array.
+		fastNodes = make([]string, 0, len(checker.DefaultFastRUNodes)+len(checker.DefaultFastWorldNodes))
+		fastNodes = append(fastNodes, checker.DefaultFastRUNodes...)
+		fastNodes = append(fastNodes, checker.DefaultFastWorldNodes...)
 	}
 
 	for i, target := range targets {
@@ -312,7 +316,7 @@ func (b *Bot) RunCheckHostAudit() {
 					"• Вердикт: <b>%s</b>\n"+
 					"🔗 <a href=\"%s\">Отчёт Check-Host</a>",
 					escapeHTML(target.targetAddr), escapeHTML(target.proxyName),
-					worldStatus, escapeHTML(verdict), summary.PermanentLink)
+					worldStatus, escapeHTML(verdict), escapeHTML(summary.PermanentLink))
 
 				if isQuiet {
 					b.eventBuffer.Add(BufferedEvent{

@@ -115,6 +115,30 @@ func TestClassifyError(t *testing.T) {
 			expected:   CatTimeout,
 		},
 		{
+			name:       "HTTP 4xx wins over dns substring in URL host",
+			err:        errors.New("HTTP 403 from https://dns.google/generate_204"),
+			httpStatus: 0,
+			expected:   CatHTTP4xx,
+		},
+		{
+			name:       "eof on host named tls.* is reset, not TLS",
+			err:        errors.New("read from tls.example.com:443 failed: EOF"),
+			httpStatus: 0,
+			expected:   CatConnReset,
+		},
+		{
+			name:       "real TLS phrase still classified",
+			err:        errors.New("tls: failed to verify certificate: x509: certificate signed by unknown authority"),
+			httpStatus: 0,
+			expected:   CatTLSError,
+		},
+		{
+			name:       "real DNS phrase still classified",
+			err:        errors.New("lookup example.invalid: no such host"),
+			httpStatus: 0,
+			expected:   CatDNSError,
+		},
+		{
 			name:       "unknown error",
 			err:        errors.New("some strange internal failure"),
 			httpStatus: 0,

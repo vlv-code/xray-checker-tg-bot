@@ -1,0 +1,14 @@
+# Normalize all text files to LF in the repository and on checkout, so
+# gofmt/CI format checks pass identically on Windows and Unix working copies.
+* text=auto eol=lf
+
+# Windows-specific scripts keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary
+*.exe binary

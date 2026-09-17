@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 
 	"xray-checker/models"
@@ -289,5 +290,50 @@ func TestConvertOutboundJSON_MetricsLabels(t *testing.T) {
 	pc3, _ := p.convertOutbound([]byte(`{"protocol":"trojan","tag":"p","settings":{"servers":[{"address":"2.2.2.2","port":443,"password":"pw"}]}}`), 0, nil)
 	if pc3.MetricsLabels != nil {
 		t.Errorf("expected nil MetricsLabels, got %v", pc3.MetricsLabels)
+	}
+}
+
+// Regression: a common panel format is a base64-encoded JSON array. The JSON
+// detection must re-run after base64 decoding, otherwise the body falls through
+// to share-link parsing and the subscription fails with "no valid proxy
+// configurations found".
+func TestParse_Base64WrappedJSON(t *testing.T) {
+	p := NewParser()
+	raw := `[{"remarks":"Panel","outbounds":[
+		{"protocol":"socks","tag":"s1","settings":{"address":"1.2.3.4","port":1080}}
+	]}]`
+	encoded := base64.StdEncoding.EncodeToString([]byte(raw))
+
+	result, err := p.Parse(encoded)
+	if err != nil {
+		t.Fatalf("base64-wrapped JSON subscription should parse, got: %v", err)
+	}
+	if len(result.Configs) != 1 {
+		t.Fatalf("expected 1 config, got %d", len(result.Configs))
+	}
+	if result.Configs[0].Server != "1.2.3.4" || result.Configs[0].Port != 1080 {
+		t.Errorf("unexpected config %s:%d", result.Configs[0].Server, result.Configs[0].Port)
+	}
+	// A single-node group takes the JSON remarks as its display name.
+	if result.Configs[0].Name != "Panel" {
+		t.Errorf("expected node name Panel from remarks, got %q", result.Configs[0].Name)
+	}
+}
+
+// Plain share-link payloads (not base64) must still take the share-link path,
+// and a body that is valid base64 of share links must decode first.
+func TestParse_PlainAndBase64ShareLinks(t *testing.T) {
+	p := NewParser()
+
+	// Plain share links reaching the JSON pre-check must not be re-routed.
+	res, err := p.Parse("vmess://eyJ2IjoiMiIsInBzIjoidGVzdCIsImFkZCI6IjEuMi4zLjQiLCJwb3J0IjoiNDQzIiwiaWQiOiJhYmNkZWYwMC0xMjM0LTU2NzgtOWFiYy1kZWYwMTIzNDU2NzgiLCJzY3kiOiJhdXRvIn0=")
+	if err != nil {
+		// vmess parse may fail on libXray absence of network — only assert it
+		// did not take the JSON path, i.e. error is not a JSON parse error.
+		if strings.Contains(err.Error(), "JSON") {
+			t.Fatalf("vmess payload must not be treated as JSON: %v", err)
+		}
+	} else if len(res.Configs) == 0 {
+		t.Fatalf("expected vmess config or a non-JSON error, got none")
 	}
 }

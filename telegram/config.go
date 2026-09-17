@@ -37,12 +37,21 @@ type BotConfig struct {
 	Timezone               string   `json:"timezone,omitempty"`
 }
 
+// locCache memoizes parsed time zones: Location() is called on every message
+// formatting path (b.now()/b.loc()), and time.LoadLocation re-reads and
+// re-parses the zone file on each call.
+var locCache sync.Map // timezone string -> *time.Location
+
 // Location returns the parsed *time.Location for the configured Timezone,
 // or time.Local if unset or unrecognized.
 func (c BotConfig) Location() *time.Location {
 	if c.Timezone != "" && strings.ToLower(c.Timezone) != "local" {
+		if loc, ok := locCache.Load(c.Timezone); ok {
+			return loc.(*time.Location)
+		}
 		if loc, err := time.LoadLocation(c.Timezone); err == nil {
-			return loc
+			actual, _ := locCache.LoadOrStore(c.Timezone, loc)
+			return actual.(*time.Location)
 		}
 	}
 	return time.Local

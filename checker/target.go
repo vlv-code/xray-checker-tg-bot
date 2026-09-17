@@ -314,8 +314,11 @@ func ProbeNodeHealth(server string, port int, protocol string, security string, 
 			}
 			var netErr net.Error
 			if errors.As(rErr, &netErr) && netErr.Timeout() {
-				health.UDPErr = "no response (timeout)"
-				health.UDPPing = 0
+				// Silence after a garbage datagram is EXPECTED from QUIC
+				// (Hysteria2/TUIC) and WireGuard servers — they drop invalid
+				// packets without answering. A timeout proves nothing either
+				// way, so report it as inconclusive (no error, no ping)
+				// instead of condemning healthy nodes.
 				return health
 			}
 			health.UDPErr = simplifyError(rErr)
@@ -335,13 +338,15 @@ func ProbeNodeHealth(server string, port int, protocol string, security string, 
 	tcpAddr := net.JoinHostPort(targetIP, fmt.Sprintf("%d", port))
 	tcpStart := time.Now()
 	conn, err := net.DialTimeout("tcp", tcpAddr, 2500*time.Millisecond)
+	if err != nil {
+		// Record a ping only on a successful dial: a timed-out dial would
+		// otherwise expose a bogus ~2500ms "ping" in diagnostics.
+		health.TCPErr = simplifyError(err)
+		return health
+	}
 	health.TCPPing = time.Since(tcpStart)
 	if health.TCPPing == 0 {
 		health.TCPPing = time.Microsecond
-	}
-	if err != nil {
-		health.TCPErr = simplifyError(err)
-		return health
 	}
 	defer conn.Close()
 
@@ -474,10 +479,23 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 	results := make([]ProxyDiagReport, len(proxies))
 	var wg sync.WaitGroup
 
+	// Bound the fan-out the same way CheckAllProxies does: every goroutine
+	// opens its own SOCKS connections, spawns per-target probes, and offline
+	// proxies add a synchronous Check-Host poll — a large subscription must
+	// not launch all of that in a single burst.
+	var sem chan struct{}
+	if pc.checkConcurrency > 0 {
+		sem = make(chan struct{}, pc.checkConcurrency)
+	}
+
 	for i, p := range proxies {
 		wg.Add(1)
 		go func(idx int, proxy *models.ProxyConfig) {
 			defer wg.Done()
+			if sem != nil {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+			}
 
 			if pc.IsProxyDisabled(proxy) {
 				results[idx] = ProxyDiagReport{
@@ -553,7 +571,12 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 			if status == "offline" && proxy.Server != "" {
 				chClient := NewCheckHostClient("", 1500*time.Millisecond)
 				chCtx, chCancel := context.WithTimeout(context.Background(), 7*time.Second)
-				fastNodes := append(DefaultFastRUNodes, DefaultFastWorldNodes...)
+				// Explicit copy: appending to the package-level defaults would
+				// share (and on growth, corrupt) their backing array across
+				// concurrent goroutines.
+				fastNodes := make([]string, 0, len(DefaultFastRUNodes)+len(DefaultFastWorldNodes))
+				fastNodes = append(fastNodes, DefaultFastRUNodes...)
+				fastNodes = append(fastNodes, DefaultFastWorldNodes...)
 				var chSummary *CheckHostSummary
 				var chErr error
 				if IsUDPProto(proxy.Protocol) {

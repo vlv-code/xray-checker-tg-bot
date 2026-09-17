@@ -30,6 +30,15 @@ type fetchResult struct {
 	Name    string
 }
 
+// subscriptionClient is shared by every subscription fetch: building a fresh
+// transport per request stranded idle connections with no IdleConnTimeout until
+// GC finalizers reaped them, and the periodic re-fetch cadence made that leak
+// grow steadily.
+var subscriptionClient = &http.Client{
+	Timeout:   30 * time.Second,
+	Transport: newSafeTransport(),
+}
+
 func (p *Parser) fetchURLContent(source string) (*fetchResult, error) {
 	cleanURL, fragmentName := p.extractURLFragment(source)
 	if err := validateSubscriptionTarget(cleanURL); err != nil {
@@ -70,10 +79,7 @@ func (p *Parser) fetchURLContent(source string) (*fetchResult, error) {
 		req.Header.Set(strings.TrimSpace(key), strings.TrimSpace(value))
 	}
 
-	client := &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: newSafeTransport(),
-	}
+	client := subscriptionClient
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -167,13 +173,47 @@ func isBlockedIP(ip net.IP) bool {
 		if ip4[0] == 100 && (ip4[1]&0xc0) == 64 {
 			return true
 		}
+		// 198.18.0.0/15 (benchmarking, RFC 2544)
+		if ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19) {
+			return true
+		}
+		// 240.0.0.0/4 (reserved; includes broadcast 255.255.255.255)
+		if ip4[0] >= 240 {
+			return true
+		}
 		return false
 	}
 	// IPv6
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
 		return true
 	}
+	// IPv6 transition mechanisms embed an IPv4 target inside an IPv6 address:
+	// e.g. 2002:7f00:1:: is 6to4 for 127.0.0.1. Legitimate subscription hosts
+	// never use these deprecated/unroutable forms, but they bypass the plain
+	// loopback/private checks.
+	for _, r := range blockedV6TunnelRanges {
+		if r.Contains(ip) {
+			return true
+		}
+	}
 	return false
+}
+
+// blockedV6TunnelRanges covers IPv6 transition mechanisms whose addresses wrap
+// an IPv4 host: NAT64 well-known prefix (RFC 6052), 6to4 (RFC 7526, deprecated)
+// and Teredo.
+var blockedV6TunnelRanges = []*net.IPNet{
+	mustCIDR("64:ff9b::/96"),
+	mustCIDR("2002::/16"),
+	mustCIDR("2001::/32"),
+}
+
+func mustCIDR(cidr string) *net.IPNet {
+	_, n, err := net.ParseCIDR(cidr)
+	if err != nil {
+		panic(fmt.Sprintf("invalid built-in CIDR %s: %v", cidr, err))
+	}
+	return n
 }
 
 func isEnvironmentProxy(host, port string) bool {
@@ -222,7 +262,11 @@ func validateSubscriptionTarget(rawURL string) error {
 		return nil
 	}
 
-	ips, err := net.DefaultResolver.LookupIP(context.Background(), "ip", host)
+	// Bound the pre-flight resolution: an unbounded lookup here stalls both the
+	// periodic updater and Telegram-triggered reloads on a hung resolver.
+	resolveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(resolveCtx, "ip", host)
 	if err != nil {
 		return fmt.Errorf("failed to resolve host %s: %w", host, err)
 	}
@@ -279,5 +323,6 @@ func newSafeTransport() *http.Transport {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 15 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
 	}
 }

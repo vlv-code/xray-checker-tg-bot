@@ -110,17 +110,22 @@ func ClassifyError(err error, httpStatus int) ErrorCategory {
 	if strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") || strings.Contains(msg, "reset by peer") || strings.Contains(msg, "eof") {
 		return CatConnReset
 	}
-	if strings.Contains(msg, "tls") || strings.Contains(msg, "certificate") || strings.Contains(msg, "handshake failure") {
-		return CatTLSError
-	}
-	if strings.Contains(msg, "no such host") || strings.Contains(msg, "dns") {
-		return CatDNSError
-	}
+	// Explicit HTTP status text is a stronger signal than words embedded in a
+	// URL, so check it before the TLS/DNS phrases below.
 	if strings.Contains(msg, "http 4") || strings.Contains(msg, "http status: 4") {
 		return CatHTTP4xx
 	}
 	if strings.Contains(msg, "http 5") || strings.Contains(msg, "http status: 5") {
 		return CatHTTP5xx
+	}
+	// Phrase-based matching: error strings embed full URLs, and bare word
+	// substrings like "tls"/"dns" match hostname segments ("tls.example.com",
+	// "dns.google"), corrupting the category.
+	if strings.Contains(msg, "tls handshake") || strings.Contains(msg, "tls:") || strings.Contains(msg, "certificate") || strings.Contains(msg, "handshake failure") || strings.Contains(msg, "x509") {
+		return CatTLSError
+	}
+	if strings.Contains(msg, "no such host") || strings.Contains(msg, "server misbehaving") || strings.Contains(msg, "dns lookup") || strings.Contains(msg, "lookup ") {
+		return CatDNSError
 	}
 
 	return CatUnknown

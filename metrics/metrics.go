@@ -230,7 +230,9 @@ func PushMetrics(config *RemoteWriteConfig, registry *prometheus.Registry) error
 		return fmt.Errorf("failed to create request: %v", err)
 	}
 
-	if config.Username != "" && config.Password != "" {
+	// Either credential alone is meaningful: token-style push URLs carry the
+	// secret in the username with an empty password (ParseURL accepts both).
+	if config.Username != "" || config.Password != "" {
 		req.SetBasicAuth(config.Username, config.Password)
 	}
 

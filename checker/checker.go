@@ -26,6 +26,7 @@ type ProxyChecker struct {
 	httpClient       *http.Client
 	results          sync.Map // proxyMetricLabels -> proxyResult
 	ipInitialized    bool
+	ipCheckedAt      time.Time
 	ipCheckTimeout   int
 	genMethodURL     string
 	downloadURL      string
@@ -36,7 +37,15 @@ type ProxyChecker struct {
 	targetManager    *TargetManager
 	disabledFilter   func(server, stableID string) bool
 	mu               sync.RWMutex
+	// ipFetchMu serializes IP-echo fetches so concurrent cache misses collapse
+	// into one request. It is never held while pc.mu is held: the fetch runs
+	// outside pc.mu so a slow IP service can't stall snapshot readers.
+	ipFetchMu sync.Mutex
 }
+
+// hostIPCacheTTL bounds how long the checker's own public IP is trusted. The
+// IP still serves as a fallback after expiry when re-fetching fails.
+const hostIPCacheTTL = time.Hour
 
 // proxyResult is the latest check outcome for one proxy. Metrics are rendered from
 // these at scrape time (a pull model), so there is no separate metric state to keep
@@ -107,6 +116,12 @@ func NewProxyChecker(proxies []*models.ProxyConfig, startPort int, ipCheckURL st
 		logger.Warn("Invalid check method %q specified, falling back to 'ip'", checkMethod)
 		checkMethod = "ip"
 	}
+	// StableIDs are assigned here and in UpdateProxies — the only two places
+	// pc.proxies is written — so readers never need to lazily fill the field
+	// (a data race when done under a mere RLock or concurrently). Re-running
+	// AssignStableIDs over an already-assigned set is a no-op: it recomputes
+	// the same deterministic IDs.
+	models.AssignStableIDs(proxies)
 	return &ProxyChecker{
 		proxies:   proxies,
 		startPort: startPort,
@@ -126,19 +141,30 @@ func NewProxyChecker(proxies []*models.ProxyConfig, startPort int, ipCheckURL st
 
 func (pc *ProxyChecker) GetCurrentIP() (string, error) {
 	pc.mu.RLock()
-	if pc.ipInitialized && pc.currentIP != "" {
+	// Re-resolve after a TTL: a long-running host's public IP can change
+	// (DHCP/ISP), and a cached-forever IP turns into false "transparent
+	// proxy" verdicts and wrong error text.
+	if pc.ipInitialized && pc.currentIP != "" && time.Since(pc.ipCheckedAt) < hostIPCacheTTL {
 		ip := pc.currentIP
 		pc.mu.RUnlock()
 		return ip, nil
 	}
 	pc.mu.RUnlock()
 
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
+	// The HTTP round trip runs WITHOUT pc.mu: it can take up to ipCheckTimeout,
+	// and holding the write lock across it blocked every RLock holder (metrics
+	// scrapes, bot snapshots) for the duration. ipFetchMu still collapses
+	// concurrent misses into a single fetch.
+	pc.ipFetchMu.Lock()
+	defer pc.ipFetchMu.Unlock()
 
+	pc.mu.RLock()
 	if pc.ipInitialized && pc.currentIP != "" {
-		return pc.currentIP, nil
+		ip := pc.currentIP
+		pc.mu.RUnlock()
+		return ip, nil
 	}
+	pc.mu.RUnlock()
 
 	resp, err := pc.httpClient.Get(pc.ipCheck)
 	if err != nil {
@@ -160,8 +186,11 @@ func (pc *ProxyChecker) GetCurrentIP() (string, error) {
 		return "", fmt.Errorf("error getting current IP: invalid IP %q returned", ipStr)
 	}
 
+	pc.mu.Lock()
 	pc.currentIP = ipStr
 	pc.ipInitialized = true
+	pc.ipCheckedAt = time.Now()
+	pc.mu.Unlock()
 
 	return ipStr, nil
 }
@@ -194,10 +223,6 @@ func proxyMetricKey(proxy *models.ProxyConfig) proxyMetricLabels {
 }
 
 func (pc *ProxyChecker) checkProxyInternal(proxy *models.ProxyConfig) {
-	if proxy.StableID == "" {
-		proxy.StableID = proxy.GenerateStableID()
-	}
-
 	metricKey := proxyMetricKey(proxy)
 
 	if pc.IsProxyDisabled(proxy) {
@@ -404,7 +429,13 @@ func (pc *ProxyChecker) checkByIP(client *http.Client) checkOutcome {
 	success := currentHostIP != "" && proxyIP != currentHostIP
 	var checkErr error
 	if !success {
-		checkErr = fmt.Errorf("proxy returned host IP %s (transparent or routing leak)", proxyIP)
+		if currentHostIP == "" {
+			// Without a known host IP the comparison is meaningless; don't
+			// misdiagnose it as a transparent-proxy leak.
+			checkErr = fmt.Errorf("host IP unknown (IP check endpoint unreachable), cannot verify source IP %s", proxyIP)
+		} else {
+			checkErr = fmt.Errorf("proxy returned host IP %s (transparent or routing leak)", proxyIP)
+		}
 	}
 
 	latency := time.Duration(ttfbMs) * time.Millisecond
@@ -643,6 +674,9 @@ func (pc *ProxyChecker) checkByDownload(client *http.Client) checkOutcome {
 func (pc *ProxyChecker) UpdateProxies(newProxies []*models.ProxyConfig) {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
+	// Same invariant as NewProxyChecker: assign StableIDs at the only write
+	// point of pc.proxies so read paths never mutate shared configs.
+	models.AssignStableIDs(newProxies)
 	pc.proxies = newProxies
 }
 
@@ -654,9 +688,6 @@ func (pc *ProxyChecker) PruneStaleResults() {
 	pc.mu.RLock()
 	currentKeys := make(map[proxyMetricLabels]struct{}, len(pc.proxies))
 	for _, proxy := range pc.proxies {
-		if proxy.StableID == "" {
-			proxy.StableID = proxy.GenerateStableID()
-		}
 		currentKeys[proxyMetricKey(proxy)] = struct{}{}
 	}
 	pc.mu.RUnlock()
@@ -676,13 +707,13 @@ func (pc *ProxyChecker) MetricsSnapshot() []metrics.ProxyMetric {
 	pc.mu.RLock()
 	proxies := make([]*models.ProxyConfig, len(pc.proxies))
 	copy(proxies, pc.proxies)
+	// Snapshot the filter under the same lock: reading pc.disabledFilter here
+	// without it races with SetDisabledFilter's write.
+	disabledFilter := pc.disabledFilter
 	pc.mu.RUnlock()
 
 	out := make([]metrics.ProxyMetric, 0, len(proxies))
 	for _, proxy := range proxies {
-		if proxy.StableID == "" {
-			proxy.StableID = proxy.GenerateStableID()
-		}
 		key := proxyMetricKey(proxy)
 		v, ok := pc.results.Load(key)
 		if !ok {
@@ -691,8 +722,8 @@ func (pc *ProxyChecker) MetricsSnapshot() []metrics.ProxyMetric {
 		}
 		r := v.(proxyResult)
 		disabled := r.disabled
-		if pc.disabledFilter != nil {
-			disabled = pc.IsProxyDisabled(proxy)
+		if disabledFilter != nil {
+			disabled = disabledFilter(proxy.Server, key.stableID)
 		}
 		out = append(out, metrics.ProxyMetric{
 			Protocol:           key.protocol,
@@ -781,9 +812,6 @@ func (pc *ProxyChecker) GetProxyResultByStableID(stableID string) (bool, time.Du
 	var metricKey proxyMetricLabels
 	found := false
 	for _, proxy := range pc.proxies {
-		if proxy.StableID == "" {
-			proxy.StableID = proxy.GenerateStableID()
-		}
 		if proxy.StableID == stableID {
 			metricKey = proxyMetricKey(proxy)
 			found = true
@@ -813,10 +841,6 @@ func (pc *ProxyChecker) GetProxyByStableID(stableID string) (*models.ProxyConfig
 	pc.mu.RLock()
 	defer pc.mu.RUnlock()
 	for _, proxy := range pc.proxies {
-		if proxy.StableID == "" {
-			proxy.StableID = proxy.GenerateStableID()
-		}
-
 		if proxy.StableID == stableID {
 			return proxy, true
 		}

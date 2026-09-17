@@ -190,10 +190,17 @@ func (pc *ProxyConfig) GenerateStableID() string {
 // Index), so the resulting IDs are unique and stable across subscription reordering.
 // The first member of each colliding group keeps the bare hash, so single configs
 // (the common case) are unaffected.
+//
+// Configs that already carry a StableID keep it: callers that assign IDs
+// explicitly (e.g. tests targeting a specific proxy by ID) own their values,
+// and re-running this function over an assigned set is a no-op.
 func AssignStableIDs(proxies []*ProxyConfig) {
 	groups := make(map[string][]*ProxyConfig)
 	order := make([]string, 0)
 	for _, p := range proxies {
+		if p.StableID != "" {
+			continue
+		}
 		base := p.GenerateStableID()
 		if _, seen := groups[base]; !seen {
 			order = append(order, base)
@@ -278,7 +285,9 @@ func (pc *ProxyConfig) DebugString() string {
 
 	switch pc.Protocol {
 	case "vless", "vmess":
-		sb.WriteString(fmt.Sprintf("      UUID:     %s\n", pc.UUID))
+		// The UUID is the bearer credential of the connection; debug dumps
+		// must mask it like any other secret.
+		sb.WriteString(fmt.Sprintf("      UUID:     %s\n", maskSecret(pc.UUID)))
 		if pc.Protocol == "vmess" {
 			sb.WriteString(fmt.Sprintf("      AlterId:  %d\n", pc.GetAlterId()))
 		}
@@ -388,8 +397,14 @@ func (pc *ProxyConfig) DebugString() string {
 }
 
 func maskSecret(s string) string {
-	if len(s) <= 4 {
-		return "****"
+	if s == "" {
+		return ""
 	}
-	return s[:2] + "****" + s[len(s)-2:]
+	runes := []rune(s)
+	// Short secrets stay fully masked: showing first/last characters would
+	// reveal most of a 5-8 character password.
+	if len(runes) <= 8 {
+		return "********"
+	}
+	return string(runes[:2]) + "****" + string(runes[len(runes)-2:])
 }
