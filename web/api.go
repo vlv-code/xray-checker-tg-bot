@@ -10,6 +10,7 @@ import (
 	"xray-checker/checker"
 	"xray-checker/config"
 	"xray-checker/models"
+	"xray-checker/nodes"
 	"xray-checker/xray"
 )
 
@@ -394,6 +395,19 @@ func APISystemIPHandler(proxyChecker *checker.ProxyChecker) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, SystemIPResponse{IP: ip})
+	}
+}
+
+// APINodesHandler returns the health of remote nodes reporting to this master
+// @Summary Remote nodes health
+// @Description Health snapshot of every configured remote checker node
+// @Tags nodes
+// @Produce json
+// @Success 200 {array} nodes.NodeHealth
+// @Router /api/v1/nodes [get]
+func APINodesHandler(reg *nodes.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, reg.HealthSnapshot())
 	}
 }
 
