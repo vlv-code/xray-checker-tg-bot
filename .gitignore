@@ -35,9 +35,10 @@ TODO.md
 
 # Subscription store & runtime data
 subscriptions.json
+nodesubs.json
 bot_config.json
 stats.json
 alerts.json
 data/
 *.log
-*.json.tmp
+*.tmp

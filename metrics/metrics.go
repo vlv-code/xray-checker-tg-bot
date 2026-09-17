@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -234,7 +235,10 @@ func PushMetrics(config *RemoteWriteConfig, registry *prometheus.Registry) error
 		Timeout: config.Timeout,
 	}
 
-	req, err := http.NewRequest("POST", config.URL, &buf)
+	ctx, cancel := context.WithTimeout(context.Background(), config.Timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, config.URL, &buf)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
 	}

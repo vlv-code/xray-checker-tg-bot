@@ -13,60 +13,87 @@ import (
 	"xray-checker/metrics"
 )
 
+// parseCommand extracts the command (lowercase, stripped of leading / and @bot suffix)
+// and the remaining arguments from message text.
+func parseCommand(text string) (cmd string, arg string) {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return "", ""
+	}
+	rawCmd := fields[0]
+	if !strings.HasPrefix(rawCmd, "/") {
+		return "", ""
+	}
+	rawCmd = strings.TrimPrefix(rawCmd, "/")
+	if idx := strings.IndexByte(rawCmd, '@'); idx >= 0 {
+		rawCmd = rawCmd[:idx]
+	}
+	cmd = strings.ToLower(rawCmd)
+	if len(fields) > 1 {
+		arg = strings.TrimSpace(text[len(fields[0]):])
+	}
+	return cmd, arg
+}
+
 func (b *Bot) handleMessage(msg *telego.Message) {
 	if !b.allowedChatIDs[msg.Chat.ID] {
 		logger.Warn("Telegram: ignoring message from unauthorized chat %d (%s)", msg.Chat.ID, msg.Chat.Username)
 		return
 	}
 
+	cmd, arg := parseCommand(msg.Text)
+	if cmd == "" {
+		return
+	}
+
 	t := targetFromMessage(msg)
 
-	switch {
-	case strings.HasPrefix(msg.Text, "/start"), strings.HasPrefix(msg.Text, "/menu"):
+	switch cmd {
+	case "start", "menu":
 		b.replyMenu(t)
-	case strings.HasPrefix(msg.Text, "/status"):
+	case "status":
 		b.replyStatus(t)
-	case strings.HasPrefix(msg.Text, "/diag"), strings.HasPrefix(msg.Text, "/check_now"):
-		go b.replyDiagnostics(t, commandArg(msg.Text))
-	case strings.HasPrefix(msg.Text, "/stats"):
+	case "diag", "check_now":
+		go b.replyDiagnostics(t, arg)
+	case "stats":
 		b.replyStats(t)
-	case strings.HasPrefix(msg.Text, "/quiet"), strings.HasPrefix(msg.Text, "/sleep"):
+	case "quiet", "sleep":
 		b.replyQuiet(t)
-	case strings.HasPrefix(msg.Text, "/targets"):
+	case "targets":
 		b.replyTargets(t)
-	case strings.HasPrefix(msg.Text, "/tz"), strings.HasPrefix(msg.Text, "/timezone"):
+	case "tz", "timezone":
 		b.handleTimezoneCommand(msg)
-	case strings.HasPrefix(msg.Text, "/interval"):
+	case "interval":
 		b.handleIntervalCommand(msg)
-	case strings.HasPrefix(msg.Text, "/checkhost_bg"):
+	case "checkhost_bg":
 		b.handleCheckHostBgCommand(msg)
-	case strings.HasPrefix(msg.Text, "/checkhost"):
+	case "checkhost":
 		go b.handleCheckHostCommand(msg)
-	case strings.HasPrefix(msg.Text, "/settings"):
+	case "settings":
 		b.replySettings(t)
-	case strings.HasPrefix(msg.Text, "/togglehost"):
+	case "togglehost":
 		b.handleToggleHostCommand(msg)
-	case strings.HasPrefix(msg.Text, "/togglenode"), strings.HasPrefix(msg.Text, "/disablenode"):
+	case "togglenode", "disablenode":
 		b.handleToggleNodeCommand(msg)
-	case strings.HasPrefix(msg.Text, "/digest"):
+	case "digest":
 		b.replyDigest(t)
-	case strings.HasPrefix(msg.Text, "/nodesubs"):
+	case "nodesubs":
 		b.replyNodeSubs(msg)
-	case strings.HasPrefix(msg.Text, "/nodeaddsub"):
+	case "nodeaddsub":
 		go b.handleNodeAddSub(msg)
-	case strings.HasPrefix(msg.Text, "/nodedelsub"):
+	case "nodedelsub":
 		go b.handleNodeDelSub(msg)
-	case strings.HasPrefix(msg.Text, "/nodes"):
+	case "nodes":
 		b.replyNodes(t)
-	case strings.HasPrefix(msg.Text, "/subs"):
+	case "subs":
 		b.replySubs(t)
-	case strings.HasPrefix(msg.Text, "/addsub"):
+	case "addsub":
 		go b.handleAddSub(msg)
-	case strings.HasPrefix(msg.Text, "/delsub"), strings.HasPrefix(msg.Text, "/removesub"):
+	case "delsub", "removesub":
 		go b.handleDelSub(msg)
-	case strings.HasPrefix(msg.Text, "/id"):
+	case "id":
 		b.replyID(msg)
-	case strings.HasPrefix(msg.Text, "/help"):
+	case "help":
 		b.replyHelp(t)
 	}
 }

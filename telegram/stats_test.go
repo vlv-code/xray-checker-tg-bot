@@ -291,4 +291,40 @@ func TestStatsStore_FlapperQuota(t *testing.T) {
 	}
 }
 
+func TestStatsStore_PersistenceOnDisk(t *testing.T) {
+	tmpDir := t.TempDir()
+	statsPath := filepath.Join(tmpDir, "stats.json")
 
+	store, err := NewStatsStore(statsPath)
+	if err != nil {
+		t.Fatalf("NewStatsStore failed: %v", err)
+	}
+
+	downTime := time.Now().Add(-5 * time.Minute)
+	store.RecordTransition("persist-1", "Persist Node", false, "connection refused", downTime)
+	store.RecordTransition("persist-1", "Persist Node", true, "", time.Now())
+
+	// Reload from the same file in a brand new store
+	reloaded, err := NewStatsStore(statsPath)
+	if err != nil {
+		t.Fatalf("NewStatsStore reload failed: %v", err)
+	}
+
+	incidents := reloaded.GetRecentIncidents(10)
+	if len(incidents) != 1 {
+		t.Fatalf("expected 1 incident after reload, got %d", len(incidents))
+	}
+	if incidents[0].StableID != "persist-1" {
+		t.Errorf("expected stable_id 'persist-1', got %q", incidents[0].StableID)
+	}
+	if incidents[0].Reason != "connection refused" {
+		t.Errorf("expected reason 'connection refused', got %q", incidents[0].Reason)
+	}
+	ps := reloaded.GetProxyStats("persist-1")
+	if ps == nil {
+		t.Fatalf("expected ProxyStats for 'persist-1' after reload, got nil")
+	}
+	if ps.DropCount != 1 {
+		t.Errorf("expected DropCount=1 after reload, got %d", ps.DropCount)
+	}
+}

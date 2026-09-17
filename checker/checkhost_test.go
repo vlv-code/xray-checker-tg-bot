@@ -259,4 +259,3 @@ func TestCheckHostClient_WaitsForAllNodes(t *testing.T) {
 		t.Errorf("expected WorldAvailable=true, got false")
 	}
 }
-

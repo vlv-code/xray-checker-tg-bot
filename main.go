@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"xray-checker/asn"
@@ -161,7 +162,7 @@ func main() {
 	var checkSchedulerMu sync.Mutex
 
 	var reporter *nodes.Reporter
-	var reporterMu sync.Mutex
+	var reporterRunning atomic.Bool
 	if config.CLIConfig.Report.URL != "" {
 		reporter = nodes.NewReporter(config.CLIConfig.Report.URL, config.CLIConfig.Report.Token)
 	}
@@ -259,31 +260,34 @@ func main() {
 		}
 
 		if reporter != nil {
-			go func() {
-				reporterMu.Lock()
-				defer reporterMu.Unlock()
-				hostIP, err := proxyChecker.GetCurrentIP()
-				if err != nil {
-					hostIP = ""
-				}
-				checkSchedulerMu.Lock()
-				interval := config.CLIConfig.Proxy.CheckInterval
-				checkSchedulerMu.Unlock()
-				payload := nodes.BuildReport(
-					proxyChecker.MetricsSnapshot(), version, interval,
-					config.CLIConfig.Proxy.CheckMethod, hostIP,
-				)
-				desired, err := reporter.Send(payload)
-				if err != nil {
-					logger.Warn("Report to master failed (next cycle will retry): %v", err)
-					return
-				}
-				if reconcileDesired != nil {
-					if err := reconcileDesired(desired); err != nil {
-						logger.Error("Reconciling managed subscriptions failed: %v", err)
+			if reporterRunning.CompareAndSwap(false, true) {
+				go func() {
+					defer reporterRunning.Store(false)
+					hostIP, err := proxyChecker.GetCurrentIP()
+					if err != nil {
+						hostIP = ""
 					}
-				}
-			}()
+					checkSchedulerMu.Lock()
+					interval := config.CLIConfig.Proxy.CheckInterval
+					checkSchedulerMu.Unlock()
+					payload := nodes.BuildReport(
+						proxyChecker.MetricsSnapshot(), version, interval,
+						config.CLIConfig.Proxy.CheckMethod, hostIP,
+					)
+					desired, err := reporter.Send(payload)
+					if err != nil {
+						logger.Warn("Report to master failed (next cycle will retry): %v", err)
+						return
+					}
+					if reconcileDesired != nil {
+						if err := reconcileDesired(desired); err != nil {
+							logger.Error("Reconciling managed subscriptions failed: %v", err)
+						}
+					}
+				}()
+			} else {
+				logger.Debug("Previous report to master still in flight, skipping overlapping push")
+			}
 		}
 	}
 

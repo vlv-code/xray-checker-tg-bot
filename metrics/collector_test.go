@@ -206,4 +206,3 @@ func TestCollectorDisabledProxy(t *testing.T) {
 		}
 	}
 }
-

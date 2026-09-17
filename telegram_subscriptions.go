@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"xray-checker/models"
 	"xray-checker/subscription"
 )
 
@@ -12,8 +13,9 @@ import (
 // reloadMu) as the periodic subscription updater — there is only ever one
 // place that rebuilds the Xray config and restarts the runner.
 type telegramSubscriptionManager struct {
-	store  *subscription.URLStore
-	reload func() (changed bool, proxyCount int, err error)
+	store    *subscription.URLStore
+	reload   func() (changed bool, proxyCount int, err error)
+	validate func(url string) ([]*models.ProxyConfig, string, error)
 }
 
 func (m *telegramSubscriptionManager) Static() []string  { return m.store.Static() }
@@ -25,7 +27,11 @@ func (m *telegramSubscriptionManager) Dynamic() []string { return m.store.Dynami
 // up-front check a broken new URL would silently vanish into the mix on
 // reload instead of being reported back to whoever tried to add it.
 func (m *telegramSubscriptionManager) AddSubscription(url string) (int, error) {
-	configs, _, err := subscription.ReadFromSource(url)
+	validator := m.validate
+	if validator == nil {
+		validator = subscription.ReadFromSource
+	}
+	configs, _, err := validator(url)
 	if err != nil {
 		return 0, fmt.Errorf("не удалось загрузить подписку: %w", err)
 	}

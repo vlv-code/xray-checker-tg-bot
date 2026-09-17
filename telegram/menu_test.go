@@ -166,4 +166,3 @@ func TestSettingsMenuSubscriptionsVisibility(t *testing.T) {
 		t.Errorf("expected SettingsMenuMarkup(false) to omit menu:subs")
 	}
 }
-

@@ -150,6 +150,7 @@ func (ss *StatsStore) RecordInitialDown(stableID, name string, timestamp time.Ti
 			Reason:    "Offline at startup",
 		}
 		ss.addIncident(incident)
+		_ = ss.saveLocked()
 	}
 }
 
@@ -214,6 +215,7 @@ func (ss *StatsStore) RecordTransition(stableID, name string, online bool, reaso
 				Reason:    reason,
 			}
 			ss.addIncident(incident)
+			_ = ss.saveLocked()
 		}
 	} else {
 		// Recovered
@@ -238,6 +240,7 @@ func (ss *StatsStore) RecordTransition(stableID, name string, online bool, reaso
 					ss.Incidents[i].DurationSec = dur
 				}
 			}
+			_ = ss.saveLocked()
 		}
 	}
 	return downtime
@@ -272,6 +275,7 @@ func (ss *StatsStore) SyncOnlineState(stableID string, timestamp time.Time) {
 				ss.Incidents[i].DurationSec = dur
 			}
 		}
+		_ = ss.saveLocked()
 	}
 }
 
@@ -426,7 +430,10 @@ func (ss *StatsStore) GetTopProblematicActive(limit int, activeIDs map[string]bo
 func (ss *StatsStore) Save() error {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
+	return ss.saveLocked()
+}
 
+func (ss *StatsStore) saveLocked() error {
 	if ss.path == "" {
 		return nil
 	}
@@ -462,7 +469,11 @@ func (ss *StatsStore) Save() error {
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, ss.path)
+	if err := os.Rename(tmp, ss.path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // GetLatencySamples returns the latency ring buffer for a given proxy.

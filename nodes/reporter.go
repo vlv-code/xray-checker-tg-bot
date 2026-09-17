@@ -2,6 +2,7 @@ package nodes
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,7 +33,9 @@ func (r *Reporter) Send(p ReportPayload) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encoding report: %w", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, r.url, bytes.NewReader(body))
+	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("building report request: %w", err)
 	}

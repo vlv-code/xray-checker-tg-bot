@@ -5,11 +5,13 @@ package asn
 
 import (
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/oschwald/maxminddb-golang"
@@ -34,8 +36,23 @@ func EnsureDB(path, url string) error {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
 
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("creating directory %s: %w", dir, err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("creating request for %s: %w", url, err)
+	}
+
 	client := &http.Client{Timeout: downloadTimeout}
-	resp, err := client.Get(url)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("downloading %s: %w", url, err)
 	}
@@ -57,15 +74,15 @@ func EnsureDB(path, url string) error {
 	}
 	if _, err := io.Copy(f, gz); err != nil {
 		f.Close()
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("writing asn db: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("closing asn db: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("moving asn db into place: %w", err)
 	}
 	logger.Info("ASN database downloaded to %s", path)

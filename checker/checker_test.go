@@ -438,4 +438,3 @@ func TestCheckByIP_TransparentAndValidation(t *testing.T) {
 		t.Errorf("expected httpStatus 502, got %d", outcome.httpStatus)
 	}
 }
-

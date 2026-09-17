@@ -345,11 +345,6 @@ func (pc *ProxyChecker) checkProxyInternal(proxy *models.ProxyConfig) {
 }
 
 func (pc *ProxyChecker) checkByIP(client *http.Client) checkOutcome {
-	req, err := http.NewRequest("GET", pc.ipCheck, nil)
-	if err != nil {
-		return checkOutcome{err: err}
-	}
-
 	var tlsStart, tlsDone time.Time
 	var gotFirstByte time.Time
 	start := time.Now()
@@ -360,7 +355,11 @@ func (pc *ProxyChecker) checkByIP(client *http.Client) checkOutcome {
 			gotFirstByte = time.Now()
 		},
 	}
-	req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
+	ctx := httptrace.WithClientTrace(context.Background(), trace)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pc.ipCheck, nil)
+	if err != nil {
+		return checkOutcome{err: err}
+	}
 
 	resp, err := client.Do(req)
 	var tlsHandshakeMs, ttfbMs int64
@@ -478,12 +477,6 @@ func (pc *ProxyChecker) checkByGen(client *http.Client) checkOutcome {
 
 	var lastOutcome checkOutcome
 	for _, targetURL := range targets {
-		req, err := http.NewRequest("GET", targetURL, nil)
-		if err != nil {
-			lastOutcome = checkOutcome{err: err}
-			continue
-		}
-
 		var tlsStart, tlsDone time.Time
 		var gotFirstByte time.Time
 		start := time.Now()
@@ -494,7 +487,12 @@ func (pc *ProxyChecker) checkByGen(client *http.Client) checkOutcome {
 				gotFirstByte = time.Now()
 			},
 		}
-		req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
+		ctx := httptrace.WithClientTrace(context.Background(), trace)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+		if err != nil {
+			lastOutcome = checkOutcome{err: err}
+			continue
+		}
 
 		resp, err := client.Do(req)
 		var tlsHandshakeMs, ttfbMs int64
@@ -562,11 +560,6 @@ func (pc *ProxyChecker) checkByDownload(client *http.Client) checkOutcome {
 		}
 	}
 
-	req, err := http.NewRequest("GET", pc.downloadURL, nil)
-	if err != nil {
-		return checkOutcome{err: err}
-	}
-
 	var tlsStart, tlsDone time.Time
 	var gotFirstByte time.Time
 	start := time.Now()
@@ -577,7 +570,11 @@ func (pc *ProxyChecker) checkByDownload(client *http.Client) checkOutcome {
 			gotFirstByte = time.Now()
 		},
 	}
-	req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
+	ctx := httptrace.WithClientTrace(context.Background(), trace)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pc.downloadURL, nil)
+	if err != nil {
+		return checkOutcome{err: err}
+	}
 
 	downloadClient := &http.Client{
 		Transport: client.Transport,

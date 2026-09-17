@@ -45,7 +45,10 @@ func (p *Parser) fetchURLContent(source string) (*fetchResult, error) {
 		return nil, err
 	}
 
-	req, err := http.NewRequest("GET", cleanURL, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cleanURL, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -179,15 +179,6 @@ func (tm *TargetManager) RemoveTarget(rawURL string) error {
 
 // CheckSingleTarget tests an endpoint via the provided http.Client.
 func CheckSingleTarget(client *http.Client, targetURL string) TargetDiagResult {
-	req, err := http.NewRequest("GET", targetURL, nil)
-	if err != nil {
-		return TargetDiagResult{
-			URL:     targetURL,
-			Success: false,
-			Error:   err.Error(),
-		}
-	}
-
 	var ttfb time.Duration
 	start := time.Now()
 	trace := &httptrace.ClientTrace{
@@ -195,7 +186,15 @@ func CheckSingleTarget(client *http.Client, targetURL string) TargetDiagResult {
 			ttfb = time.Since(start)
 		},
 	}
-	req = req.WithContext(httptrace.WithClientTrace(context.Background(), trace))
+	ctx := httptrace.WithClientTrace(context.Background(), trace)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return TargetDiagResult{
+			URL:     targetURL,
+			Success: false,
+			Error:   err.Error(),
+		}
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -535,12 +534,14 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 			if diagTimeout <= 0 {
 				diagTimeout = 10 * time.Second
 			}
+			transport := &http.Transport{
+				Proxy:             http.ProxyURL(proxyURLParsed),
+				DisableKeepAlives: true,
+			}
+			defer transport.CloseIdleConnections()
 			client := &http.Client{
-				Transport: &http.Transport{
-					Proxy:             http.ProxyURL(proxyURLParsed),
-					DisableKeepAlives: true,
-				},
-				Timeout: diagTimeout,
+				Transport: transport,
+				Timeout:   diagTimeout,
 			}
 
 			// Run Node health probe in parallel with target tests
