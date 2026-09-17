@@ -141,6 +141,23 @@ paths:
                       data:
                         $ref: '#/components/schemas/SystemInfoResponse'
 
+  /api/v1/nodes:
+    get:
+      tags:
+        - nodes
+      summary: Remote nodes health
+      description: Health snapshot of every configured remote checker node
+      operationId: getNodes
+      responses:
+        '200':
+          description: Node health list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NodeHealth'
+
   /api/v1/system/ip:
     get:
       summary: Get current IP
@@ -348,4 +365,33 @@ components:
         ip:
           type: string
           example: "203.0.113.1"
+
+    NodeHealth:
+      type: object
+      properties:
+        name:
+          type: string
+          example: node-1
+        up:
+          type: boolean
+        everReported:
+          type: boolean
+        version:
+          type: string
+          example: "1.0.0"
+        hostIP:
+          type: string
+          example: "203.0.113.7"
+        asn:
+          type: string
+          example: "AS9009 M247 Europe SRL"
+        online:
+          type: integer
+        total:
+          type: integer
+        lastReport:
+          type: string
+          format: date-time
+        checkIntervalSec:
+          type: integer
 

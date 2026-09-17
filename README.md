@@ -55,6 +55,10 @@ All features are accessible via the interactive **`/menu`** or direct chat comma
 | `/subs` | List active subscriptions (configured + added via bot) |
 | `/addsub <URL>` | Dynamically add a new subscription URL without restarting |
 | `/delsub <URL>` | Remove a previously added dynamic subscription |
+| `/nodes` | Health status, ASN, and summary of remote checker nodes |
+| `/nodesubs <name>` | List desired subscriptions assigned to a remote node |
+| `/nodeaddsub <name> <URL>` | Assign a subscription URL to a remote node |
+| `/nodedelsub <name> <URL>` | Unassign a subscription URL from a remote node |
 | `/digest` | Trigger an immediate status digest in chat |
 | `/id` | Print this chat's `chat_id` and `topic_id` for `TELEGRAM_CHAT_IDS` |
 | `/help` | Display quick help summary |
@@ -75,6 +79,27 @@ Every target receives its own copy of alerts, recovery notes and digests, and co
 3. Put that value into `.env` and restart.
 
 **Privacy mode.** By default Telegram bots in groups only see commands that mention the bot (for example `/menu@YourBot`) and replies to its messages; outgoing alerts are not affected. To use short commands like `/menu`, disable privacy via [@BotFather](https://t.me/BotFather) (`/mybots` → Bot Settings → Group Privacy → Off, then remove and re-add the bot to existing groups), or simply make the bot a group admin.
+
+---
+
+## 🖥 Remote Nodes (Push Reporting)
+
+Run additional headless instances of this image (no `TELEGRAM_BOT_TOKEN`) and
+have them push check results to the master instance that owns the bot:
+
+- **On each node:** set `REPORT_URL=https://master:2112/api/v1/nodes/report` and
+  `REPORT_TOKEN` (no inbound ports required; works behind NAT).
+- **On the master:** list nodes in `NODES=name|token,other|token`. The master
+  alerts on every node's proxies (`[node] name` identity), alerts when a node
+  stops reporting, and shows each node's ASN (`ASN_DB_URL`, db-ip asn-lite).
+- **Bot commands:** `/nodes`, `/nodesubs <name>`, `/nodeaddsub <name> <url>`,
+  `/nodedelsub <name> <url>` — subscriptions are delivered to the node in the
+  response to its next report and applied locally (validated, reload-rolled
+  back on failure).
+
+The ingest endpoint uses bearer-token auth; run it behind HTTPS (reverse
+proxy) when nodes report over the public internet. See
+`docs/superpowers/specs/2026-09-17-nodes-push-design.md` for the full design.
 
 ---
 
@@ -216,6 +241,11 @@ docker compose up -d --build
 | `SIMULATE_LATENCY` | `true` | Add measured latency (capped at 2s) to `/config/{id}` badge responses |
 | `LOG_LEVEL` | `info` | Application log level (`debug\|info\|warn\|error\|none`) |
 | `RUN_ONCE` | `false` | Run a single check cycle and exit (for cron/scheduled jobs) |
+| `NODES` | `""` | Comma-separated remote checker nodes as `name\|token` for master instance |
+| `NODES_STORE_PATH` | `node_subs.json` | Persistent storage for node-assigned desired subscriptions |
+| `REPORT_URL` | `""` | Master ingest endpoint URL for node push reports |
+| `REPORT_TOKEN` | `""` | Bearer token matching node entry in master's `NODES` list |
+| `ASN_DB_URL` | db-ip asn-lite | URL of gzipped ASN mmdb database for node network operator lookup |
 | `HTTP_PROXY` / `ALL_PROXY` | `""` | Outbound proxy (`socks5://...` or `http://...`) for Telegram and external APIs |
 
 > [!NOTE]

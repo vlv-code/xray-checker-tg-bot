@@ -1,9 +1,13 @@
 package web
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"xray-checker/config"
+	"xray-checker/nodes"
 )
 
 func TestMaskMiddle(t *testing.T) {
@@ -155,5 +159,28 @@ func TestSanitizeGeneratedConfigMasksWireGuardAndSocksSecrets(t *testing.T) {
 	socksUser := sanitizedSocks["settings"].(map[string]interface{})["servers"].([]interface{})[0].(map[string]interface{})["users"].([]interface{})[0].(map[string]interface{})
 	if socksUser["pass"] != "very...word" {
 		t.Errorf("Socks pass not masked: %v", socksUser["pass"])
+	}
+}
+
+func TestAPINodesHandler(t *testing.T) {
+	reg := nodes.NewRegistry([]nodes.NodeConfig{{Name: "n1", Token: "t1"}}, nil, nil)
+	rec := httptest.NewRecorder()
+	APINodesHandler(reg)(rec, httptest.NewRequest(http.MethodGet, "/api/v1/nodes", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	var resp struct {
+		Success bool               `json:"success"`
+		Data    []nodes.NodeHealth `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Success || len(resp.Data) != 1 || resp.Data[0].Name != "n1" {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+	if resp.Data[0].EverReported || resp.Data[0].Up {
+		t.Errorf("pending node must be down/unreported: %+v", resp.Data[0])
 	}
 }

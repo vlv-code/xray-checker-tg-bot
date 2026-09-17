@@ -9,11 +9,13 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"xray-checker/asn"
 	"xray-checker/checker"
 	"xray-checker/config"
 	"xray-checker/logger"
 	"xray-checker/metrics"
 	"xray-checker/models"
+	"xray-checker/nodes"
 	"xray-checker/subscription"
 	"xray-checker/telegram"
 	"xray-checker/web"
@@ -64,6 +66,31 @@ func main() {
 	subURLStore, err := subscription.NewURLStore(config.CLIConfig.Subscription.URLs, config.CLIConfig.Subscription.StorePath)
 	if err != nil {
 		logger.Fatal("Error loading subscription store: %v", err)
+	}
+
+	var nodeRegistry *nodes.Registry
+	var nodeSubsStore *nodes.NodeSubsStore
+	if len(config.CLIConfig.Nodes.List) > 0 {
+		nodeCfgs, err := nodes.ParseNodes(config.CLIConfig.Nodes.List)
+		if err != nil {
+			logger.Fatal("Invalid NODES entry: %v", err)
+		}
+		nodeSubsStore, err = nodes.NewNodeSubsStore(config.CLIConfig.Nodes.StorePath)
+		if err != nil {
+			logger.Fatal("Error loading node subscriptions store: %v", err)
+		}
+		asnLookup := asn.NopLookup
+		asnPath := "geo/asn.mmdb"
+		if err := asn.EnsureDB(asnPath, config.CLIConfig.ASN.DBURL); err != nil {
+			logger.Warn("ASN database unavailable (node ASN will be empty): %v", err)
+		} else if db, oerr := asn.Open(asnPath); oerr != nil {
+			logger.Warn("ASN database failed to open (node ASN will be empty): %v", oerr)
+		} else {
+			defer db.Close()
+			asnLookup = db.Lookup
+		}
+		nodeRegistry = nodes.NewRegistry(nodeCfgs, nodeSubsStore, asnLookup)
+		logger.Info("Remote nodes configured: %d", len(nodeCfgs))
 	}
 
 	configFile := "xray_config.json"
@@ -133,6 +160,16 @@ func main() {
 	var checkScheduler *gocron.Scheduler
 	var checkSchedulerMu sync.Mutex
 
+	var reporter *nodes.Reporter
+	var reporterMu sync.Mutex
+	if config.CLIConfig.Report.URL != "" {
+		reporter = nodes.NewReporter(config.CLIConfig.Report.URL, config.CLIConfig.Report.Token)
+	}
+
+	// reconcileDesired applies the master's desired managed-subscription list
+	// on the node side; assigned after reloadSubscriptions is defined below.
+	var reconcileDesired func(desired []string) error
+
 	var runCheckIteration func()
 
 	rescheduleChecks := func(seconds int) {
@@ -158,6 +195,29 @@ func main() {
 	// resets and false down alerts during subscription reloads.
 	var checkRunnerMu sync.RWMutex
 
+	// emitSnapshot feeds the bot ONE merged snapshot: local proxies plus every
+	// reporting node. ProcessSnapshot drops state for absent IDs, so local and
+	// remote snapshots must never be fed separately.
+	emitSnapshot := func() {
+		if tgBot == nil {
+			return
+		}
+		snap := proxyChecker.MetricsSnapshot()
+		if nodeRegistry != nil {
+			snap = nodeRegistry.MergedSnapshot(snap)
+		}
+		tgBot.ProcessSnapshot(snap)
+	}
+
+	if nodeRegistry != nil {
+		nodeRegistry.SetOnUpdate(func() {
+			emitSnapshot()
+			if tgBot != nil {
+				tgBot.ProcessNodesHealth(toNodeInfos(nodeRegistry.HealthSnapshot()))
+			}
+		})
+	}
+
 	runCheckIteration = func() {
 		checkRunnerMu.RLock()
 		defer checkRunnerMu.RUnlock()
@@ -167,9 +227,7 @@ func main() {
 		proxyChecker.CheckAllProxies()
 		elapsed := time.Since(start)
 
-		if tgBot != nil {
-			tgBot.ProcessSnapshot(proxyChecker.MetricsSnapshot())
-		}
+		emitSnapshot()
 
 		var interval int
 		checkSchedulerMu.Lock()
@@ -198,6 +256,34 @@ func main() {
 					logger.Error("Error pushing metrics: %v", err)
 				}
 			}
+		}
+
+		if reporter != nil {
+			go func() {
+				reporterMu.Lock()
+				defer reporterMu.Unlock()
+				hostIP, err := proxyChecker.GetCurrentIP()
+				if err != nil {
+					hostIP = ""
+				}
+				checkSchedulerMu.Lock()
+				interval := config.CLIConfig.Proxy.CheckInterval
+				checkSchedulerMu.Unlock()
+				payload := nodes.BuildReport(
+					proxyChecker.MetricsSnapshot(), version, interval,
+					config.CLIConfig.Proxy.CheckMethod, hostIP,
+				)
+				desired, err := reporter.Send(payload)
+				if err != nil {
+					logger.Warn("Report to master failed (next cycle will retry): %v", err)
+					return
+				}
+				if reconcileDesired != nil {
+					if err := reconcileDesired(desired); err != nil {
+						logger.Error("Reconciling managed subscriptions failed: %v", err)
+					}
+				}
+			}()
 		}
 	}
 
@@ -260,6 +346,10 @@ func main() {
 		runCheckIteration()
 		proxyChecker.PruneStaleResults()
 		return true, len(*proxyConfigs), nil
+	}
+
+	reconcileDesired = func(desired []string) error {
+		return subscription.ReconcileManaged(subURLStore, desired, reloadSubscriptions, subscription.DefaultSubscriptionValidator)
 	}
 
 	// The Telegram bot is only started for a long-running instance: --run-once
@@ -348,6 +438,9 @@ func main() {
 				if alertTracker != nil {
 					bot.SetAlertTracker(alertTracker)
 				}
+				if nodeRegistry != nil {
+					bot.SetNodeManager(&nodeManagerAdapter{reg: nodeRegistry, subs: nodeSubsStore})
+				}
 				bot.SetDiagnosticsSource(proxyChecker)
 				bot.SetIntervalHandler(rescheduleChecks)
 				if config.CLIConfig.Telegram.RichMode {
@@ -403,11 +496,33 @@ func main() {
 		updateScheduler.StartAsync()
 	}
 
+	if nodeRegistry != nil {
+		sweepScheduler := gocron.NewScheduler(time.UTC)
+		sweepScheduler.Every(30).Seconds().SingletonMode().Do(func() {
+			names := nodeRegistry.SweepStale(time.Now())
+			for _, name := range names {
+				logger.Warn("Node %s: no reports within deadline, marking down", name)
+			}
+			if len(names) > 0 {
+				emitSnapshot()
+				if tgBot != nil {
+					tgBot.ProcessNodesHealth(toNodeInfos(nodeRegistry.HealthSnapshot()))
+				}
+			}
+		})
+		sweepScheduler.StartAsync()
+	}
+
 	mux, err := web.NewPrefixServeMux(config.CLIConfig.Metrics.BasePath)
 	if err != nil {
 		logger.Fatal("Error creating web server: %v", err)
 	}
 	mux.Handle("/health", web.HealthHandler())
+	if nodeRegistry != nil {
+		// Bearer-token auth of its own — deliberately not behind the metrics
+		// basic auth, which nodes must not need to know.
+		mux.Handle("/api/v1/nodes/report", nodeRegistry.HandleReport())
+	}
 
 	protectedHandler := http.NewServeMux()
 	protectedHandler.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
@@ -427,6 +542,9 @@ func main() {
 		}
 
 		web.RegisterConfigEndpoints(*proxyConfigs, proxyChecker, config.CLIConfig.Xray.StartPort)
+		if nodeRegistry != nil {
+			protectedHandler.Handle("/api/v1/nodes", web.APINodesHandler(nodeRegistry))
+		}
 
 		protectedHandler.Handle("/config/", web.ConfigStatusHandler(proxyChecker))
 		protectedHandler.Handle("/api/v1/proxies/", web.APIProxyHandler(proxyChecker, config.CLIConfig.Xray.StartPort))

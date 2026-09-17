@@ -725,6 +725,10 @@ func (pc *ProxyChecker) MetricsSnapshot() []metrics.ProxyMetric {
 		if disabledFilter != nil {
 			disabled = disabledFilter(proxy.Server, key.stableID)
 		}
+		var lastCheckSec int64
+		if !r.lastCheck.IsZero() {
+			lastCheckSec = r.lastCheck.Unix()
+		}
 		out = append(out, metrics.ProxyMetric{
 			Protocol:           key.protocol,
 			Address:            key.address,
@@ -747,6 +751,7 @@ func (pc *ProxyChecker) MetricsSnapshot() []metrics.ProxyMetric {
 			DirectProbeSuccess: r.directProbeSuccess,
 			DirectProbeRTTMs:   r.directProbeRTTMs,
 			DirectProbeErr:     r.directProbeErr,
+			LastCheckSec:       lastCheckSec,
 		})
 	}
 	return out

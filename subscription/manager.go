@@ -30,6 +30,16 @@ type URLStore struct {
 	static  []string
 	dynamic []string
 	meta    map[string]URLMeta
+	// managed marks dynamic URLs whose owner is a remote master's desired
+	// list (node-side reconciliation); plain /addsub entries stay unmanaged.
+	managed map[string]bool
+}
+
+// storeFile is the persisted URLStore format. The legacy format was a bare
+// JSON array of dynamic URLs (all unmanaged); loading still accepts it.
+type storeFile struct {
+	Dynamic []string        `json:"dynamic"`
+	Managed map[string]bool `json:"managed,omitempty"`
 }
 
 // NewURLStore creates a store seeded with staticURLs and loads any
@@ -38,9 +48,10 @@ type URLStore struct {
 // restart.
 func NewURLStore(staticURLs []string, path string) (*URLStore, error) {
 	s := &URLStore{
-		path:   path,
-		static: append([]string(nil), staticURLs...),
-		meta:   make(map[string]URLMeta),
+		path:    path,
+		static:  append([]string(nil), staticURLs...),
+		meta:    make(map[string]URLMeta),
+		managed: make(map[string]bool),
 	}
 
 	if path == "" {
@@ -55,11 +66,22 @@ func NewURLStore(staticURLs []string, path string) (*URLStore, error) {
 		return nil, fmt.Errorf("reading subscription store %s: %w", path, err)
 	}
 
+	var sf storeFile
+	if err := json.Unmarshal(data, &sf); err == nil && sf.Dynamic != nil {
+		s.dynamic = sf.Dynamic
+		s.managed = sf.Managed
+		if s.managed == nil {
+			s.managed = make(map[string]bool)
+		}
+		return s, nil
+	}
+	// Legacy format: a bare JSON array of dynamic URLs, all unmanaged.
 	var dynamic []string
 	if err := json.Unmarshal(data, &dynamic); err != nil {
 		return nil, fmt.Errorf("parsing subscription store %s: %w", path, err)
 	}
 	s.dynamic = dynamic
+	s.managed = make(map[string]bool)
 	return s, nil
 }
 
@@ -207,7 +229,7 @@ func (s *URLStore) persistLocked() error {
 		return nil
 	}
 
-	data, err := json.MarshalIndent(s.dynamic, "", "  ")
+	data, err := json.MarshalIndent(storeFile{Dynamic: s.dynamic, Managed: s.managed}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding subscription store: %w", err)
 	}
@@ -231,4 +253,85 @@ func normalizeSubscriptionURL(raw string) (string, error) {
 		return "", fmt.Errorf("URL must start with http:// or https://")
 	}
 	return u, nil
+}
+
+// AddManaged adds url to the dynamic set flagged as managed by a remote
+// master. An existing dynamic entry is adopted (flag flipped) instead of
+// duplicated. Static entries are left alone (returns false).
+func (s *URLStore) AddManaged(raw string) (bool, error) {
+	u, err := normalizeSubscriptionURL(raw)
+	if err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.managed == nil {
+		s.managed = make(map[string]bool)
+	}
+	for _, existing := range s.static {
+		if existing == u {
+			return false, nil // static already satisfies the desired state
+		}
+	}
+	managedBackup := make(map[string]bool, len(s.managed))
+	for k, v := range s.managed {
+		managedBackup[k] = v
+	}
+	dynamicBackup := append([]string(nil), s.dynamic...)
+	if !s.containsLocked(u) {
+		s.dynamic = append(s.dynamic, u)
+	}
+	s.managed[u] = true
+	if err := s.persistLocked(); err != nil {
+		s.dynamic = dynamicBackup
+		s.managed = managedBackup
+		return false, err
+	}
+	return true, nil
+}
+
+// Managed returns the dynamic URLs flagged as managed, in insertion order.
+func (s *URLStore) Managed() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []string
+	for _, u := range s.dynamic {
+		if s.managed[u] {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// RemoveManaged removes url only if it is a managed dynamic entry.
+func (s *URLStore) RemoveManaged(raw string) (bool, error) {
+	u := strings.TrimSpace(raw)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.managed[u] {
+		return false, nil
+	}
+	idx := -1
+	for i, existing := range s.dynamic {
+		if existing == u {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return false, nil
+	}
+	dynamicBackup := append([]string(nil), s.dynamic...)
+	managedBackup := make(map[string]bool, len(s.managed))
+	for k, v := range s.managed {
+		managedBackup[k] = v
+	}
+	s.dynamic = append(s.dynamic[:idx:idx], s.dynamic[idx+1:]...)
+	delete(s.managed, u)
+	if err := s.persistLocked(); err != nil {
+		s.dynamic = dynamicBackup
+		s.managed = managedBackup
+		return false, err
+	}
+	return true, nil
 }
