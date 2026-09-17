@@ -201,11 +201,15 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 		}
 		if b != nil && b.statsStore != nil {
 			ls := b.statsStore.GetLatencySamples(rep.StableID)
-			if ls.Count() >= 5 {
+			if ls.Count() >= 50 {
 				p95 := ls.Percentile(0.95)
 				p99 := ls.Percentile(0.99)
 				jitter := ls.StdDev()
 				fmt.Fprintf(sb, "  • Доступен: 🟢 %.0f мс (p95: %.0f мс, p99: %.0f мс, σ=%.0f)\n", latMs, p95, p99, jitter)
+			} else if ls.Count() >= 5 {
+				p95 := ls.Percentile(0.95)
+				jitter := ls.StdDev()
+				fmt.Fprintf(sb, "  • Доступен: 🟢 %.0f мс (p95: %.0f мс, σ=%.0f)\n", latMs, p95, jitter)
 			} else {
 				fmt.Fprintf(sb, "  • Доступен: 🟢 %.0f мс\n", latMs)
 			}
@@ -460,8 +464,13 @@ func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeH
 		ls := b.statsStore.GetLatencySamples(pm.StableID)
 		if ls != nil && ls.Count() >= 5 {
 			fmt.Fprintf(&sb, "\n<b>СТАТИСТИКА ЗАДЕРЖКИ:</b>\n")
-			fmt.Fprintf(&sb, "  • p50: %.0f мс | p95: %.0f мс | p99: %.0f мс (σ=%.0f, n=%d)\n",
-				ls.Percentile(0.50), ls.Percentile(0.95), ls.Percentile(0.99), ls.StdDev(), ls.Count())
+			if ls.Count() >= 50 {
+				fmt.Fprintf(&sb, "  • p50: %.0f мс | p95: %.0f мс | p99: %.0f мс (σ=%.0f, n=%d)\n",
+					ls.Percentile(0.50), ls.Percentile(0.95), ls.Percentile(0.99), ls.StdDev(), ls.Count())
+			} else {
+				fmt.Fprintf(&sb, "  • p50: %.0f мс | p95: %.0f мс (σ=%.0f, n=%d)\n",
+					ls.Percentile(0.50), ls.Percentile(0.95), ls.StdDev(), ls.Count())
+			}
 		}
 
 		incStats := b.statsStore.GetIncidentStats(pm.StableID, 24*time.Hour, b.now())

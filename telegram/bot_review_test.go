@@ -269,7 +269,7 @@ func TestBot_DeepDiag_ReliabilityAndP99(t *testing.T) {
 		statsStore: store,
 	}
 
-	// Record 10 latency samples
+	// Record 10 latency samples: should show p50/p95 but NOT p99 (n < 50)
 	for _, lat := range []float64{20, 30, 40, 50, 60, 70, 80, 90, 150, 300} {
 		store.RecordLatency("p1", lat)
 	}
@@ -289,8 +289,20 @@ func TestBot_DeepDiag_ReliabilityAndP99(t *testing.T) {
 
 	text := b.formatDeepDiagnostics(pm, checker.NodeHealth{ResolvedIP: "1.1.1.1"}, nil)
 
-	if !strings.Contains(text, "p99:") {
-		t.Errorf("expected text to contain 'p99:', got:\n%s", text)
+	if !strings.Contains(text, "p95:") {
+		t.Errorf("expected text to contain 'p95:', got:\n%s", text)
+	}
+	if strings.Contains(text, "p99:") {
+		t.Errorf("expected text to omit 'p99:' for n=10, got:\n%s", text)
+	}
+
+	// Now add up to 50 samples to verify p99 appears
+	for i := 0; i < 40; i++ {
+		store.RecordLatency("p1", 50.0)
+	}
+	text50 := b.formatDeepDiagnostics(pm, checker.NodeHealth{ResolvedIP: "1.1.1.1"}, nil)
+	if !strings.Contains(text50, "p99:") {
+		t.Errorf("expected text to contain 'p99:' for n=50, got:\n%s", text50)
 	}
 	if !strings.Contains(text, "НАДЁЖНОСТЬ (24ч):") {
 		t.Errorf("expected text to contain 'НАДЁЖНОСТЬ (24ч):', got:\n%s", text)

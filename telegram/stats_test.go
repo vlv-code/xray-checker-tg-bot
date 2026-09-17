@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,9 +20,12 @@ func TestStatsStore_RecordAndAggregate(t *testing.T) {
 	store.RecordCheck("proxy-1", "Proxy One", true, 100)
 	store.RecordCheck("proxy-2", "Proxy Two", true, 150)
 
-	uptime1 := store.GetUptimePercent("proxy-1")
-	if uptime1 != 100.0 {
-		t.Errorf("expected 100%% uptime, got %.2f%%", uptime1)
+	uptime1, ok := store.GetUptimePercent("proxy-1")
+	if !ok || uptime1 != 100.0 {
+		t.Errorf("expected 100%% uptime, got %.2f%% (ok=%v)", uptime1, ok)
+	}
+	if _, ok := store.GetUptimePercent("non-existent"); ok {
+		t.Errorf("expected ok=false for non-existent proxy")
 	}
 
 	// 2. Simulate proxy-1 going down
@@ -168,3 +172,123 @@ func TestLatencySamples_PercentilesAndJitter(t *testing.T) {
 		t.Errorf("expected stddev around 14.4, got %.2f", stddev)
 	}
 }
+
+func TestLatencySamples_Interpolation(t *testing.T) {
+	ls := NewLatencySamples(10)
+	if p := ls.Percentile(0.5); p != 0 {
+		t.Errorf("expected 0 for empty samples, got %v", p)
+	}
+
+	// Single sample
+	ls.Add(42.0)
+	if p := ls.Percentile(0.5); p != 42.0 {
+		t.Errorf("expected 42.0 for single sample, got %v", p)
+	}
+	if p := ls.Percentile(0.0); p != 42.0 {
+		t.Errorf("expected 42.0 for p=0, got %v", p)
+	}
+	if p := ls.Percentile(1.0); p != 42.0 {
+		t.Errorf("expected 42.0 for p=1, got %v", p)
+	}
+
+	// 5 samples: 10, 20, 30, 40, 50
+	ls2 := NewLatencySamples(10)
+	for _, v := range []float64{10, 20, 30, 40, 50} {
+		ls2.Add(v)
+	}
+	// p50: r = 4 * 0.5 = 2.0 -> 30.0
+	if p50 := ls2.Percentile(0.5); p50 != 30.0 {
+		t.Errorf("expected p50 = 30.0, got %v", p50)
+	}
+	// p95: r = 4 * 0.95 = 3.8 -> 40 + 0.8 * 10 = 48.0
+	if p95 := ls2.Percentile(0.95); math.Abs(p95-48.0) > 1e-9 {
+		t.Errorf("expected p95 = 48.0, got %v", p95)
+	}
+	// p99: r = 4 * 0.99 = 3.96 -> 40 + 0.96 * 10 = 49.6
+	if p99 := ls2.Percentile(0.99); math.Abs(p99-49.6) > 1e-9 {
+		t.Errorf("expected p99 = 49.6, got %v", p99)
+	}
+}
+
+func TestStatsStore_DuplicateDown_SingleIncident(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStatsStore(filepath.Join(tmpDir, "stats.json"))
+	if err != nil {
+		t.Fatalf("NewStatsStore failed: %v", err)
+	}
+
+	now := time.Now()
+	// Call RecordTransition down multiple times in a row
+	store.RecordTransition("p-dup", "Proxy Dup", false, "Fail 1", now)
+	store.RecordTransition("p-dup", "Proxy Dup", false, "Fail 2", now.Add(10*time.Second))
+	store.RecordTransition("p-dup", "Proxy Dup", false, "Fail 3", now.Add(20*time.Second))
+
+	ps := store.GetProxyStats("p-dup")
+	if ps.DropCount != 1 {
+		t.Errorf("expected DropCount 1, got %d", ps.DropCount)
+	}
+	if ps.CurrentDownAt != now.Unix() {
+		t.Errorf("expected CurrentDownAt to remain original %d, got %d", now.Unix(), ps.CurrentDownAt)
+	}
+
+	incidents := store.GetRecentIncidents(10)
+	if len(incidents) != 1 {
+		t.Fatalf("expected exactly 1 incident, got %d", len(incidents))
+	}
+	if incidents[0].Reason != "Fail 1" {
+		t.Errorf("expected reason 'Fail 1', got %s", incidents[0].Reason)
+	}
+
+	// Recovery
+	downtime := store.RecordTransition("p-dup", "Proxy Dup", true, "", now.Add(60*time.Second))
+	if downtime != 60*time.Second {
+		t.Errorf("expected downtime 60s, got %v", downtime)
+	}
+	incidents = store.GetRecentIncidents(10)
+	if incidents[0].UpAt == 0 || incidents[0].DurationSec != 60 {
+		t.Errorf("expected incident to be closed with duration 60s, got UpAt=%d DurationSec=%d",
+			incidents[0].UpAt, incidents[0].DurationSec)
+	}
+}
+
+func TestStatsStore_FlapperQuota(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStatsStore(filepath.Join(tmpDir, "stats.json"))
+	if err != nil {
+		t.Fatalf("NewStatsStore failed: %v", err)
+	}
+
+	now := time.Now()
+	// Add an incident from a normal proxy
+	store.RecordTransition("normal-node", "Normal Node", false, "timeout", now.Add(-10*time.Hour))
+	store.RecordTransition("normal-node", "Normal Node", true, "", now.Add(-9*time.Hour))
+
+	// Flapper generates 30 down/up cycles
+	for i := 0; i < 30; i++ {
+		tDown := now.Add(time.Duration(i*2) * time.Minute)
+		tUp := tDown.Add(1 * time.Minute)
+		store.RecordTransition("flapper", "Flapper Node", false, "flap", tDown)
+		store.RecordTransition("flapper", "Flapper Node", true, "", tUp)
+	}
+
+	incidents := store.GetRecentIncidents(100)
+	flapperCount := 0
+	normalFound := false
+	for _, inc := range incidents {
+		if inc.StableID == "flapper" {
+			flapperCount++
+		}
+		if inc.StableID == "normal-node" {
+			normalFound = true
+		}
+	}
+
+	if flapperCount > 15 {
+		t.Errorf("expected flapper count <= 15 due to per-proxy quota, got %d", flapperCount)
+	}
+	if !normalFound {
+		t.Errorf("expected normal-node incident to be preserved, but it was evicted")
+	}
+}
+
+

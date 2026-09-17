@@ -545,3 +545,32 @@ func TestBot_RunCheckHostAudit_RUBlock(t *testing.T) {
 		t.Errorf("expected alert to be resolved after RU recovery")
 	}
 }
+
+func TestBot_Stop_SavesStatsStore(t *testing.T) {
+	tmpDir := t.TempDir()
+	statsPath := filepath.Join(tmpDir, "saved_stats.json")
+
+	store, err := NewStatsStore(statsPath)
+	if err != nil {
+		t.Fatalf("failed to create stats store: %v", err)
+	}
+
+	store.RecordCheck("p-stop", "Proxy Stop", true, 25.0)
+
+	bot := &Bot{
+		statsStore: store,
+		stopChan:   make(chan struct{}),
+	}
+
+	bot.Stop()
+
+	// Verify stats file was created on disk by Stop()
+	reloaded, err := NewStatsStore(statsPath)
+	if err != nil {
+		t.Fatalf("failed to load stats saved on Stop: %v", err)
+	}
+	ps := reloaded.GetProxyStats("p-stop")
+	if ps == nil || ps.TotalChecks != 1 {
+		t.Errorf("expected 1 check persisted on Stop, got %+v", ps)
+	}
+}

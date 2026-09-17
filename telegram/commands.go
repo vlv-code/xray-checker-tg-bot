@@ -318,7 +318,7 @@ func (b *Bot) replyDigest(t ChatTarget) {
 		"• Время: <b>%s</b>\n", online, totalActive, b.now().Format("15:04:05 02.01.2006"))
 
 	if avg, ok := b.getAverageUptimePercent(); ok {
-		text += fmt.Sprintf("• Средний аптайм: <b>%.1f%%</b>\n", avg)
+		text += fmt.Sprintf("• Средний аптайм (24ч): <b>%.1f%%</b>\n", avg)
 	}
 
 	b.sendWithMarkup(t, text, BackToMenuMarkup())

@@ -37,9 +37,8 @@ type ProxyStats struct {
 type StatsStore struct {
 	mu           sync.RWMutex
 	path         string
-	Incidents    []Incident                   `json:"incidents"` // Most recent first
-	Stats        map[string]*ProxyStats       `json:"stats"`     // stableID -> stats
-	Transitions  map[string][]TransitionEvent `json:"transitions,omitempty"`
+	Incidents    []Incident             `json:"incidents"` // Most recent first
+	Stats        map[string]*ProxyStats `json:"stats"`     // stableID -> stats
 	rollingStats *RollingStats
 	latencyMap   map[string]*LatencySamples
 	latMu        sync.RWMutex
@@ -51,7 +50,6 @@ func NewStatsStore(path string) (*StatsStore, error) {
 		path:         path,
 		Incidents:    make([]Incident, 0),
 		Stats:        make(map[string]*ProxyStats),
-		Transitions:  make(map[string][]TransitionEvent),
 		rollingStats: NewRollingStats(1000),
 		latencyMap:   make(map[string]*LatencySamples),
 	}
@@ -89,7 +87,6 @@ func (ss *StatsStore) load() error {
 		ss.Stats = dataStore.Stats
 	}
 	if dataStore.Transitions != nil {
-		ss.Transitions = dataStore.Transitions
 		for id, evs := range dataStore.Transitions {
 			for _, ev := range evs {
 				ss.rollingStats.Record(id, ev.Online, ev.Timestamp)
@@ -152,10 +149,33 @@ func (ss *StatsStore) RecordInitialDown(stableID, name string, timestamp time.Ti
 			UpAt:      0,
 			Reason:    "Offline at startup",
 		}
-		ss.Incidents = append([]Incident{incident}, ss.Incidents...)
-		if len(ss.Incidents) > 100 {
-			ss.Incidents = ss.Incidents[:100]
+		ss.addIncident(incident)
+	}
+}
+
+// addIncident adds a new incident to the front of the list, enforcing a per-proxy quota
+// and a global maximum to prevent flapping nodes from evicting all other history.
+func (ss *StatsStore) addIncident(inc Incident) {
+	const maxPerProxy = 15
+	const maxGlobal = 100
+
+	count := 0
+	lastIdx := -1
+	for i, existing := range ss.Incidents {
+		if existing.StableID == inc.StableID {
+			count++
+			lastIdx = i
 		}
+	}
+
+	// If this proxy already has maxPerProxy incidents, drop its oldest one
+	if count >= maxPerProxy && lastIdx >= 0 {
+		ss.Incidents = append(ss.Incidents[:lastIdx], ss.Incidents[lastIdx+1:]...)
+	}
+
+	ss.Incidents = append([]Incident{inc}, ss.Incidents...)
+	if len(ss.Incidents) > maxGlobal {
+		ss.Incidents = ss.Incidents[:maxGlobal]
 	}
 }
 
@@ -180,22 +200,20 @@ func (ss *StatsStore) RecordTransition(stableID, name string, online bool, reaso
 
 	var downtime time.Duration
 	if !online {
-		// Went down
-		ps.DropCount++
-		ps.CurrentlyDown = true
-		ps.CurrentDownAt = ts
+		// Went down - only record new incident if not already marked down
+		if !ps.CurrentlyDown {
+			ps.DropCount++
+			ps.CurrentlyDown = true
+			ps.CurrentDownAt = ts
 
-		incident := Incident{
-			ProxyName: name,
-			StableID:  stableID,
-			DownAt:    ts,
-			UpAt:      0,
-			Reason:    reason,
-		}
-		// Prepend so newest is first
-		ss.Incidents = append([]Incident{incident}, ss.Incidents...)
-		if len(ss.Incidents) > 100 {
-			ss.Incidents = ss.Incidents[:100]
+			incident := Incident{
+				ProxyName: name,
+				StableID:  stableID,
+				DownAt:    ts,
+				UpAt:      0,
+				Reason:    reason,
+			}
+			ss.addIncident(incident)
 		}
 	} else {
 		// Recovered
@@ -209,12 +227,15 @@ func (ss *StatsStore) RecordTransition(stableID, name string, online bool, reaso
 			ps.CurrentlyDown = false
 			ps.CurrentDownAt = 0
 
-			// Close open incident in incidents list
+			// Close all open incidents for this proxy
 			for i := range ss.Incidents {
 				if ss.Incidents[i].StableID == stableID && ss.Incidents[i].UpAt == 0 {
 					ss.Incidents[i].UpAt = ts
-					ss.Incidents[i].DurationSec = ts - ss.Incidents[i].DownAt
-					break
+					dur := ts - ss.Incidents[i].DownAt
+					if dur < 0 {
+						dur = 0
+					}
+					ss.Incidents[i].DurationSec = dur
 				}
 			}
 		}
@@ -244,24 +265,28 @@ func (ss *StatsStore) SyncOnlineState(stableID string, timestamp time.Time) {
 		for i := range ss.Incidents {
 			if ss.Incidents[i].StableID == stableID && ss.Incidents[i].UpAt == 0 {
 				ss.Incidents[i].UpAt = ts
-				ss.Incidents[i].DurationSec = ts - ss.Incidents[i].DownAt
-				break
+				dur := ts - ss.Incidents[i].DownAt
+				if dur < 0 {
+					dur = 0
+				}
+				ss.Incidents[i].DurationSec = dur
 			}
 		}
 	}
 }
 
 // GetUptimePercent returns the uptime percentage (0-100) for a proxy.
-func (ss *StatsStore) GetUptimePercent(stableID string) float64 {
+// Returns (0, false) if no checks have been performed for this proxy yet.
+func (ss *StatsStore) GetUptimePercent(stableID string) (float64, bool) {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 
 	ps, ok := ss.Stats[stableID]
 	if !ok || ps.TotalChecks == 0 {
-		return 100.0
+		return 0, false
 	}
 
-	return (float64(ps.SuccessfulChecks) / float64(ps.TotalChecks)) * 100.0
+	return (float64(ps.SuccessfulChecks) / float64(ps.TotalChecks)) * 100.0, true
 }
 
 // GetRecentIncidents returns the most recent N incidents.
@@ -324,7 +349,6 @@ func (ss *StatsStore) PruneInactive(activeIDs map[string]bool) {
 	for id := range ss.Stats {
 		if !activeIDs[id] {
 			delete(ss.Stats, id)
-			delete(ss.Transitions, id)
 		}
 	}
 
@@ -352,17 +376,27 @@ type TopProblematic struct {
 	DropCount   int64
 	DowntimeSec int64
 	UptimePct   float64
+	HasData     bool
 }
 
 // GetTopProblematic returns proxies sorted by drop count descending.
 func (ss *StatsStore) GetTopProblematic(limit int) []TopProblematic {
+	return ss.GetTopProblematicActive(limit, nil)
+}
+
+// GetTopProblematicActive returns active proxies sorted by drop count descending.
+func (ss *StatsStore) GetTopProblematicActive(limit int, activeIDs map[string]bool) []TopProblematic {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 
 	list := make([]TopProblematic, 0, len(ss.Stats))
 	for id, ps := range ss.Stats {
-		var uptime float64 = 100.0
-		if ps.TotalChecks > 0 {
+		if activeIDs != nil && !activeIDs[id] {
+			continue
+		}
+		var uptime float64
+		hasData := ps.TotalChecks > 0
+		if hasData {
 			uptime = (float64(ps.SuccessfulChecks) / float64(ps.TotalChecks)) * 100.0
 		}
 		list = append(list, TopProblematic{
@@ -371,6 +405,7 @@ func (ss *StatsStore) GetTopProblematic(limit int) []TopProblematic {
 			DropCount:   ps.DropCount,
 			DowntimeSec: ps.TotalDowntimeSec,
 			UptimePct:   uptime,
+			HasData:     hasData,
 		})
 	}
 
@@ -439,7 +474,7 @@ func (ss *StatsStore) GetLatencySamples(stableID string) *LatencySamples {
 	}
 	ls, ok := ss.latencyMap[stableID]
 	if !ok {
-		ls = NewLatencySamples(50)
+		ls = NewLatencySamples(100)
 		ss.latencyMap[stableID] = ls
 	}
 	return ls
@@ -626,7 +661,7 @@ type LatencySamples struct {
 // NewLatencySamples creates a LatencySamples ring buffer.
 func NewLatencySamples(maxSize int) *LatencySamples {
 	if maxSize <= 0 {
-		maxSize = 50
+		maxSize = 100
 	}
 	return &LatencySamples{
 		samples: make([]float64, maxSize),
@@ -656,7 +691,8 @@ func (l *LatencySamples) Count() int {
 	return l.count
 }
 
-// Percentile calculates the p-th percentile (0.0 - 1.0) of stored samples.
+// Percentile calculates the p-th percentile (0.0 - 1.0) of stored samples
+// using linear interpolation between closest ranks.
 func (l *LatencySamples) Percentile(p float64) float64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -675,8 +711,17 @@ func (l *LatencySamples) Percentile(p float64) float64 {
 	copy(vals, l.samples[:l.count])
 	sort.Float64s(vals)
 
-	idx := int(float64(l.count-1) * p)
-	return vals[idx]
+	if l.count == 1 {
+		return vals[0]
+	}
+
+	r := float64(l.count-1) * p
+	i := int(math.Floor(r))
+	if i >= l.count-1 {
+		return vals[l.count-1]
+	}
+	f := r - float64(i)
+	return vals[i] + f*(vals[i+1]-vals[i])
 }
 
 // StdDev calculates the standard deviation (jitter) of stored samples.

@@ -50,7 +50,7 @@ func (b *Bot) getMenuText() string {
 	nowStr := b.now().Format("15:04:05 02.01.2006")
 	var uptimeStr string
 	if avg, ok := b.getAverageUptimePercent(); ok {
-		uptimeStr = fmt.Sprintf("• Средний аптайм: <b>%.1f%%</b>\n", avg)
+		uptimeStr = fmt.Sprintf("• Средний аптайм (за всё время): <b>%.1f%%</b>\n", avg)
 	}
 
 	var sb strings.Builder
@@ -285,7 +285,7 @@ func (b *Bot) getIntervalText() string {
 
 func (b *Bot) getAverageUptimePercent() (float64, bool) {
 	if b.statsStore == nil || b.source == nil {
-		return 100.0, false
+		return 0.0, false
 	}
 	snapshot := b.source.MetricsSnapshot()
 	var totalUptime float64
@@ -294,11 +294,13 @@ func (b *Bot) getAverageUptimePercent() (float64, bool) {
 		if pm.Disabled {
 			continue
 		}
-		totalUptime += b.statsStore.GetUptimePercent(pm.StableID)
-		count++
+		if u, ok := b.statsStore.GetUptimePercent(pm.StableID); ok {
+			totalUptime += u
+			count++
+		}
 	}
 	if count == 0 {
-		return 100.0, false
+		return 0.0, false
 	}
 	return totalUptime / float64(count), true
 }
@@ -376,7 +378,11 @@ func (b *Bot) getStatsOverviewText() string {
 	var sb strings.Builder
 	sb.WriteString("<b>📈 Статистика аптайма</b>\n\n")
 	fmt.Fprintf(&sb, "• Прокси-хостов в мониторинге: <b>%d</b>\n", totalProxies)
-	fmt.Fprintf(&sb, "• Средний аптайм: <b>24ч: %.1f%%</b> (7д: %.1f%%)\n", uptime24h, avg7d)
+	var allTimeStr string
+	if avgAll, ok := b.getAverageUptimePercent(); ok {
+		allTimeStr = fmt.Sprintf(", за всё время: %.1f%%", avgAll)
+	}
+	fmt.Fprintf(&sb, "• Средний аптайм: <b>24ч: %.1f%%</b> (7д: %.1f%%%s)\n", uptime24h, avg7d, allTimeStr)
 
 	incidents := b.statsStore.GetRecentIncidents(1)
 	if len(incidents) > 0 {
@@ -637,7 +643,16 @@ func (b *Bot) getTopProblematicText() string {
 	if b.statsStore == nil {
 		return "Статистика недоступна."
 	}
-	top := b.statsStore.GetTopProblematic(10)
+	var activeIDs map[string]bool
+	if b.source != nil {
+		activeIDs = make(map[string]bool)
+		for _, pm := range b.source.MetricsSnapshot() {
+			if !pm.Disabled {
+				activeIDs[pm.StableID] = true
+			}
+		}
+	}
+	top := b.statsStore.GetTopProblematicActive(10, activeIDs)
 	if len(top) == 0 {
 		return "Нет данных для отображения."
 	}
@@ -655,8 +670,12 @@ func (b *Bot) getTopProblematicText() string {
 		if incStats.MTTR > 0 {
 			mttrStr = fmt.Sprintf(", MTTR: %s", FormatDowntime(incStats.MTTR))
 		}
-		fmt.Fprintf(&sb, "%d. <b>%s</b>: инцидентов: %d, аптайм: %.1f%%%s%s, суммарный простой: %s\n",
-			i+1, escapeHTML(p.ProxyName), p.DropCount, p.UptimePct, mtbfStr, mttrStr, FormatDowntime(time.Duration(p.DowntimeSec)*time.Second))
+		uptimeStr := "—"
+		if p.HasData {
+			uptimeStr = fmt.Sprintf("%.1f%%", p.UptimePct)
+		}
+		fmt.Fprintf(&sb, "%d. <b>%s</b>: инцидентов: %d, аптайм: %s%s%s, суммарный простой: %s\n",
+			i+1, escapeHTML(p.ProxyName), p.DropCount, uptimeStr, mtbfStr, mttrStr, FormatDowntime(time.Duration(p.DowntimeSec)*time.Second))
 	}
 	return sb.String()
 }

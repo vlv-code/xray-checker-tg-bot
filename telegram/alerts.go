@@ -90,8 +90,9 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 
 		switch {
 		case prev && !pm.Online:
+			reason := determineFailureReason(pm)
 			if b.statsStore != nil {
-				b.statsStore.RecordTransition(pm.StableID, pm.Name, false, "Offline", now)
+				b.statsStore.RecordTransition(pm.StableID, pm.Name, false, reason, now)
 			}
 
 			if isQuiet {
@@ -99,7 +100,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 					Timestamp: now,
 					Type:      "down",
 					ProxyName: pm.Name,
-					Reason:    "Offline",
+					Reason:    reason,
 				})
 			} else {
 				suppressed := false
@@ -195,7 +196,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 		if b.statsStore != nil && b.statsStore.GetFlapCount24h(pm.StableID, now) > 10 {
 			flapNote = fmt.Sprintf("\n⚠️ <i>Частые сбои (%d за 24ч). Алерты приостановлены на 15 мин.</i>", b.statsStore.GetFlapCount24h(pm.StableID, now))
 		}
-		outageText := fmt.Sprintf("🔴 <b>%s</b> — не отвечает%s%s\n⏱ %s · %d-й сбой\n%s%s", escapeHTML(pm.Name), softHint, nodeLineFor(pm), timeStr, dropCount, escapeHTML(pm.Address), flapNote)
+		outageText := fmt.Sprintf("🔴 <b>%s</b> — не отвечает%s%s\n⏱ %s · %d-й сбой за всё время\n%s%s", escapeHTML(pm.Name), softHint, nodeLineFor(pm), timeStr, dropCount, escapeHTML(pm.Address), flapNote)
 		for _, t := range b.targets {
 			if b.tracker.HasAlert(t.ChatID, t.ThreadID, pm.StableID) {
 				continue
@@ -213,7 +214,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 					}
 					continue
 				}
-				b.tracker.Track(t.ChatID, t.ThreadID, sent.MessageID, pm.StableID, pm.Name, now, "Offline")
+				b.tracker.Track(t.ChatID, t.ThreadID, sent.MessageID, pm.StableID, pm.Name, now, determineFailureReason(pm))
 			}
 		}
 	}
@@ -276,4 +277,15 @@ func nodeLineFor(pm metrics.ProxyMetric) string {
 		s += " · " + escapeHTML(pm.NodeASN)
 	}
 	return s
+}
+
+// determineFailureReason extracts the best available failure explanation from ProxyMetric.
+func determineFailureReason(pm metrics.ProxyMetric) string {
+	if pm.LastErrorMsg != "" {
+		return pm.LastErrorMsg
+	}
+	if pm.LastErrorCategory > 0 {
+		return checker.FormatSoftHint(checker.ErrorCategory(pm.LastErrorCategory), checker.IsUDPProto(pm.Protocol))
+	}
+	return "Offline"
 }
