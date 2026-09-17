@@ -52,6 +52,15 @@ type ProxyMetric struct {
 	DirectProbeSuccess bool
 	DirectProbeRTTMs   int64
 	DirectProbeErr     string
+	// LastCheckSec is the last check time as a Unix timestamp in seconds;
+	// 0 when never checked. Populated by the checker snapshot path.
+	LastCheckSec int64
+	// NodeName is set only for proxies reported by remote checker nodes;
+	// empty for locally checked proxies.
+	NodeName string
+	// NodeASN is the reporting node's "AS<number> <org>" string, empty when
+	// the ASN database is unavailable.
+	NodeASN string
 }
 
 // MetricsSource supplies the current proxy snapshot to the Collector. The checker
