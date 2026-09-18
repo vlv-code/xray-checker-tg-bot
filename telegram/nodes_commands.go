@@ -1,12 +1,18 @@
 package telegram
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/mymmrac/telego"
+	tu "github.com/mymmrac/telego/telegoutil"
 )
+
+var validNodeName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,32}$`)
 
 // commandArgs returns every whitespace-separated argument after the command
 // (commandArg returns only the first).
@@ -120,4 +126,112 @@ func (b *Bot) handleNodeDelSub(msg *telego.Message) {
 		return
 	}
 	b.replyCommand(msg, fmt.Sprintf("✅ Подписка удалена для ноды <b>%s</b>.\nНода уберёт её при следующем отчёте.", escapeHTML(args[0])))
+}
+
+// GenerateNodeToken creates a secure 32-byte (64 hex characters) cryptographic token.
+func GenerateNodeToken() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func (b *Bot) getMasterReportURL() string {
+	cfg := b.GetConfig()
+	if cfg.MasterPublicURL != "" {
+		return strings.TrimRight(cfg.MasterPublicURL, "/") + "/api/v1/nodes/report"
+	}
+	if b.diagSource != nil {
+		if ip, err := b.diagSource.GetCurrentIP(); err == nil && ip != "" {
+			return fmt.Sprintf("http://%s:2112/api/v1/nodes/report", ip)
+		}
+	}
+	return "http://<IP_МАСТЕРА>:2112/api/v1/nodes/report"
+}
+
+func (b *Bot) handleNodeAdd(msg *telego.Message, rawName string) {
+	name := strings.TrimSpace(rawName)
+	if name == "" {
+		b.waitingNodeAddMu.Lock()
+		if b.waitingNodeAdd == nil {
+			b.waitingNodeAdd = make(map[int64]bool)
+		}
+		b.waitingNodeAdd[msg.Chat.ID] = true
+		b.waitingNodeAddMu.Unlock()
+		b.replyCommand(msg, "➕ <b>Подключение новой ноды</b>\n\n"+
+			"Как назвать новую ноду?\n"+
+			"Отправьте имя ноды ответным сообщением (латиница, цифры, дефис, например: <code>msk-1</code>, <code>vps-germany</code>).\n\n"+
+			"<i>Или выполните команду:</i> <code>/nodeadd &lt;имя_ноды&gt;</code>")
+		return
+	}
+
+	if !validNodeName.MatchString(name) {
+		b.replyCommand(msg, "❌ <b>Некорректное имя ноды</b>\n"+
+			"Имя должно содержать только латинские буквы, цифры, дефис или подчёркивание (длина 1–32 символа, например: <code>msk-1</code>).")
+		return
+	}
+
+	if b.nodeMgr == nil {
+		b.replyCommand(msg, "❌ Подсистема управления нодами не активна на мастере.")
+		return
+	}
+
+	token := GenerateNodeToken()
+	if err := b.nodeMgr.AddNode(name, token); err != nil {
+		b.replyCommand(msg, "❌ "+escapeHTML(err.Error()))
+		return
+	}
+
+	reportURL := b.getMasterReportURL()
+	text := fmt.Sprintf("✅ <b>Нода %s успешно зарегистрирована!</b>\n\n"+
+		"🔑 <b>Токен ноды:</b>\n<code>%s</code>\n\n"+
+		"🌐 <b>URL для отправки отчётов:</b>\n<code>%s</code>\n\n"+
+		"📦 <b>Команда запуска (Docker run):</b>\n"+
+		"<pre>docker run -d --name xray-node-%s \\\n"+
+		"  --restart unless-stopped \\\n"+
+		"  -e REPORT_URL=%s \\\n"+
+		"  -e REPORT_TOKEN=%s \\\n"+
+		"  ghcr.io/vlv-code/xray-checker-tg-bot:latest</pre>\n\n"+
+		"📋 <b>Блок для docker-compose.yml:</b>\n"+
+		"<pre>  xray-node-%s:\n"+
+		"    image: ghcr.io/vlv-code/xray-checker-tg-bot:latest\n"+
+		"    container_name: xray-node-%s\n"+
+		"    restart: unless-stopped\n"+
+		"    environment:\n"+
+		"      - REPORT_URL=%s\n"+
+		"      - REPORT_TOKEN=%s</pre>\n\n"+
+		"<i>После запуска на удалённом сервере нода автоматически подключится к мастеру и появится в списке.</i>",
+		escapeHTML(name), token, reportURL,
+		escapeHTML(name), reportURL, token,
+		escapeHTML(name), escapeHTML(name), reportURL, token)
+
+	markup := tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("🩺 Проверить связь", "menu:nodes:health"),
+			btn("📋 Подписки нод", "menu:subs"),
+		),
+		tu.InlineKeyboardRow(
+			btn("🔙 К списку нод", "menu:nodes"),
+			btn("🏠 Главное меню", "menu:main"),
+		),
+	)
+
+	t := targetFromMessage(msg)
+	b.sendOrUpdateMenu(t, text, markup)
+}
+
+func (b *Bot) handleNodeDel(msg *telego.Message, rawName string) {
+	name := strings.TrimSpace(rawName)
+	if name == "" {
+		b.replyCommand(msg, "Использование: /nodedel &lt;имя_ноды&gt;")
+		return
+	}
+	if b.nodeMgr == nil {
+		b.replyCommand(msg, "Ноды не настроены.")
+		return
+	}
+	if err := b.nodeMgr.RemoveNode(name); err != nil {
+		b.replyCommand(msg, "❌ "+escapeHTML(err.Error()))
+		return
+	}
+	b.replyCommand(msg, fmt.Sprintf("✅ Нода <b>%s</b> удалена с мастера.", escapeHTML(name)))
 }

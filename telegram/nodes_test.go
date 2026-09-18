@@ -104,7 +104,7 @@ func TestNodeHealthStatsAndAlertSuppression(t *testing.T) {
 	if len(incidents) != 1 {
 		t.Fatalf("expected 1 incident recorded in statsStore, got %d", len(incidents))
 	}
-	if incidents[0].StableID != "node:agent-1" || !strings.Contains(incidents[0].ProxyName, "[Агент] agent-1") {
+	if incidents[0].StableID != "node:agent-1" || !strings.Contains(incidents[0].ProxyName, "[Нода] agent-1") {
 		t.Errorf("unexpected incident recorded: %+v", incidents[0])
 	}
 	if incidents[0].Reason != "Потеря связи с чекер-нодой" {

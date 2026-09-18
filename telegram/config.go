@@ -39,6 +39,7 @@ type BotConfig struct {
 	NodeAlertsEnabled      bool     `json:"node_alerts_enabled"`
 	NodeProxyAlertsChat    bool     `json:"node_proxy_alerts_chat"`
 	NodeStaleTimeoutSec    int      `json:"node_stale_timeout_sec,omitempty"`
+	MasterPublicURL        string   `json:"master_public_url,omitempty"`
 }
 
 // locCache memoizes parsed time zones: Location() is called on every message

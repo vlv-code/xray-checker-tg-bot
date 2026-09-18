@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,14 +72,30 @@ func main() {
 
 	var nodeRegistry *nodes.Registry
 	var nodeSubsStore *nodes.NodeSubsStore
-	if len(config.CLIConfig.Nodes.List) > 0 {
-		nodeCfgs, err := nodes.ParseNodes(config.CLIConfig.Nodes.List)
-		if err != nil {
-			logger.Fatal("Invalid NODES entry: %v", err)
+	var nodesStore *nodes.NodesStore
+
+	if config.CLIConfig.Report.URL == "" {
+		var nodeCfgs []nodes.NodeConfig
+		if len(config.CLIConfig.Nodes.List) > 0 {
+			var err error
+			nodeCfgs, err = nodes.ParseNodes(config.CLIConfig.Nodes.List)
+			if err != nil {
+				logger.Fatal("Invalid NODES entry: %v", err)
+			}
 		}
-		nodeSubsStore, err = nodes.NewNodeSubsStore(config.CLIConfig.Nodes.StorePath)
+		subsStorePath := config.CLIConfig.Nodes.StorePath
+		if subsStorePath == "" {
+			subsStorePath = "node_subs.json"
+		}
+		var err error
+		nodeSubsStore, err = nodes.NewNodeSubsStore(subsStorePath)
 		if err != nil {
-			logger.Fatal("Error loading node subscriptions store: %v", err)
+			logger.Warn("Error loading node subscriptions store: %v", err)
+		}
+		nodesListPath := filepath.Join(filepath.Dir(subsStorePath), "nodes.json")
+		nodesStore, err = nodes.NewNodesStore(nodesListPath)
+		if err != nil {
+			logger.Warn("Error loading dynamic nodes store: %v", err)
 		}
 		asnLookup := asn.NopLookup
 		asnPath := "geo/asn.mmdb"
@@ -91,7 +108,15 @@ func main() {
 			asnLookup = db.Lookup
 		}
 		nodeRegistry = nodes.NewRegistry(nodeCfgs, nodeSubsStore, asnLookup)
-		logger.Info("Remote nodes configured: %d", len(nodeCfgs))
+		if nodesStore != nil {
+			nodeRegistry.SetNodesStore(nodesStore)
+		}
+		dynCount := 0
+		if nodesStore != nil {
+			dynCount = len(nodesStore.All())
+		}
+		logger.Info("Remote nodes configured: %d (static %d, dynamic %d)",
+			len(nodeRegistry.HealthSnapshot()), len(nodeCfgs), dynCount)
 	}
 
 	configFile := "xray_config.json"
@@ -453,6 +478,7 @@ func main() {
 				NodeAlertsEnabled:      true,
 				NodeProxyAlertsChat:    true,
 				NodeStaleTimeoutSec:    90,
+				MasterPublicURL:        config.CLIConfig.Nodes.MasterPublicURL,
 			}
 
 			botCfgMgr, err := telegram.NewConfigManager(config.CLIConfig.Telegram.BotConfigStorePath, defaultBotCfg)

@@ -101,8 +101,9 @@ type CLI struct {
 	} `embed:"" prefix:""`
 
 	Nodes struct {
-		List      []string `name:"node" help:"Remote checker node as 'name|token' (repeatable; env: comma-separated). Empty disables the node feature" env:"NODES"`
-		StorePath string   `name:"nodes-store-path" help:"File with the desired managed subscriptions per node, edited via the bot" default:"node_subs.json" env:"NODES_STORE_PATH"`
+		List            []string `name:"node" help:"Remote checker node as 'name|token' (repeatable; env: comma-separated). Empty disables the node feature" env:"NODES"`
+		StorePath       string   `name:"nodes-store-path" help:"File with the desired managed subscriptions per node, edited via the bot" default:"node_subs.json" env:"NODES_STORE_PATH"`
+		MasterPublicURL string   `name:"master-public-url" help:"Public URL or IP of this master for nodes to report to (e.g. http://1.2.3.4:2112/api/v1/nodes/report)" default:"" env:"MASTER_PUBLIC_URL"`
 	} `embed:"" prefix:""`
 
 	Report struct {

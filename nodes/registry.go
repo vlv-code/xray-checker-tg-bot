@@ -3,8 +3,10 @@ package nodes
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,13 +64,14 @@ type NodeHealth struct {
 // and identity by token. It is the ingest endpoint and the merged-snapshot
 // source for the alert pipeline.
 type Registry struct {
-	mu        sync.RWMutex
-	nodes     map[string]*nodeState // by name
-	byToken   map[string]string     // token -> name
-	subs      NodeSubsSource
-	asn       LookupFunc
-	onUpdate  func()
-	cfgSource func() *NodeConfigSync
+	mu         sync.RWMutex
+	nodes      map[string]*nodeState // by name
+	byToken    map[string]string     // token -> name
+	subs       NodeSubsSource
+	asn        LookupFunc
+	onUpdate   func()
+	cfgSource  func() *NodeConfigSync
+	nodesStore *NodesStore
 }
 
 // NewRegistry builds a registry for the given node configs. subs may be nil
@@ -85,6 +88,80 @@ func NewRegistry(cfgs []NodeConfig, subs NodeSubsSource, asn LookupFunc) *Regist
 		r.byToken[cfg.Token] = cfg.Name
 	}
 	return r
+}
+
+// SetNodesStore sets the persistence store for dynamic node registrations and loads any stored nodes.
+func (r *Registry) SetNodesStore(store *NodesStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nodesStore = store
+	if store != nil {
+		for _, cfg := range store.All() {
+			if _, exists := r.nodes[cfg.Name]; !exists {
+				r.nodes[cfg.Name] = &nodeState{cfg: cfg, status: statusPending}
+				r.byToken[cfg.Token] = cfg.Name
+			}
+		}
+	}
+}
+
+// RegisterNode dynamically registers a new node with name and token, persisting it if a store is configured.
+func (r *Registry) RegisterNode(cfg NodeConfig) error {
+	name := strings.TrimSpace(cfg.Name)
+	token := strings.TrimSpace(cfg.Token)
+	if name == "" || token == "" {
+		return fmt.Errorf("имя и токен ноды не могут быть пустыми")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.nodes[name]; exists {
+		return fmt.Errorf("нода с именем %q уже существует", name)
+	}
+	if _, exists := r.byToken[token]; exists {
+		return fmt.Errorf("нода с таким токеном уже существует")
+	}
+
+	r.nodes[name] = &nodeState{cfg: NodeConfig{Name: name, Token: token}, status: statusPending}
+	r.byToken[token] = name
+
+	if r.nodesStore != nil {
+		if err := r.nodesStore.Save(name, token); err != nil {
+			return fmt.Errorf("saving node to store: %w", err)
+		}
+	}
+
+	if r.onUpdate != nil {
+		go r.onUpdate()
+	}
+	return nil
+}
+
+// RemoveNode unregisters a node dynamically and deletes it from store.
+func (r *Registry) RemoveNode(name string) error {
+	name = strings.TrimSpace(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	st, exists := r.nodes[name]
+	if !exists {
+		return fmt.Errorf("нода %q не найдена", name)
+	}
+
+	delete(r.byToken, st.cfg.Token)
+	delete(r.nodes, name)
+
+	if r.nodesStore != nil {
+		if err := r.nodesStore.Delete(name); err != nil {
+			return fmt.Errorf("deleting node from store: %w", err)
+		}
+	}
+
+	if r.onUpdate != nil {
+		go r.onUpdate()
+	}
+	return nil
 }
 
 // SetOnUpdate registers a callback fired after every accepted report and

@@ -41,7 +41,21 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		return
 	}
 
+	b.waitingNodeAddMu.Lock()
+	var isWaiting bool
+	if b.waitingNodeAdd != nil {
+		isWaiting = b.waitingNodeAdd[msg.Chat.ID]
+		if isWaiting {
+			delete(b.waitingNodeAdd, msg.Chat.ID)
+		}
+	}
+	b.waitingNodeAddMu.Unlock()
+
 	cmd, arg := parseCommand(msg.Text)
+	if isWaiting && cmd == "" {
+		b.handleNodeAdd(msg, strings.TrimSpace(msg.Text))
+		return
+	}
 	if cmd == "" {
 		return
 	}
@@ -77,6 +91,10 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		b.handleToggleNodeCommand(msg)
 	case "digest":
 		b.replyDigest(t)
+	case "nodeadd":
+		b.handleNodeAdd(msg, arg)
+	case "nodedel":
+		b.handleNodeDel(msg, arg)
 	case "nodesubs":
 		b.replyNodeSubs(msg)
 	case "nodeaddsub":
@@ -443,6 +461,8 @@ func (b *Bot) replyHelp(t ChatTarget) {
 	}
 	if b.nodeMgr != nil {
 		text += "/nodes — ноды-инстансы чекера: статус, ASN, сводка\n" +
+			"/nodeadd &lt;имя&gt; — подключить и настроить новую ноду\n" +
+			"/nodedel &lt;имя&gt; — удалить ноду с мастера\n" +
 			"/nodesubs &lt;имя&gt; — подписки ноды, назначенные с мастера\n" +
 			"/nodeaddsub &lt;имя&gt; &lt;URL&gt; — назначить подписку ноде\n" +
 			"/nodedelsub &lt;имя&gt; &lt;URL&gt; — снять подписку с ноды\n"

@@ -181,6 +181,23 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		go b.RunCheckHostAudit()
 	case "menu:nodes", "menu:nodes:refresh":
 		b.editWithMarkup(chatID, msgID, b.getNodesMainView(), NodesMainMenuMarkup())
+	case "menu:nodes:add":
+		b.waitingNodeAddMu.Lock()
+		if b.waitingNodeAdd == nil {
+			b.waitingNodeAdd = make(map[int64]bool)
+		}
+		b.waitingNodeAdd[chatID] = true
+		b.waitingNodeAddMu.Unlock()
+		text := "➕ <b>Подключение новой ноды</b>\n\n" +
+			"Как назвать новую ноду?\n" +
+			"Отправьте имя ноды ответным сообщением (латиница, цифры, дефис, например: <code>msk-1</code>, <code>vps-germany</code>).\n\n" +
+			"<i>Или выполните команду:</i> <code>/nodeadd &lt;имя_ноды&gt;</code>"
+		b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
+			tu.InlineKeyboardRow(
+				btn("🔙 К нодам", "menu:nodes"),
+				btn("🏠 Главное меню", "menu:main"),
+			),
+		))
 	case "menu:nodes:install":
 		b.editWithMarkup(chatID, msgID, b.getNodesInstallGuideView(), NodesInstallMarkup())
 	case "menu:nodes:health":

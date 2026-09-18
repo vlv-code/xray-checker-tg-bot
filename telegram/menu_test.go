@@ -236,33 +236,36 @@ func TestPickDeepDiagnosticsMarkup(t *testing.T) {
 }
 
 func TestNodesMarkups(t *testing.T) {
-	// 1. Main menu has Agents button
+	// 1. Main menu has Nodes button
 	mainMenu := MainMenuMarkup()
-	foundAgents := false
+	foundNodes := false
 	for _, row := range mainMenu.InlineKeyboard {
 		for _, b := range row {
-			if b.CallbackData == "menu:nodes" && b.Text == "🤖 Агенты" {
-				foundAgents = true
+			if b.CallbackData == "menu:nodes" && b.Text == "🖥 Ноды" {
+				foundNodes = true
 			}
 		}
 	}
-	if !foundAgents {
-		t.Errorf("expected MainMenuMarkup to contain button '🤖 Агенты' with callback 'menu:nodes'")
+	if !foundNodes {
+		t.Errorf("expected MainMenuMarkup to contain button '🖥 Ноды' with callback 'menu:nodes'")
 	}
 
 	// 2. NodesMainMenuMarkup
 	nodesMenu := NodesMainMenuMarkup()
-	if len(nodesMenu.InlineKeyboard) < 4 {
-		t.Fatalf("expected at least 4 rows in NodesMainMenuMarkup, got %d", len(nodesMenu.InlineKeyboard))
+	if len(nodesMenu.InlineKeyboard) < 5 {
+		t.Fatalf("expected at least 5 rows in NodesMainMenuMarkup, got %d", len(nodesMenu.InlineKeyboard))
 	}
-	if nodesMenu.InlineKeyboard[0][0].CallbackData != "menu:nodes:install" {
-		t.Errorf("expected install button callback, got %s", nodesMenu.InlineKeyboard[0][0].CallbackData)
+	if nodesMenu.InlineKeyboard[0][0].CallbackData != "menu:nodes:add" {
+		t.Errorf("expected add button callback, got %s", nodesMenu.InlineKeyboard[0][0].CallbackData)
 	}
-	if nodesMenu.InlineKeyboard[1][0].CallbackData != "menu:nodes:health" {
-		t.Errorf("expected health button callback, got %s", nodesMenu.InlineKeyboard[1][0].CallbackData)
+	if nodesMenu.InlineKeyboard[1][0].CallbackData != "menu:nodes:install" {
+		t.Errorf("expected install button callback, got %s", nodesMenu.InlineKeyboard[1][0].CallbackData)
 	}
-	if nodesMenu.InlineKeyboard[2][0].CallbackData != "menu:nodes:settings" {
-		t.Errorf("expected settings button callback, got %s", nodesMenu.InlineKeyboard[2][0].CallbackData)
+	if nodesMenu.InlineKeyboard[2][0].CallbackData != "menu:nodes:health" {
+		t.Errorf("expected health button callback, got %s", nodesMenu.InlineKeyboard[2][0].CallbackData)
+	}
+	if nodesMenu.InlineKeyboard[3][0].CallbackData != "menu:nodes:settings" {
+		t.Errorf("expected settings button callback, got %s", nodesMenu.InlineKeyboard[3][0].CallbackData)
 	}
 
 	// 3. NodesSettingsMarkup

@@ -28,6 +28,7 @@ type DiagnosticsSource interface {
 	RunDiagnostics(targets []string) []checker.ProxyDiagReport
 	GetTargetManager() *checker.TargetManager
 	GetUniqueHosts() []string
+	GetCurrentIP() (string, error)
 }
 
 // Bot sends proxy-status notifications to Telegram and answers interactive commands
@@ -83,6 +84,9 @@ type Bot struct {
 	freshMu      sync.RWMutex
 	subFreshness map[string]SubFreshness
 
+	waitingNodeAddMu sync.Mutex
+	waitingNodeAdd   map[int64]bool
+
 	nowFunc func() time.Time
 }
 
@@ -130,6 +134,7 @@ func New(token string, targets []ChatTarget, source metrics.MetricsSource, notif
 		lastMenuMsg:      make(map[string]int),
 		msgSeq:           make(map[string]int64),
 		subFreshness:     make(map[string]SubFreshness),
+		waitingNodeAdd:   make(map[int64]bool),
 		stopChan:         make(chan struct{}),
 	}, nil
 }

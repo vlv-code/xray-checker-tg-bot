@@ -253,6 +253,10 @@ func (m *mockDiagSource) GetUniqueHosts() []string {
 	return m.hosts
 }
 
+func (m *mockDiagSource) GetCurrentIP() (string, error) {
+	return "1.2.3.4", nil
+}
+
 func TestBot_MenuTextAndSettings(t *testing.T) {
 	ms := &mockSource{
 		metrics: []metrics.ProxyMetric{

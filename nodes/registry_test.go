@@ -238,3 +238,47 @@ func TestConcurrentUse(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestRegistry_RegisterAndRemoveNode(t *testing.T) {
+	tmpDir := t.TempDir()
+	storePath := tmpDir + "/nodes.json"
+	nodesStore, err := NewNodesStore(storePath)
+	if err != nil {
+		t.Fatalf("failed to create nodes store: %v", err)
+	}
+
+	reg := NewRegistry(nil, nil, nil)
+	reg.SetNodesStore(nodesStore)
+
+	// Register a new node dynamically
+	if err := reg.RegisterNode(NodeConfig{Name: "dyn-1", Token: "tok-1"}); err != nil {
+		t.Fatalf("failed to register node: %v", err)
+	}
+
+	if !reg.NodeExists("dyn-1") {
+		t.Errorf("dyn-1 must exist after RegisterNode")
+	}
+
+	// Should reject duplicate name or token
+	if err := reg.RegisterNode(NodeConfig{Name: "dyn-1", Token: "tok-diff"}); err == nil {
+		t.Errorf("expected error registering duplicate node name")
+	}
+	if err := reg.RegisterNode(NodeConfig{Name: "dyn-2", Token: "tok-1"}); err == nil {
+		t.Errorf("expected error registering duplicate token")
+	}
+
+	// Verify persistence
+	reg2 := NewRegistry(nil, nil, nil)
+	reg2.SetNodesStore(nodesStore)
+	if !reg2.NodeExists("dyn-1") {
+		t.Errorf("dyn-1 must be loaded by SetNodesStore")
+	}
+
+	// Remove node
+	if err := reg.RemoveNode("dyn-1"); err != nil {
+		t.Fatalf("failed to remove node: %v", err)
+	}
+	if reg.NodeExists("dyn-1") {
+		t.Errorf("dyn-1 must not exist after RemoveNode")
+	}
+}

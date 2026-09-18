@@ -73,3 +73,11 @@ func (a *nodeManagerAdapter) RemoveSub(node, url string) error {
 	}
 	return nil
 }
+
+func (a *nodeManagerAdapter) AddNode(name, token string) error {
+	return a.reg.RegisterNode(nodes.NodeConfig{Name: name, Token: token})
+}
+
+func (a *nodeManagerAdapter) RemoveNode(name string) error {
+	return a.reg.RemoveNode(name)
+}

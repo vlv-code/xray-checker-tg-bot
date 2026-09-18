@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -44,5 +45,59 @@ func TestFormatAge(t *testing.T) {
 		if got := formatAge(c.d); got != c.want {
 			t.Errorf("%s: formatAge = %q, want %q", name, got, c.want)
 		}
+	}
+}
+
+type fakeNodeManager struct {
+	nodes map[string]string // name -> token
+}
+
+func (f *fakeNodeManager) Nodes() []NodeInfo {
+	var out []NodeInfo
+	for name := range f.nodes {
+		out = append(out, NodeInfo{Name: name, Up: true})
+	}
+	return out
+}
+
+func (f *fakeNodeManager) ManagedSubs(node string) ([]ManagedSubInfo, error) {
+	return nil, nil
+}
+
+func (f *fakeNodeManager) AddSub(node, url string) error {
+	return nil
+}
+
+func (f *fakeNodeManager) RemoveSub(node, url string) error {
+	return nil
+}
+
+func (f *fakeNodeManager) AddNode(name, token string) error {
+	if f.nodes == nil {
+		f.nodes = make(map[string]string)
+	}
+	if _, exists := f.nodes[name]; exists {
+		return fmt.Errorf("нода уже существует")
+	}
+	f.nodes[name] = token
+	return nil
+}
+
+func (f *fakeNodeManager) RemoveNode(name string) error {
+	if _, exists := f.nodes[name]; !exists {
+		return fmt.Errorf("нода не найдена")
+	}
+	delete(f.nodes, name)
+	return nil
+}
+
+func TestGenerateNodeToken(t *testing.T) {
+	tok1 := GenerateNodeToken()
+	tok2 := GenerateNodeToken()
+	if len(tok1) != 64 {
+		t.Fatalf("expected 64 characters hex token, got %d (%s)", len(tok1), tok1)
+	}
+	if tok1 == tok2 {
+		t.Fatalf("subsequent tokens must not match")
 	}
 }

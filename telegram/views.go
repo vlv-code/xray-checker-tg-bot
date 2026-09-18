@@ -884,9 +884,10 @@ func (b *Bot) buildAddSubReport(count int) string {
 
 func (b *Bot) getNodesMainView() string {
 	if b.nodeMgr == nil {
-		return "🤖 <b>Агенты (удалённые чекер-ноды)</b>\n\n" +
-			"Ноды не настроены на мастере (переменная <code>NODES</code> пуста).\n\n" +
-			"Агенты позволяют распределённо проверять доступность прокси из разных локаций (РФ, Европа и т.д.)."
+		return "🖥 <b>Ноды (удалённые чекеры)</b>\n\n" +
+			"Ноды не настроены на мастере.\n\n" +
+			"Ноды позволяют распределённо проверять доступность прокси из разных локаций (РФ, Европа и др.).\n\n" +
+			"Нажмите «➕ Подключить ноду» или отправьте команду <code>/nodeadd &lt;имя&gt;</code>."
 	}
 	list := b.nodeMgr.Nodes()
 	onlineCount := 0
@@ -896,29 +897,28 @@ func (b *Bot) getNodesMainView() string {
 		}
 	}
 	var sb strings.Builder
-	sb.WriteString("🤖 <b>Агенты (удалённые чекер-ноды)</b>\n\n")
-	fmt.Fprintf(&sb, "• Сконфигурировано агентов: <b>%d</b>\n", len(list))
+	sb.WriteString("🖥 <b>Ноды (удалённые чекеры)</b>\n\n")
+	fmt.Fprintf(&sb, "• Сконфигурировано нод: <b>%d</b>\n", len(list))
 	fmt.Fprintf(&sb, "• На связи: <b>%d</b> | Оффлайн: <b>%d</b>\n\n", onlineCount, len(list)-onlineCount)
-	sb.WriteString("Агенты выполняют независимые сетевые проверки ваших подписок из удалённых точек и передают данные в общий мониторинг.\n\n" +
-		"Выберите раздел ниже:")
+	sb.WriteString("Ноды выполняют независимые сетевые проверки ваших подписок из удалённых точек и передают данные в общий мониторинг.\n\n" +
+		"Выберите действие ниже:")
 	return sb.String()
 }
 
 func (b *Bot) getNodesInstallGuideView() string {
-	return "📥 <b>Инструкция по установке агента</b>\n\n" +
-		"Агент разворачивается на любом внешнем VPS сервере или ПК в Docker.\n\n" +
-		"<b>1. Быстрый запуск через Docker:</b>\n" +
-		"<pre>docker run -d --name xray-agent \\\n" +
-		"  --restart always \\\n" +
-		"  -e ROLE=node \\\n" +
-		"  -e REPORT_URL=http://&lt;IP_МАСТЕРА&gt;:8080/api/v1/nodes/report \\\n" +
+	reportURL := b.getMasterReportURL()
+	return "📥 <b>Инструкция по установке ноды</b>\n\n" +
+		"Нода разворачивается на любом внешнем VPS сервере или ПК в Docker.\n\n" +
+		"<b>1. Быстрое подключение из бота:</b>\n" +
+		"Нажмите <b>«➕ Подключить ноду»</b> или отправьте <code>/nodeadd &lt;имя_ноды&gt;</code> — бот сгенерирует готовый токен и готовую команду запуска с подставленными параметрами.\n\n" +
+		"<b>2. Запуск через Docker run:</b>\n" +
+		"<pre>docker run -d --name xray-node \\\n" +
+		"  --restart unless-stopped \\\n" +
+		"  -e REPORT_URL=" + reportURL + " \\\n" +
 		"  -e REPORT_TOKEN=&lt;ТОКЕН_НОДЫ&gt; \\\n" +
-		"  ghcr.io/your-repo/xray-checker:latest</pre>\n\n" +
-		"<b>2. Конфигурация на мастере:</b>\n" +
-		"В <code>.env</code> мастера добавьте ноду в переменную:\n" +
-		"<code>NODES=node-msk|секретный_токен,node-eu|токен2</code>\n\n" +
-		"<b>3. Синхронизация:</b>\n" +
-		"После первого отчёта агент автоматически получит назначенные подписки и настройки проверки от мастера."
+		"  ghcr.io/vlv-code/xray-checker-tg-bot:latest</pre>\n\n" +
+		"<b>3. Синхронизация настроек:</b>\n" +
+		"После первого отчёта нода автоматически получит назначенные подписки и параметры проверки прямо от мастера."
 }
 
 func (b *Bot) getNodesHealthView() string {
@@ -927,10 +927,10 @@ func (b *Bot) getNodesHealthView() string {
 	}
 	list := b.nodeMgr.Nodes()
 	if len(list) == 0 {
-		return "🩺 <b>Проверка работоспособности и связи</b>\n\nСписок нод пуст."
+		return "🩺 <b>Проверка работоспособности и связи</b>\n\nСписок нод пуст. Нажмите «➕ Подключить ноду» для добавления."
 	}
 	var sb strings.Builder
-	sb.WriteString("🩺 <b>Проверка связи и статуса агентов</b>\n\n")
+	sb.WriteString("🩺 <b>Проверка связи и статуса нод</b>\n\n")
 	now := b.now()
 	for _, n := range list {
 		icon := "🔴"
@@ -976,15 +976,17 @@ func (b *Bot) getNodesSettingsView() string {
 		proxyAlertsStr = "📝 Только в журнал инцидентов"
 	}
 
-	return fmt.Sprintf("⚙️ <b>Настройки агентов</b>\n\n"+
-		"• Передача настроек агентам: <b>%s</b>\n"+
+	return fmt.Sprintf("⚙️ <b>Настройки нод</b>\n\n"+
+		"• Передача настроек нодам: <b>%s</b>\n"+
 		"• Алерты доступности нод: <b>%s</b>\n"+
 		"• Алерты по прокси от нод: <b>%s</b>\n"+
 		"• Порог молчания ноды: <b>%d сек</b>\n\n"+
-		"<i>При включённой передаче агенты получают интервал проверок, целевые серверы, списки выключенных хостов и режим алертов прямо от бота.</i>\n\n"+
-		"<b>Команды управления подписками нод:</b>\n"+
+		"<i>При включённой передаче ноды получают интервал проверок, целевые серверы, списки выключенных хостов и режим алертов прямо от бота.</i>\n\n"+
+		"<b>Команды управления нодами:</b>\n"+
+		"• <code>/nodeadd &lt;имя_ноды&gt;</code> — подключить новую ноду\n"+
+		"• <code>/nodedel &lt;имя_ноды&gt;</code> — удалить ноду с мастера\n"+
 		"• <code>/nodesubs &lt;имя_ноды&gt;</code> — просмотр подписок ноды\n"+
-		"• <code>/nodeaddsub &lt;имя_ноды&gt; &lt;url&gt;</code> — добавить подписку ноде\n"+
+		"• <code>/nodeaddsub &lt;имя_ноды&gt; &lt;url&gt;</code> — назначить подписку ноде\n"+
 		"• <code>/nodedelsub &lt;имя_ноды&gt; &lt;url&gt;</code> — удалить подписку у ноды",
 		syncStr, alertsStr, proxyAlertsStr, cfg.NodeStaleTimeoutSec)
 }

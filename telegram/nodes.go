@@ -40,6 +40,10 @@ type NodeManager interface {
 	AddSub(node, url string) error
 	// RemoveSub drops url from node's desired list.
 	RemoveSub(node, url string) error
+	// AddNode registers a new node dynamically with name and token.
+	AddNode(name, token string) error
+	// RemoveNode unregisters a node dynamically.
+	RemoveNode(name string) error
 }
 
 // nodeHealthState tracks what the alert loop knows about a node. alerted
@@ -72,7 +76,7 @@ func (b *Bot) updateNodeHealthLocked(states []NodeInfo, now time.Time) []string 
 	for _, st := range states {
 		seen[st.Name] = true
 		nodeID := "node:" + st.Name
-		nodeDisplayName := "🤖 [Агент] " + st.Name
+		nodeDisplayName := "🖥 [Нода] " + st.Name
 
 		if b.statsStore != nil {
 			b.statsStore.RecordCheck(nodeID, nodeDisplayName, st.Up, 0)

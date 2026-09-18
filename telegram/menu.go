@@ -52,7 +52,7 @@ func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("🌐 Проверка Check-Host.net", "menu:checkhost"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🤖 Агенты", "menu:nodes"),
+			btn("🖥 Ноды", "menu:nodes"),
 		),
 		tu.InlineKeyboardRow(
 			btn("⚙️ Настройки", "menu:settings"),
@@ -60,9 +60,12 @@ func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 	)
 }
 
-// NodesMainMenuMarkup returns inline keyboard for the main Agents section.
+// NodesMainMenuMarkup returns inline keyboard for the main Nodes section.
 func NodesMainMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("➕ Подключить ноду", "menu:nodes:add"),
+		),
 		tu.InlineKeyboardRow(
 			btn("📥 Инструкция по установке", "menu:nodes:install"),
 		),
@@ -70,7 +73,7 @@ func NodesMainMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("🩺 Проверка связи и статуса", "menu:nodes:health"),
 		),
 		tu.InlineKeyboardRow(
-			btn("⚙️ Настройки агентов", "menu:nodes:settings"),
+			btn("⚙️ Настройки нод", "menu:nodes:settings"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🔄 Обновить", "menu:nodes:refresh"),
@@ -83,7 +86,7 @@ func NodesMainMenuMarkup() *telego.InlineKeyboardMarkup {
 func NodesInstallMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🔙 К агентам", "menu:nodes"),
+			btn("🔙 К нодам", "menu:nodes"),
 			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
@@ -94,7 +97,7 @@ func NodesHealthMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
 			btn("🔄 Перепроверить связь", "menu:nodes:health"),
-			btn("🔙 К агентам", "menu:nodes"),
+			btn("🔙 К нодам", "menu:nodes"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🏠 Главное меню", "menu:main"),
@@ -104,9 +107,9 @@ func NodesHealthMarkup() *telego.InlineKeyboardMarkup {
 
 // NodesSettingsMarkup returns keyboard for configuring node sync and alerts.
 func NodesSettingsMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
-	syncStatus := "🔄 Синхронизация: вкл"
+	syncStatus := "🔄 Синхронизация с нодами: вкл"
 	if !cfg.NodeSyncEnabled {
-		syncStatus = "🔄 Синхронизация: выкл"
+		syncStatus = "🔄 Синхронизация с нодами: выкл"
 	}
 
 	alertsStatus := "🔔 Алерты нод: вкл"
@@ -133,7 +136,7 @@ func NodesSettingsMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 			btn("📋 Подписки нод (/nodesubs)", "menu:subs"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🔙 К агентам", "menu:nodes"),
+			btn("🔙 К нодам", "menu:nodes"),
 			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
