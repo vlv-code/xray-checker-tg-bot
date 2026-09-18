@@ -125,4 +125,3 @@ func TestReadFromMultipleSourcesDetailed_Empty(t *testing.T) {
 		t.Fatalf("expected empty configs and counts, got cfgs=%d, counts=%d", len(cfgs), len(counts))
 	}
 }
-

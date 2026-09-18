@@ -1044,4 +1044,3 @@ func (b *Bot) getNodeSubsManageView(nodeName string) (string, *telego.InlineKeyb
 
 	return sb.String(), NodeSubsManageMarkup(nodeName, subs)
 }
-

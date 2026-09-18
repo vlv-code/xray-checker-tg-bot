@@ -56,6 +56,8 @@ All features are accessible via the interactive **`/menu`** or direct chat comma
 | `/addsub <URL>` | Dynamically add a new subscription URL without restarting |
 | `/delsub <URL>` | Remove a previously added dynamic subscription |
 | `/nodes` | Health status, ASN, and summary of remote checker nodes |
+| `/nodeadd [name]` | Connect and register a new remote node (generates token & run command) |
+| `/nodedel <name>` | Delete a remote node from master |
 | `/nodesubs <name>` | List desired subscriptions assigned to a remote node |
 | `/nodeaddsub <name> <URL>` | Assign a subscription URL to a remote node |
 | `/nodedelsub <name> <URL>` | Unassign a subscription URL from a remote node |
@@ -82,24 +84,32 @@ Every target receives its own copy of alerts, recovery notes and digests, and co
 
 ---
 
-## 🖥 Remote Nodes (Push Reporting)
+## 🖥 Remote Nodes Architecture (Push Model)
 
-Run additional headless instances of this image (no `TELEGRAM_BOT_TOKEN`) and
-have them push check results to the master instance that owns the bot:
+Run additional lightweight checker node instances anywhere in the world (VPS, home server, Raspberry Pi) and have them push check results to your master instance that owns the Telegram bot:
 
-- **On each node:** set `REPORT_URL=https://master:2112/api/v1/nodes/report` and
-  `REPORT_TOKEN` (no inbound ports required; works behind NAT).
-- **On the master:** list nodes in `NODES=name|token,other|token`. The master
-  alerts on every node's proxies (`[node] name` identity), alerts when a node
-  stops reporting, and shows each node's ASN (`ASN_DB_URL`, db-ip asn-lite).
-- **Bot commands:** `/nodes`, `/nodesubs <name>`, `/nodeaddsub <name> <url>`,
-  `/nodedelsub <name> <url>` — subscriptions are delivered to the node in the
-  response to its next report and applied locally (validated, reload-rolled
-  back on failure).
-
-The ingest endpoint uses bearer-token auth; run it behind HTTPS (reverse
-proxy) when nodes report over the public internet. See
-`docs/superpowers/specs/2026-09-17-nodes-push-design.md` for the full design.
+- **1-Click Connection from Telegram**:
+  - Open **`[ 🖥 Ноды ]`** ➔ **`[ ➕ Подключить ноду ]`** (or send `/nodeadd <name>`).
+  - The bot automatically generates a secure 64-hex bearer token and replies with a copy-pasteable **`docker run`** command and **Docker Compose** block.
+  - Nodes are hot-registered on the master and saved to `/app/data/nodes.json` (persists across restarts and container rebuilds).
+- **Interactive Subscription Management**:
+  - Open **`[ 🖥 Ноды ]`** ➔ **`[ ⚙️ Настройки нод ]`** ➔ **`[ 📋 Подписки нод ]`**.
+  - Select any node to inspect its assigned subscriptions, proxy counts from its latest report, and delete subscriptions with 1-click (`[ 🗑 Удалить: #N ]`).
+  - Assign new subscriptions with **`[ ➕ Назначить подписку ]`** by simply sending the subscription URL in chat.
+  - Subscriptions are dynamically synced to the node upon its next report cycle.
+- **Pre-Built Docker Image on GHCR**:
+  - Multi-arch (`linux/amd64`, `linux/arm64`) image published to GitHub Container Registry:
+    ```bash
+    docker run -d --name xray-node-1 \
+      --restart unless-stopped \
+      -e REPORT_URL=http://<MASTER_IP>:2112/api/v1/nodes/report \
+      -e REPORT_TOKEN=<64_HEX_TOKEN> \
+      ghcr.io/vlv-code/xray-checker-tg-bot:latest
+    ```
+- **Outage Alerts & ASN Identification**:
+  - Master alerts on every node's proxy failures (`🖥 [Нода] <name>` identity).
+  - Automatically notifies when a node goes down or recovers.
+  - Displays the node's ISP / Hosting Provider ASN (via local `db-ip asn-lite` database).
 
 ---
 
@@ -242,7 +252,8 @@ docker compose up -d --build
 | `LOG_LEVEL` | `info` | Application log level (`debug\|info\|warn\|error\|none`) |
 | `RUN_ONCE` | `false` | Run a single check cycle and exit (for cron/scheduled jobs) |
 | `NODES` | `""` | Comma-separated remote checker nodes as `name\|token` for master instance |
-| `NODES_STORE_PATH` | `node_subs.json` | Persistent storage for node-assigned desired subscriptions |
+| `NODES_STORE_PATH` | `node_subs.json` | Persistent storage for node-assigned desired subscriptions (and sibling `nodes.json`) |
+| `MASTER_PUBLIC_URL` | `""` | Public master ingest URL shown in `/nodeadd` commands (auto-detected if empty) |
 | `REPORT_URL` | `""` | Master ingest endpoint URL for node push reports |
 | `REPORT_TOKEN` | `""` | Bearer token matching node entry in master's `NODES` list |
 | `ASN_DB_URL` | db-ip asn-lite | URL of gzipped ASN mmdb database for node network operator lookup |

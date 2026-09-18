@@ -292,4 +292,3 @@ func TestEmptyProxiesConfigBuilds(t *testing.T) {
 	buildsWithXrayCore(t, nil)
 	buildsWithXrayCore(t, []*models.ProxyConfig{})
 }
-

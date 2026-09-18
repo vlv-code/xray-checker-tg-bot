@@ -332,4 +332,3 @@ func TestNodesMarkups(t *testing.T) {
 		t.Errorf("expected back to menu:nodes:subs, got %s", backRow[0].CallbackData)
 	}
 }
-

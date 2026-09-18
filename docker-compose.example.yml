@@ -1,5 +1,9 @@
 services:
+  # ----------------------------------------------------------------------------
+  # Master Service (owns the Telegram bot and receives reports from remote nodes)
+  # ----------------------------------------------------------------------------
   xray-checker:
+    image: ghcr.io/vlv-code/xray-checker-tg-bot:latest
     build: .
     container_name: xray-checker
     restart: unless-stopped
@@ -8,12 +12,12 @@ services:
     environment:
       - TZ=${TZ:-Europe/Moscow}
     ports:
-      # Dashboard + Prometheus metrics. Note: METRICS_PORT=0 (headless) is not
-      # compatible with a port mapping — for a headless container set
-      # WEB_ENABLED=false in .env and comment these lines out instead.
+      # Dashboard + Prometheus metrics + Remote nodes ingest (POST /api/v1/nodes/report).
+      # Note: METRICS_PORT=0 (headless) is not compatible with a port mapping — for a
+      # headless container set WEB_ENABLED=false in .env and comment these lines out instead.
       - "${METRICS_PORT:-2112}:${METRICS_PORT:-2112}"
     volumes:
-      # Persistent storage for configs, stats, alerts, and dynamic subscriptions.
+      # Persistent storage for configs, stats, alerts, and dynamic subscriptions/nodes.
       # NOTE: Docker creates these host directories as root:root on the first
       # `docker compose up`; the image entrypoint fixes their ownership
       # automatically (the container starts as root, chowns the mounts, then
@@ -22,3 +26,19 @@ services:
       - ./data:/app/data
       # GeoIP/GeoSite databases, downloaded on first start and reused after
       - ./geo:/app/geo
+
+  # ----------------------------------------------------------------------------
+  # Remote Checker Node Example (Deploy on remote VPS/server)
+  # To run as a node: uncomment, supply master REPORT_URL and REPORT_TOKEN.
+  # Subscriptions can be assigned directly from Telegram bot via /nodeaddsub.
+  # ----------------------------------------------------------------------------
+  # xray-node-1:
+  #   image: ghcr.io/vlv-code/xray-checker-tg-bot:latest
+  #   container_name: xray-node-1
+  #   restart: unless-stopped
+  #   environment:
+  #     - REPORT_URL=http://<MASTER_IP_OR_DOMAIN>:2112/api/v1/nodes/report
+  #     - REPORT_TOKEN=<TOKEN_GENERATED_BY_BOT_OR_CONFIGURED_ON_MASTER>
+  #     - CHECK_INTERVAL=300s
+  #     - TZ=Europe/Moscow
+

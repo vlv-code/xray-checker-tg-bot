@@ -51,7 +51,7 @@ func TestFormatAge(t *testing.T) {
 }
 
 type fakeNodeManager struct {
-	nodes map[string]string // name -> token
+	nodes map[string]string   // name -> token
 	subs  map[string][]string // name -> URLs
 }
 
@@ -236,6 +236,3 @@ func TestNodeSubsCallbacks(t *testing.T) {
 		t.Fatalf("expected 0 subs after deletion, got %d", len(subs))
 	}
 }
-
-
-

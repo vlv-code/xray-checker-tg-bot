@@ -499,7 +499,15 @@ Comma-separated list of trusted remote checker nodes in `name|token` format (e.g
 - Required: No
 - Default: `node_subs.json`
 
-JSON file for storing desired managed subscriptions assigned to remote nodes via `/nodeaddsub` and `/nodedelsub`.
+JSON file for storing desired managed subscriptions assigned to remote nodes via `/nodeaddsub` and `/nodedelsub`. Note: dynamically registered nodes via `/nodeadd` are stored alongside this in `nodes.json`.
+
+### MASTER_PUBLIC_URL
+
+- CLI: `--master-public-url`
+- Required: No
+- Default: ""
+
+Public URL of the master report endpoint displayed in Telegram bot `/nodeadd` setup instructions and generated Docker commands. If empty, the master automatically detects its public/host IP address.
 
 ### REPORT_URL
 
