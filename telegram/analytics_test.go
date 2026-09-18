@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -193,5 +194,63 @@ func TestBot_SubsFreshness(t *testing.T) {
 	}
 	if !strings.Contains(text, "5м назад · 12 прокси (без изменений)") {
 		t.Errorf("expected unchanged format for sub2:\n%s", text)
+	}
+}
+
+func TestStatsHelpAndUnicodeNames(t *testing.T) {
+	now := time.Date(2026, 9, 18, 14, 0, 0, 0, time.UTC)
+	tmpDir := t.TempDir()
+	ss, err := NewStatsStore(filepath.Join(tmpDir, "stats.json"))
+	if err != nil {
+		t.Fatalf("failed to create stats store: %v", err)
+	}
+
+	unicodeName := "🇸🇪 Sweden-Stockholm-01"
+	ss.RecordCheck("swe-1", unicodeName, true, 45)
+	ss.RecordTransition("swe-1", unicodeName, false, "TCP timeout", now.Add(-10*time.Minute))
+
+	mockSrc := &mockSource{
+		metrics: []metrics.ProxyMetric{
+			{StableID: "swe-1", Name: unicodeName, Online: true, LatencyMs: 45, Protocol: "vless"},
+		},
+	}
+
+	b := &Bot{
+		source:     mockSrc,
+		statsStore: ss,
+		nowFunc:    func() time.Time { return now },
+	}
+
+	// 1. Overview text
+	overview := b.getStatsOverviewText()
+	if !strings.Contains(overview, "🇸🇪 Sweden-Stockholm-01") {
+		t.Errorf("expected full unicode name without byte clipping in overview:\n%s", overview)
+	}
+	if !strings.Contains(overview, "Справка по метрикам") {
+		t.Errorf("expected help section in overview:\n%s", overview)
+	}
+
+	// 2. Incidents text
+	incidents := b.getIncidentsText()
+	if !strings.Contains(incidents, "Справка") {
+		t.Errorf("expected help section in incidents text:\n%s", incidents)
+	}
+
+	// 3. Top problematic text
+	top := b.getTopProblematicText()
+	if !strings.Contains(top, "Справка") {
+		t.Errorf("expected help section in top problematic text:\n%s", top)
+	}
+
+	// 4. Protocols stats text
+	protocols := b.getProtocolsStatsText()
+	if !strings.Contains(protocols, "Справка") {
+		t.Errorf("expected help section in protocols text:\n%s", protocols)
+	}
+
+	// 5. Heatmap text
+	heatmap := b.getHeatmapText()
+	if !strings.Contains(heatmap, "Справка") {
+		t.Errorf("expected help section in heatmap text:\n%s", heatmap)
 	}
 }

@@ -177,6 +177,23 @@ func (tm *TargetManager) RemoveTarget(rawURL string) error {
 	return nil
 }
 
+// SetTargets atomically replaces the targets list with validated targets.
+func (tm *TargetManager) SetTargets(newTargets []string) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	valid := make([]string, 0, len(newTargets))
+	for _, t := range newTargets {
+		t = strings.TrimSpace(t)
+		if _, err := validateTargetURL(t); err == nil {
+			valid = append(valid, t)
+		}
+	}
+	if len(valid) > 0 {
+		tm.targets = valid
+	}
+}
+
 // CheckSingleTarget tests an endpoint via the provided http.Client.
 func CheckSingleTarget(client *http.Client, targetURL string) TargetDiagResult {
 	var ttfb time.Duration

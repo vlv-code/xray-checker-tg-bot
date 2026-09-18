@@ -250,6 +250,10 @@ func DefaultBotConfig() BotConfig {
 		DayDigestEnabled:       false,
 		DayDigestIntervalHours: 6,
 		AlertMode:              AlertModeClean,
+		NodeSyncEnabled:        true,
+		NodeAlertsEnabled:      true,
+		NodeProxyAlertsChat:    true,
+		NodeStaleTimeoutSec:    90,
 	}
 }
 

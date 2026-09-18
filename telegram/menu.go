@@ -10,6 +10,7 @@ import (
 	"github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
 
+	"xray-checker/checker"
 	"xray-checker/metrics"
 )
 
@@ -51,7 +52,89 @@ func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("🌐 Проверка Check-Host.net", "menu:checkhost"),
 		),
 		tu.InlineKeyboardRow(
+			btn("🤖 Агенты", "menu:nodes"),
+		),
+		tu.InlineKeyboardRow(
 			btn("⚙️ Настройки", "menu:settings"),
+		),
+	)
+}
+
+// NodesMainMenuMarkup returns inline keyboard for the main Agents section.
+func NodesMainMenuMarkup() *telego.InlineKeyboardMarkup {
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("📥 Инструкция по установке", "menu:nodes:install"),
+		),
+		tu.InlineKeyboardRow(
+			btn("🩺 Проверка связи и статуса", "menu:nodes:health"),
+		),
+		tu.InlineKeyboardRow(
+			btn("⚙️ Настройки агентов", "menu:nodes:settings"),
+		),
+		tu.InlineKeyboardRow(
+			btn("🔄 Обновить", "menu:nodes:refresh"),
+			btn("🏠 Главное меню", "menu:main"),
+		),
+	)
+}
+
+// NodesInstallMarkup returns navigation keyboard for the installation guide.
+func NodesInstallMarkup() *telego.InlineKeyboardMarkup {
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("🔙 К агентам", "menu:nodes"),
+			btn("🏠 Главное меню", "menu:main"),
+		),
+	)
+}
+
+// NodesHealthMarkup returns keyboard for node health/connectivity check.
+func NodesHealthMarkup() *telego.InlineKeyboardMarkup {
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("🔄 Перепроверить связь", "menu:nodes:health"),
+			btn("🔙 К агентам", "menu:nodes"),
+		),
+		tu.InlineKeyboardRow(
+			btn("🏠 Главное меню", "menu:main"),
+		),
+	)
+}
+
+// NodesSettingsMarkup returns keyboard for configuring node sync and alerts.
+func NodesSettingsMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
+	syncStatus := "🔄 Синхронизация: вкл"
+	if !cfg.NodeSyncEnabled {
+		syncStatus = "🔄 Синхронизация: выкл"
+	}
+
+	alertsStatus := "🔔 Алерты нод: вкл"
+	if !cfg.NodeAlertsEnabled {
+		alertsStatus = "🔕 Алерты нод: выкл"
+	}
+
+	proxyAlertsStatus := "📢 Алерты прокси нод: в чат"
+	if !cfg.NodeProxyAlertsChat {
+		proxyAlertsStatus = "📝 Алерты прокси нод: журнал"
+	}
+
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn(syncStatus, "menu:nodes:toggle_sync"),
+		),
+		tu.InlineKeyboardRow(
+			btn(alertsStatus, "menu:nodes:toggle_alerts"),
+		),
+		tu.InlineKeyboardRow(
+			btn(proxyAlertsStatus, "menu:nodes:toggle_proxy_alerts"),
+		),
+		tu.InlineKeyboardRow(
+			btn("📋 Подписки нод (/nodesubs)", "menu:subs"),
+		),
+		tu.InlineKeyboardRow(
+			btn("🔙 К агентам", "menu:nodes"),
+			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
 }
@@ -551,6 +634,11 @@ func DiagPaginationMarkup(page, totalPages int, _ ...DiagDeepLink) *telego.Inlin
 		))
 	}
 
+	// Trigger deep connection diagnostics on any proxy from this page
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("🔬 Углубленная проверка соединения", fmt.Sprintf("menu:diag:pick_deep:%d", page)),
+	))
+
 	// Action row: Back to Detailed Summary + Refresh current page
 	rows = append(rows, tu.InlineKeyboardRow(
 		btn("🔙 К подробной сводке", "menu:diag"),
@@ -568,18 +656,42 @@ func DiagPaginationMarkup(page, totalPages int, _ ...DiagDeepLink) *telego.Inlin
 // DeepDiagnosticsMarkup returns navigation buttons for Level 3 Deep diagnostics.
 func DeepDiagnosticsMarkup(stableID string, page ...int) *telego.InlineKeyboardMarkup {
 	curPage := 1
-	if len(page) > 0 && page[0] > 1 {
+	if len(page) > 0 && page[0] > 0 {
 		curPage = page[0]
 	}
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🔙 К подробной сводке", "menu:diag"),
+			btn("🔙 К детальному отчёту", fmt.Sprintf("menu:diag:details:%d", curPage)),
 			btn("🔄 Перепроверить", fmt.Sprintf("menu:diag:deep:%s:%d", stableID, curPage)),
 		),
 		tu.InlineKeyboardRow(
 			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
+}
+
+// PickDeepDiagnosticsMarkup returns keyboard to select any proxy for deep diagnostics.
+func PickDeepDiagnosticsMarkup(reports []checker.ProxyDiagReport, page int) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+	for _, rep := range reports {
+		icon := "🟢"
+		switch rep.Status {
+		case "offline":
+			icon = "🔴"
+		case "degraded":
+			icon = "🟡"
+		case "disabled":
+			icon = "⏸️"
+		}
+		btnText := truncateButtonText(fmt.Sprintf("%s %s", icon, rep.ProxyName), 30)
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn(btnText, fmt.Sprintf("menu:diag:deep:%s:%d", rep.StableID, page)),
+		))
+	}
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("🔙 К детальному отчёту", fmt.Sprintf("menu:diag:details:%d", page)),
+	))
+	return tu.InlineKeyboard(rows...)
 }
 
 // CheckHostResultMarkup returns keyboard after a Check-Host scan.

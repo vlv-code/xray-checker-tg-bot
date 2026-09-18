@@ -16,6 +16,7 @@ import (
 )
 
 const diagPageSize = 5
+const diagRichDetailsPageSize = 15
 
 func (b *Bot) getCachedDiagnosticsReports() []checker.ProxyDiagReport {
 	if b.diagSource == nil {
@@ -758,7 +759,7 @@ func (b *Bot) buildDiagnosticsDetailsRichMessage(reports []checker.ProxyDiagRepo
 		return &msg, 1
 	}
 
-	totalPages := (len(reports) + diagPageSize - 1) / diagPageSize
+	totalPages := (len(reports) + diagRichDetailsPageSize - 1) / diagRichDetailsPageSize
 	if page < 1 {
 		page = 1
 	}
@@ -766,8 +767,8 @@ func (b *Bot) buildDiagnosticsDetailsRichMessage(reports []checker.ProxyDiagRepo
 		page = totalPages
 	}
 
-	start := (page - 1) * diagPageSize
-	end := start + diagPageSize
+	start := (page - 1) * diagRichDetailsPageSize
+	end := start + diagRichDetailsPageSize
 	if end > len(reports) {
 		end = len(reports)
 	}

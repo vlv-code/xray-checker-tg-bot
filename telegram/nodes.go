@@ -66,13 +66,28 @@ func (b *Bot) updateNodeHealthLocked(states []NodeInfo, now time.Time) []string 
 	if b.lastNodeHealth == nil {
 		b.lastNodeHealth = make(map[string]nodeHealthState)
 	}
+	cfg := b.GetConfig()
 	var alerts []string
 	seen := make(map[string]bool, len(states))
 	for _, st := range states {
 		seen[st.Name] = true
+		nodeID := "node:" + st.Name
+		nodeDisplayName := "🤖 [Агент] " + st.Name
+
+		if b.statsStore != nil {
+			b.statsStore.RecordCheck(nodeID, nodeDisplayName, st.Up, 0)
+		}
+
 		prev, known := b.lastNodeHealth[st.Name]
 		if !known {
 			b.lastNodeHealth[st.Name] = nodeHealthState{up: st.Up, since: now}
+			if b.statsStore != nil {
+				if !st.Up {
+					b.statsStore.RecordInitialDown(nodeID, nodeDisplayName, now)
+				} else {
+					b.statsStore.SyncOnlineState(nodeID, now)
+				}
+			}
 			continue
 		}
 		asnSuffix := ""
@@ -82,14 +97,25 @@ func (b *Bot) updateNodeHealthLocked(states []NodeInfo, now time.Time) []string 
 		switch {
 		case prev.up && !st.Up:
 			b.lastNodeHealth[st.Name] = nodeHealthState{up: false, since: now, alerted: true}
-			timeStr := now.Format("15:04")
-			alerts = append(alerts, fmt.Sprintf("🔴 <b>Нода %s</b> недоступна%s\n⏱ %s",
-				escapeHTML(st.Name), asnSuffix, timeStr))
+			if b.statsStore != nil {
+				b.statsStore.RecordTransition(nodeID, nodeDisplayName, false, "Потеря связи с чекер-нодой", now)
+			}
+			if cfg.NodeAlertsEnabled {
+				timeStr := now.Format("15:04")
+				alerts = append(alerts, fmt.Sprintf("🔴 <b>Нода %s</b> недоступна%s\n⏱ %s",
+					escapeHTML(st.Name), asnSuffix, timeStr))
+			}
 		case !prev.up && st.Up:
 			b.lastNodeHealth[st.Name] = nodeHealthState{up: true, since: now}
-			if prev.alerted {
+			var downtime time.Duration
+			if b.statsStore != nil {
+				downtime = b.statsStore.RecordTransition(nodeID, nodeDisplayName, true, "", now)
+			} else {
+				downtime = now.Sub(prev.since)
+			}
+			if prev.alerted && cfg.NodeAlertsEnabled {
 				alerts = append(alerts, fmt.Sprintf("✅ <b>Нода %s</b> вернулась%s\n⏱ простой: %s",
-					escapeHTML(st.Name), asnSuffix, FormatDowntime(now.Sub(prev.since))))
+					escapeHTML(st.Name), asnSuffix, FormatDowntime(downtime)))
 			}
 		}
 	}

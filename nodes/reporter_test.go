@@ -17,7 +17,7 @@ func TestReporterSend(t *testing.T) {
 	defer srv.Close()
 
 	rep := NewReporter(srv.URL+"/api/v1/nodes/report", "secrettoken")
-	managed, err := rep.Send(ReportPayload{Version: "v", CheckIntervalSec: 60})
+	resp, err := rep.Send(ReportPayload{Version: "v", CheckIntervalSec: 60})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,8 +30,8 @@ func TestReporterSend(t *testing.T) {
 	if gotCT != "application/json" {
 		t.Errorf("content-type: %s", gotCT)
 	}
-	if len(managed) != 1 || managed[0] != "https://sub.example/one" {
-		t.Errorf("managed list: %v", managed)
+	if len(resp.ManagedSubs) != 1 || resp.ManagedSubs[0] != "https://sub.example/one" {
+		t.Errorf("managed list: %v", resp.ManagedSubs)
 	}
 }
 

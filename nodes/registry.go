@@ -62,12 +62,13 @@ type NodeHealth struct {
 // and identity by token. It is the ingest endpoint and the merged-snapshot
 // source for the alert pipeline.
 type Registry struct {
-	mu       sync.RWMutex
-	nodes    map[string]*nodeState // by name
-	byToken  map[string]string     // token -> name
-	subs     NodeSubsSource
-	asn      LookupFunc
-	onUpdate func()
+	mu        sync.RWMutex
+	nodes     map[string]*nodeState // by name
+	byToken   map[string]string     // token -> name
+	subs      NodeSubsSource
+	asn       LookupFunc
+	onUpdate  func()
+	cfgSource func() *NodeConfigSync
 }
 
 // NewRegistry builds a registry for the given node configs. subs may be nil
@@ -94,6 +95,13 @@ func (r *Registry) SetOnUpdate(f func()) {
 	r.onUpdate = f
 }
 
+// SetConfigSource registers a provider for configuration synchronized to nodes.
+func (r *Registry) SetConfigSource(f func() *NodeConfigSync) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfgSource = f
+}
+
 // NodeExists reports whether name is a configured node.
 func (r *Registry) NodeExists(name string) bool {
 	r.mu.RLock()
@@ -102,8 +110,7 @@ func (r *Registry) NodeExists(name string) bool {
 	return ok
 }
 
-// HandleReport is the ingest endpoint: bearer auth by token, 5 MiB limit,
-// state update, onUpdate callback, managedSubs response.
+// HandleReport returns the HTTP handler for POST /api/v1/nodes/report.
 func (r *Registry) HandleReport() http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodPost {
@@ -155,7 +162,17 @@ func (r *Registry) HandleReport() http.HandlerFunc {
 		if r.subs != nil {
 			managed = r.subs.ManagedSubsFor(name)
 		}
-		json.NewEncoder(w).Encode(IngestResponse{ManagedSubs: managed})
+		var cfgSync *NodeConfigSync
+		r.mu.RLock()
+		cf := r.cfgSource
+		r.mu.RUnlock()
+		if cf != nil {
+			cfgSync = cf()
+		}
+		json.NewEncoder(w).Encode(IngestResponse{
+			ManagedSubs: managed,
+			ConfigSync:  cfgSync,
+		})
 	}
 }
 

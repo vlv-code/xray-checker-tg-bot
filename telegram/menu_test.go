@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/mymmrac/telego"
+
+	"xray-checker/checker"
 )
 
 func TestMenuMarkups(t *testing.T) {
@@ -46,20 +48,26 @@ func TestMenuMarkups(t *testing.T) {
 
 	// 1. Single page pagination markup (Details view)
 	singlePageMarkup := DiagPaginationMarkup(1, 1)
-	if len(singlePageMarkup.InlineKeyboard) != 2 {
-		t.Errorf("expected 2 rows for single page markup (actions + back), got %d", len(singlePageMarkup.InlineKeyboard))
+	if len(singlePageMarkup.InlineKeyboard) != 3 {
+		t.Errorf("expected 3 rows for single page markup (deep check + actions + back), got %d", len(singlePageMarkup.InlineKeyboard))
 	}
-	if singlePageMarkup.InlineKeyboard[0][0].CallbackData != "menu:diag" {
-		t.Errorf("expected back to summary button menu:diag, got %s", singlePageMarkup.InlineKeyboard[0][0].CallbackData)
+	if singlePageMarkup.InlineKeyboard[0][0].CallbackData != "menu:diag:pick_deep:1" {
+		t.Errorf("expected deep check trigger button menu:diag:pick_deep:1, got %s", singlePageMarkup.InlineKeyboard[0][0].CallbackData)
 	}
-	if singlePageMarkup.InlineKeyboard[0][0].Text != "🔙 К подробной сводке" {
-		t.Errorf("expected button text '🔙 К подробной сводке', got '%s'", singlePageMarkup.InlineKeyboard[0][0].Text)
+	if singlePageMarkup.InlineKeyboard[0][0].Text != "🔬 Углубленная проверка соединения" {
+		t.Errorf("expected button text '🔬 Углубленная проверка соединения', got '%s'", singlePageMarkup.InlineKeyboard[0][0].Text)
+	}
+	if singlePageMarkup.InlineKeyboard[1][0].CallbackData != "menu:diag" {
+		t.Errorf("expected back to summary button menu:diag, got %s", singlePageMarkup.InlineKeyboard[1][0].CallbackData)
+	}
+	if singlePageMarkup.InlineKeyboard[1][0].Text != "🔙 К подробной сводке" {
+		t.Errorf("expected button text '🔙 К подробной сводке', got '%s'", singlePageMarkup.InlineKeyboard[1][0].Text)
 	}
 
 	// 2. Multi-page pagination markup (Details view)
 	multiPageMarkup := DiagPaginationMarkup(2, 4)
-	if len(multiPageMarkup.InlineKeyboard) != 3 {
-		t.Fatalf("expected 3 rows for multi-page markup, got %d", len(multiPageMarkup.InlineKeyboard))
+	if len(multiPageMarkup.InlineKeyboard) != 4 {
+		t.Fatalf("expected 4 rows for multi-page markup (nav + deep check + actions + back), got %d", len(multiPageMarkup.InlineKeyboard))
 	}
 	navRow := multiPageMarkup.InlineKeyboard[0]
 	if len(navRow) != 3 {
@@ -74,7 +82,11 @@ func TestMenuMarkups(t *testing.T) {
 	if navRow[2].CallbackData != "menu:diag:details:3" && navRow[2].CallbackData != "menu:diag:p:3" {
 		t.Errorf("expected next page 3, got %s", navRow[2].CallbackData)
 	}
-	actionRow := multiPageMarkup.InlineKeyboard[1]
+	deepRow := multiPageMarkup.InlineKeyboard[1]
+	if deepRow[0].CallbackData != "menu:diag:pick_deep:2" {
+		t.Errorf("expected deep check trigger callback menu:diag:pick_deep:2, got %s", deepRow[0].CallbackData)
+	}
+	actionRow := multiPageMarkup.InlineKeyboard[2]
 	if actionRow[0].CallbackData != "menu:diag" {
 		t.Errorf("expected back to summary callback menu:diag, got %s", actionRow[0].CallbackData)
 	}
@@ -181,5 +193,86 @@ func TestSettingsMenuSubscriptionsVisibility(t *testing.T) {
 	}
 	if hasSubsBtn(SettingsMenuMarkup(false)) {
 		t.Errorf("expected SettingsMenuMarkup(false) to omit menu:subs")
+	}
+}
+
+func TestDeepDiagnosticsMarkup(t *testing.T) {
+	mk := DeepDiagnosticsMarkup("stable-123", 2)
+	if len(mk.InlineKeyboard) != 2 {
+		t.Fatalf("expected 2 rows in DeepDiagnosticsMarkup, got %d", len(mk.InlineKeyboard))
+	}
+	backBtn := mk.InlineKeyboard[0][0]
+	if backBtn.CallbackData != "menu:diag:details:2" {
+		t.Errorf("expected back button to return to menu:diag:details:2, got %s", backBtn.CallbackData)
+	}
+	if backBtn.Text != "🔙 К детальному отчёту" {
+		t.Errorf("expected button text '🔙 К детальному отчёту', got '%s'", backBtn.Text)
+	}
+	recheckBtn := mk.InlineKeyboard[0][1]
+	if recheckBtn.CallbackData != "menu:diag:deep:stable-123:2" {
+		t.Errorf("expected recheck callback 'menu:diag:deep:stable-123:2', got %s", recheckBtn.CallbackData)
+	}
+}
+
+func TestPickDeepDiagnosticsMarkup(t *testing.T) {
+	reports := []checker.ProxyDiagReport{
+		{ProxyName: "Proxy-1", StableID: "p1", Status: "online"},
+		{ProxyName: "Proxy-2", StableID: "p2", Status: "offline"},
+	}
+	mk := PickDeepDiagnosticsMarkup(reports, 1)
+	if len(mk.InlineKeyboard) != 3 { // 2 proxy buttons + 1 back button
+		t.Fatalf("expected 3 rows in PickDeepDiagnosticsMarkup, got %d", len(mk.InlineKeyboard))
+	}
+	if mk.InlineKeyboard[0][0].CallbackData != "menu:diag:deep:p1:1" {
+		t.Errorf("expected p1 callback, got %s", mk.InlineKeyboard[0][0].CallbackData)
+	}
+	if mk.InlineKeyboard[1][0].CallbackData != "menu:diag:deep:p2:1" {
+		t.Errorf("expected p2 callback, got %s", mk.InlineKeyboard[1][0].CallbackData)
+	}
+	backRow := mk.InlineKeyboard[2]
+	if backRow[0].CallbackData != "menu:diag:details:1" {
+		t.Errorf("expected back callback menu:diag:details:1, got %s", backRow[0].CallbackData)
+	}
+}
+
+func TestNodesMarkups(t *testing.T) {
+	// 1. Main menu has Agents button
+	mainMenu := MainMenuMarkup()
+	foundAgents := false
+	for _, row := range mainMenu.InlineKeyboard {
+		for _, b := range row {
+			if b.CallbackData == "menu:nodes" && b.Text == "🤖 Агенты" {
+				foundAgents = true
+			}
+		}
+	}
+	if !foundAgents {
+		t.Errorf("expected MainMenuMarkup to contain button '🤖 Агенты' with callback 'menu:nodes'")
+	}
+
+	// 2. NodesMainMenuMarkup
+	nodesMenu := NodesMainMenuMarkup()
+	if len(nodesMenu.InlineKeyboard) < 4 {
+		t.Fatalf("expected at least 4 rows in NodesMainMenuMarkup, got %d", len(nodesMenu.InlineKeyboard))
+	}
+	if nodesMenu.InlineKeyboard[0][0].CallbackData != "menu:nodes:install" {
+		t.Errorf("expected install button callback, got %s", nodesMenu.InlineKeyboard[0][0].CallbackData)
+	}
+	if nodesMenu.InlineKeyboard[1][0].CallbackData != "menu:nodes:health" {
+		t.Errorf("expected health button callback, got %s", nodesMenu.InlineKeyboard[1][0].CallbackData)
+	}
+	if nodesMenu.InlineKeyboard[2][0].CallbackData != "menu:nodes:settings" {
+		t.Errorf("expected settings button callback, got %s", nodesMenu.InlineKeyboard[2][0].CallbackData)
+	}
+
+	// 3. NodesSettingsMarkup
+	cfg := BotConfig{
+		NodeSyncEnabled:     true,
+		NodeAlertsEnabled:   true,
+		NodeProxyAlertsChat: false,
+	}
+	setMenu := NodesSettingsMarkup(cfg)
+	if len(setMenu.InlineKeyboard) < 4 {
+		t.Fatalf("expected at least 4 rows in NodesSettingsMarkup, got %d", len(setMenu.InlineKeyboard))
 	}
 }

@@ -176,9 +176,32 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			c.CheckHostAlertEnabled = !c.CheckHostAlertEnabled
 		})
 		b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
-	case "menu:checkhost:run_now":
+	case "menu:checkhost:run":
 		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🚀 Запуск фоновой проверки Check-Host..."))
 		go b.RunCheckHostAudit()
+	case "menu:nodes", "menu:nodes:refresh":
+		b.editWithMarkup(chatID, msgID, b.getNodesMainView(), NodesMainMenuMarkup())
+	case "menu:nodes:install":
+		b.editWithMarkup(chatID, msgID, b.getNodesInstallGuideView(), NodesInstallMarkup())
+	case "menu:nodes:health":
+		b.editWithMarkup(chatID, msgID, b.getNodesHealthView(), NodesHealthMarkup())
+	case "menu:nodes:settings":
+		b.editWithMarkup(chatID, msgID, b.getNodesSettingsView(), NodesSettingsMarkup(b.GetConfig()))
+	case "menu:nodes:toggle_sync":
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.NodeSyncEnabled = !c.NodeSyncEnabled
+		})
+		b.editWithMarkup(chatID, msgID, b.getNodesSettingsView(), NodesSettingsMarkup(b.GetConfig()))
+	case "menu:nodes:toggle_alerts":
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.NodeAlertsEnabled = !c.NodeAlertsEnabled
+		})
+		b.editWithMarkup(chatID, msgID, b.getNodesSettingsView(), NodesSettingsMarkup(b.GetConfig()))
+	case "menu:nodes:toggle_proxy_alerts":
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.NodeProxyAlertsChat = !c.NodeProxyAlertsChat
+		})
+		b.editWithMarkup(chatID, msgID, b.getNodesSettingsView(), NodesSettingsMarkup(b.GetConfig()))
 	default:
 		if strings.HasPrefix(cb.Data, "menu:tz:") {
 			tz := strings.TrimPrefix(cb.Data, "menu:tz:")
@@ -295,6 +318,33 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				pageText, totalPages := b.getDiagnosticsPageText(reports, page)
 				b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages, deepLinks...))
 			}
+		} else if strings.HasPrefix(cb.Data, "menu:diag:pick_deep:") {
+			pageStr := strings.TrimPrefix(cb.Data, "menu:diag:pick_deep:")
+			page, _ := strconv.Atoi(pageStr)
+			if page <= 0 {
+				page = 1
+			}
+			reports := b.getCachedDiagnosticsReports()
+			if len(reports) == 0 {
+				reports = b.getDiagnosticsReports(false)
+			}
+			pageSize := diagPageSize
+			if b.isRichMode() {
+				pageSize = diagRichDetailsPageSize
+			}
+			start := (page - 1) * pageSize
+			end := start + pageSize
+			if start > len(reports) {
+				start = len(reports)
+			}
+			if end > len(reports) {
+				end = len(reports)
+			}
+			pageReports := reports[start:end]
+			text := "🔬 <b>Углубленная проверка соединения</b>\n\n" +
+				"Выберите прокси-хост для глубокого тестирования сетевых этапов (DNS, TCP, TLS, HTTP-мишени, Check-Host):"
+			markup := PickDeepDiagnosticsMarkup(pageReports, page)
+			b.editWithMarkup(chatID, msgID, text, markup)
 		} else if strings.HasPrefix(cb.Data, "menu:diag:deep:") {
 			rest := strings.TrimPrefix(cb.Data, "menu:diag:deep:")
 			parts := strings.Split(rest, ":")

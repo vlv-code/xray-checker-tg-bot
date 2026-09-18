@@ -26,9 +26,9 @@ func NewReporter(url, token string) *Reporter {
 	return &Reporter{url: url, token: token, client: &http.Client{Timeout: reportTimeout}}
 }
 
-// Send posts the payload and returns the managedSubs list. Errors are logged
+// Send posts the payload and returns the IngestResponse. Errors are logged
 // by the caller; a failed report is retried by the next check cycle.
-func (r *Reporter) Send(p ReportPayload) ([]string, error) {
+func (r *Reporter) Send(p ReportPayload) (*IngestResponse, error) {
 	body, err := json.Marshal(p)
 	if err != nil {
 		return nil, fmt.Errorf("encoding report: %w", err)
@@ -57,5 +57,5 @@ func (r *Reporter) Send(p ReportPayload) ([]string, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decoding ingest response: %w", err)
 	}
-	return out.ManagedSubs, nil
+	return &out, nil
 }

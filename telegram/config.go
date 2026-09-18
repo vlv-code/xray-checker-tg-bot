@@ -35,6 +35,10 @@ type BotConfig struct {
 	CheckHostIntervalHours int      `json:"checkhost_interval_hours"`
 	CheckHostAlertEnabled  bool     `json:"checkhost_alert_enabled"`
 	Timezone               string   `json:"timezone,omitempty"`
+	NodeSyncEnabled        bool     `json:"node_sync_enabled"`
+	NodeAlertsEnabled      bool     `json:"node_alerts_enabled"`
+	NodeProxyAlertsChat    bool     `json:"node_proxy_alerts_chat"`
+	NodeStaleTimeoutSec    int      `json:"node_stale_timeout_sec,omitempty"`
 }
 
 // locCache memoizes parsed time zones: Location() is called on every message
@@ -98,6 +102,9 @@ func NewConfigManager(path string, defaultCfg BotConfig) (*ConfigManager, error)
 	if defaultCfg.CheckHostIntervalHours <= 0 {
 		defaultCfg.CheckHostIntervalHours = 1
 	}
+	if defaultCfg.NodeStaleTimeoutSec <= 0 {
+		defaultCfg.NodeStaleTimeoutSec = 90
+	}
 
 	cm := &ConfigManager{
 		path: path,
@@ -142,6 +149,19 @@ func (cm *ConfigManager) load() error {
 	}
 	if loaded.CheckHostIntervalHours <= 0 {
 		loaded.CheckHostIntervalHours = 1
+	}
+	if loaded.NodeStaleTimeoutSec <= 0 {
+		loaded.NodeStaleTimeoutSec = 90
+	}
+	// If json didn't explicitly have node_sync_enabled key, default to true
+	if !strings.Contains(string(data), `"node_sync_enabled"`) {
+		loaded.NodeSyncEnabled = true
+	}
+	if !strings.Contains(string(data), `"node_alerts_enabled"`) {
+		loaded.NodeAlertsEnabled = true
+	}
+	if !strings.Contains(string(data), `"node_proxy_alerts_chat"`) {
+		loaded.NodeProxyAlertsChat = true
 	}
 
 	cm.cfg = loaded

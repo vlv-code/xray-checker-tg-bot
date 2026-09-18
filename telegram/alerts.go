@@ -39,11 +39,15 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 			if pm.Disabled {
 				continue
 			}
+			pName := pm.Name
+			if pm.NodeName != "" {
+				pName = fmt.Sprintf("[%s] %s", pm.NodeName, pm.Name)
+			}
 			b.lastSeen[pm.StableID] = pm.Online
 			if b.statsStore != nil {
-				b.statsStore.RecordCheck(pm.StableID, pm.Name, pm.Online, pm.LatencyMs)
+				b.statsStore.RecordCheck(pm.StableID, pName, pm.Online, pm.LatencyMs)
 				if !pm.Online {
-					b.statsStore.RecordInitialDown(pm.StableID, pm.Name, now)
+					b.statsStore.RecordInitialDown(pm.StableID, pName, now)
 				} else {
 					b.statsStore.SyncOnlineState(pm.StableID, now)
 				}
@@ -77,9 +81,13 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 		}
 
 		seenNow[pm.StableID] = true
+		pName := pm.Name
+		if pm.NodeName != "" {
+			pName = fmt.Sprintf("[%s] %s", pm.NodeName, pm.Name)
+		}
 
 		if b.statsStore != nil {
-			b.statsStore.RecordCheck(pm.StableID, pm.Name, pm.Online, pm.LatencyMs)
+			b.statsStore.RecordCheck(pm.StableID, pName, pm.Online, pm.LatencyMs)
 		}
 
 		prev, known := b.lastSeen[pm.StableID]
@@ -88,18 +96,24 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 			continue
 		}
 
+		skipChatAlert := pm.NodeName != "" && !cfg.NodeProxyAlertsChat
+
 		switch {
 		case prev && !pm.Online:
 			reason := determineFailureReason(pm)
 			if b.statsStore != nil {
-				b.statsStore.RecordTransition(pm.StableID, pm.Name, false, reason, now)
+				b.statsStore.RecordTransition(pm.StableID, pName, false, reason, now)
+			}
+
+			if skipChatAlert {
+				continue
 			}
 
 			if isQuiet {
 				b.eventBuffer.Add(BufferedEvent{
 					Timestamp: now,
 					Type:      "down",
-					ProxyName: pm.Name,
+					ProxyName: pName,
 					Reason:    reason,
 				})
 			} else {
@@ -123,14 +137,21 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 		case !prev && pm.Online:
 			var downtime time.Duration
 			if b.statsStore != nil {
-				downtime = b.statsStore.RecordTransition(pm.StableID, pm.Name, true, "", now)
+				downtime = b.statsStore.RecordTransition(pm.StableID, pName, true, "", now)
+			}
+
+			if skipChatAlert {
+				for _, t := range b.targets {
+					b.tracker.Resolve(t.ChatID, t.ThreadID, pm.StableID)
+				}
+				continue
 			}
 
 			if isQuiet {
 				b.eventBuffer.Add(BufferedEvent{
 					Timestamp: now,
 					Type:      "up",
-					ProxyName: pm.Name,
+					ProxyName: pName,
 					LatencyMs: pm.LatencyMs,
 					Downtime:  downtime,
 				})

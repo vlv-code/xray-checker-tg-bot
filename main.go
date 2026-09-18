@@ -147,6 +147,9 @@ func main() {
 		config.CLIConfig.Proxy.CheckConcurrency,
 	)
 
+	targetMgr := checker.NewTargetManager(config.CLIConfig.Telegram.TargetURLs)
+	proxyChecker.SetTargetManager(targetMgr)
+
 	// The collector renders metrics from the checker's current proxy snapshot on
 	// each scrape, so custom metricsLabels (#124) can change across subscription
 	// updates without resetting other series.
@@ -181,12 +184,11 @@ func main() {
 			seconds = 10
 		}
 		config.CLIConfig.Proxy.CheckInterval = seconds
-		logger.Info("Rescheduling proxy checks with interval %ds", seconds)
+
 		if checkScheduler != nil {
 			checkScheduler.Clear()
-			checkScheduler.Every(seconds).Seconds().SingletonMode().Do(func() {
-				runCheckIteration()
-			})
+			checkScheduler.Every(seconds).Seconds().SingletonMode().Do(runCheckIteration)
+			logger.Info("Check interval updated to %ds", seconds)
 		}
 	}
 
@@ -196,7 +198,8 @@ func main() {
 	// resets and false down alerts during subscription reloads.
 	var checkRunnerMu sync.RWMutex
 
-	// emitSnapshot feeds the bot ONE merged snapshot: local proxies plus every
+	// emitSnapshot pushes the combined local + remote snapshot into the bot,
+	// if one is running. Remote metrics are namespaced with the name of the
 	// reporting node. ProcessSnapshot drops state for absent IDs, so local and
 	// remote snapshots must never be fed separately.
 	emitSnapshot := func() {
@@ -215,6 +218,35 @@ func main() {
 			emitSnapshot()
 			if tgBot != nil {
 				tgBot.ProcessNodesHealth(toNodeInfos(nodeRegistry.HealthSnapshot()))
+			}
+		})
+		nodeRegistry.SetConfigSource(func() *nodes.NodeConfigSync {
+			if tgBot != nil {
+				cfg := tgBot.GetConfig()
+				return &nodes.NodeConfigSync{
+					SyncEnabled:            cfg.NodeSyncEnabled,
+					DisabledProxies:        cfg.DisabledProxies,
+					DisabledHosts:          cfg.DisabledHosts,
+					CheckHostBgEnabled:     cfg.CheckHostBgEnabled,
+					CheckHostIntervalHours: cfg.CheckHostIntervalHours,
+					CheckIntervalSec:       cfg.CheckIntervalSec,
+					TargetURLs:             cfg.TargetURLs,
+					QuietHoursEnabled:      cfg.QuietHoursEnabled,
+					AlertMode:              cfg.AlertMode,
+					NodeAlertsEnabled:      cfg.NodeAlertsEnabled,
+					NodeProxyAlertsChat:    cfg.NodeProxyAlertsChat,
+					NodeStaleTimeoutSec:    cfg.NodeStaleTimeoutSec,
+				}
+			}
+			return &nodes.NodeConfigSync{
+				SyncEnabled:         true,
+				CheckIntervalSec:    config.CLIConfig.Proxy.CheckInterval,
+				TargetURLs:          config.CLIConfig.Telegram.TargetURLs,
+				QuietHoursEnabled:   config.CLIConfig.Telegram.QuietHoursEnabled,
+				AlertMode:           config.CLIConfig.Telegram.AlertMode,
+				NodeAlertsEnabled:   true,
+				NodeProxyAlertsChat: true,
+				NodeStaleTimeoutSec: 300,
 			}
 		})
 	}
@@ -279,9 +311,42 @@ func main() {
 						logger.Warn("Report to master failed (next cycle will retry): %v", err)
 						return
 					}
-					if reconcileDesired != nil {
-						if err := reconcileDesired(desired); err != nil {
-							logger.Error("Reconciling managed subscriptions failed: %v", err)
+					if desired != nil {
+						if reconcileDesired != nil && len(desired.ManagedSubs) > 0 {
+							if err := reconcileDesired(desired.ManagedSubs); err != nil {
+								logger.Error("Reconciling managed subscriptions failed: %v", err)
+							}
+						}
+						if desired.ConfigSync != nil && desired.ConfigSync.SyncEnabled {
+							if desired.ConfigSync.CheckIntervalSec > 0 {
+								checkSchedulerMu.Lock()
+								curInterval := config.CLIConfig.Proxy.CheckInterval
+								checkSchedulerMu.Unlock()
+								if curInterval != desired.ConfigSync.CheckIntervalSec {
+									logger.Info("Agent check interval updated by master: %ds", desired.ConfigSync.CheckIntervalSec)
+									rescheduleChecks(desired.ConfigSync.CheckIntervalSec)
+								}
+							}
+							if tm := proxyChecker.GetTargetManager(); tm != nil && len(desired.ConfigSync.TargetURLs) > 0 {
+								tm.SetTargets(desired.ConfigSync.TargetURLs)
+							}
+							if len(desired.ConfigSync.DisabledHosts) > 0 || len(desired.ConfigSync.DisabledProxies) > 0 {
+								disHosts := desired.ConfigSync.DisabledHosts
+								disProxies := desired.ConfigSync.DisabledProxies
+								proxyChecker.SetDisabledFilter(func(server, stableID string) bool {
+									for _, h := range disHosts {
+										if strings.EqualFold(h, server) {
+											return true
+										}
+									}
+									for _, id := range disProxies {
+										if id == stableID {
+											return true
+										}
+									}
+									return false
+								})
+							}
 						}
 					}
 				}()
@@ -368,9 +433,8 @@ func main() {
 				subManager = &telegramSubscriptionManager{store: subURLStore, reload: reloadSubscriptions}
 			}
 
-			// Initialize TargetManager
-			targetMgr := checker.NewTargetManager(config.CLIConfig.Telegram.TargetURLs)
-			proxyChecker.SetTargetManager(targetMgr)
+			// Reuse TargetManager
+			targetMgr := proxyChecker.GetTargetManager()
 
 			defaultBotCfg := telegram.BotConfig{
 				QuietHoursEnabled:      config.CLIConfig.Telegram.QuietHoursEnabled,
@@ -385,6 +449,10 @@ func main() {
 				CheckHostBgEnabled:     config.CLIConfig.Telegram.CheckHostBgEnabled,
 				CheckHostIntervalHours: config.CLIConfig.Telegram.CheckHostIntervalHours,
 				CheckHostAlertEnabled:  config.CLIConfig.Telegram.CheckHostAlertEnabled,
+				NodeSyncEnabled:        true,
+				NodeAlertsEnabled:      true,
+				NodeProxyAlertsChat:    true,
+				NodeStaleTimeoutSec:    90,
 			}
 
 			botCfgMgr, err := telegram.NewConfigManager(config.CLIConfig.Telegram.BotConfigStorePath, defaultBotCfg)

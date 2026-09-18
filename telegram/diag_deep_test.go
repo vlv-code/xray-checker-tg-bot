@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -216,21 +217,30 @@ func TestDiagnosticsRichBuilders(t *testing.T) {
 		t.Fatalf("expected at least 3 blocks in summary rich message, got %v", richSummary)
 	}
 
-	// Level 2: Details rich message (6 proxies, page size 5 -> 2 pages)
-	richDetailsP1, totalPages := b.buildDiagnosticsDetailsRichMessage(reports, 1)
-	if totalPages != 2 {
-		t.Errorf("expected 2 total pages, got %d", totalPages)
+	// Level 2: Details rich message (capacity of 15 proxies per page in Rich mode)
+	// Create 18 proxies to verify page 1 has 15 and page 2 has 3
+	var manyReports []checker.ProxyDiagReport
+	for i := 1; i <= 18; i++ {
+		manyReports = append(manyReports, checker.ProxyDiagReport{
+			ProxyName: fmt.Sprintf("Proxy-%d", i),
+			Protocol:  "vless",
+			Status:    "online",
+		})
 	}
-	if richDetailsP1 == nil || len(richDetailsP1.Blocks) != 6 { // 1 header + 5 proxy details
-		t.Errorf("expected 6 blocks on page 1, got %d", len(richDetailsP1.Blocks))
+	richDetailsP1, totalPages := b.buildDiagnosticsDetailsRichMessage(manyReports, 1)
+	if totalPages != 2 {
+		t.Errorf("expected 2 total pages for 18 items with page size 15, got %d", totalPages)
+	}
+	if richDetailsP1 == nil || len(richDetailsP1.Blocks) != 16 { // 1 header + 15 proxy details
+		t.Errorf("expected 16 blocks on page 1 (1 header + 15 proxies), got %d", len(richDetailsP1.Blocks))
 	}
 
-	richDetailsP2, totalPages2 := b.buildDiagnosticsDetailsRichMessage(reports, 2)
+	richDetailsP2, totalPages2 := b.buildDiagnosticsDetailsRichMessage(manyReports, 2)
 	if totalPages2 != 2 {
 		t.Errorf("expected 2 total pages, got %d", totalPages2)
 	}
-	if richDetailsP2 == nil || len(richDetailsP2.Blocks) != 2 { // 1 header + 1 proxy detail
-		t.Errorf("expected 2 blocks on page 2, got %d", len(richDetailsP2.Blocks))
+	if richDetailsP2 == nil || len(richDetailsP2.Blocks) != 4 { // 1 header + 3 proxy details
+		t.Errorf("expected 4 blocks on page 2 (1 header + 3 proxies), got %d", len(richDetailsP2.Blocks))
 	}
 }
 

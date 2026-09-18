@@ -282,8 +282,8 @@ func TestBot_MenuTextAndSettings(t *testing.T) {
 
 	// Test MainMenuMarkup
 	mainMarkup := MainMenuMarkup()
-	if len(mainMarkup.InlineKeyboard) != 4 {
-		t.Errorf("expected 4 rows in MainMenuMarkup, got %d", len(mainMarkup.InlineKeyboard))
+	if len(mainMarkup.InlineKeyboard) != 5 {
+		t.Errorf("expected 5 rows in MainMenuMarkup, got %d", len(mainMarkup.InlineKeyboard))
 	}
 	if mainMarkup.InlineKeyboard[0][0].CallbackData != "menu:main" && mainMarkup.InlineKeyboard[0][0].CallbackData != "menu:main:refresh" {
 		t.Errorf("expected refresh button in row 1, got %s", mainMarkup.InlineKeyboard[0][0].CallbackData)
@@ -294,8 +294,11 @@ func TestBot_MenuTextAndSettings(t *testing.T) {
 	if mainMarkup.InlineKeyboard[2][0].CallbackData != "menu:checkhost" {
 		t.Errorf("expected checkhost button in row 3, got %s", mainMarkup.InlineKeyboard[2][0].CallbackData)
 	}
-	if mainMarkup.InlineKeyboard[3][0].CallbackData != "menu:settings" {
-		t.Errorf("expected settings button in row 4, got %s", mainMarkup.InlineKeyboard[3][0].CallbackData)
+	if mainMarkup.InlineKeyboard[3][0].CallbackData != "menu:nodes" {
+		t.Errorf("expected nodes button in row 4, got %s", mainMarkup.InlineKeyboard[3][0].CallbackData)
+	}
+	if mainMarkup.InlineKeyboard[4][0].CallbackData != "menu:settings" {
+		t.Errorf("expected settings button in row 5, got %s", mainMarkup.InlineKeyboard[4][0].CallbackData)
 	}
 
 	// Verify SettingsMenuMarkup has no digest button and has disabled_proxies button

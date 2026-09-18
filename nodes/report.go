@@ -28,10 +28,27 @@ type ReportPayload struct {
 	Proxies          []ReportProxy `json:"proxies"`
 }
 
+// NodeConfigSync contains runtime settings transmitted from the master bot to nodes.
+type NodeConfigSync struct {
+	SyncEnabled            bool     `json:"syncEnabled"`
+	DisabledProxies        []string `json:"disabledProxies,omitempty"`
+	DisabledHosts          []string `json:"disabledHosts,omitempty"`
+	CheckHostBgEnabled     bool     `json:"checkHostBgEnabled"`
+	CheckHostIntervalHours int      `json:"checkHostIntervalHours,omitempty"`
+	CheckIntervalSec       int      `json:"checkIntervalSec,omitempty"`
+	TargetURLs             []string `json:"targetUrls,omitempty"`
+	QuietHoursEnabled      bool     `json:"quietHoursEnabled"`
+	AlertMode              string   `json:"alertMode,omitempty"`
+	NodeAlertsEnabled      bool     `json:"nodeAlertsEnabled"`
+	NodeProxyAlertsChat    bool     `json:"nodeProxyAlertsChat"`
+	NodeStaleTimeoutSec    int      `json:"nodeStaleTimeoutSec,omitempty"`
+}
+
 // IngestResponse is the master's reply: the full desired list of managed
-// subscription URLs for the reporting node.
+// subscription URLs and optional synchronized runtime settings for the reporting node.
 type IngestResponse struct {
-	ManagedSubs []string `json:"managedSubs"`
+	ManagedSubs []string        `json:"managedSubs"`
+	ConfigSync  *NodeConfigSync `json:"configSync,omitempty"`
 }
 
 // BuildReport converts a local check snapshot into the wire payload.

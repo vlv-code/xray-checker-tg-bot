@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"xray-checker/metrics"
 )
 
 func TestUpdateNodeHealthTransitions(t *testing.T) {
@@ -61,5 +63,98 @@ func TestUpdateNodeHealthSilentDownRecovery(t *testing.T) {
 	}
 	if alerts := b.updateNodeHealthLocked([]NodeInfo{{Name: "n2", Up: true}}, base.Add(time.Minute)); len(alerts) != 0 {
 		t.Fatalf("silent-down recovery must not alert: %v", alerts)
+	}
+}
+
+func TestNodeHealthStatsAndAlertSuppression(t *testing.T) {
+	tmpDir := t.TempDir()
+	statsStore, err := NewStatsStore(tmpDir + "/stats.json")
+	if err != nil {
+		t.Fatalf("failed to create stats store: %v", err)
+	}
+
+	cfg := DefaultBotConfig()
+	cfg.NodeAlertsEnabled = false // Chat alerts muted
+
+	b := &Bot{
+		lastNodeHealth: make(map[string]nodeHealthState),
+		statsStore:     statsStore,
+	}
+	cfgMgr, err := NewConfigManager(tmpDir+"/cfg.json", cfg)
+	if err != nil {
+		t.Fatalf("failed to create config manager: %v", err)
+	}
+	b.SetConfigManager(cfgMgr)
+
+	base := time.Now()
+	up := []NodeInfo{{Name: "agent-1", Up: true, ASN: "AS1234"}}
+	down := []NodeInfo{{Name: "agent-1", Up: false, ASN: "AS1234"}}
+
+	// Seed node
+	_ = b.updateNodeHealthLocked(up, base)
+
+	// Transition down: alerts suppressed because NodeAlertsEnabled is false
+	alerts := b.updateNodeHealthLocked(down, base.Add(time.Minute))
+	if len(alerts) != 0 {
+		t.Errorf("expected 0 alerts when NodeAlertsEnabled=false, got %v", alerts)
+	}
+
+	// Verify stats store recorded the incident!
+	incidents := statsStore.GetRecentIncidents(10)
+	if len(incidents) != 1 {
+		t.Fatalf("expected 1 incident recorded in statsStore, got %d", len(incidents))
+	}
+	if incidents[0].StableID != "node:agent-1" || !strings.Contains(incidents[0].ProxyName, "[Агент] agent-1") {
+		t.Errorf("unexpected incident recorded: %+v", incidents[0])
+	}
+	if incidents[0].Reason != "Потеря связи с чекер-нодой" {
+		t.Errorf("unexpected incident reason: %s", incidents[0].Reason)
+	}
+}
+
+func TestRemoteProxyAlertJournalingAndSuppression(t *testing.T) {
+	tmpDir := t.TempDir()
+	statsStore, err := NewStatsStore(tmpDir + "/stats.json")
+	if err != nil {
+		t.Fatalf("failed to create stats store: %v", err)
+	}
+
+	cfg := DefaultBotConfig()
+	cfg.NodeProxyAlertsChat = false // Chat alerts muted for remote nodes
+
+	b := &Bot{
+		lastSeen:   make(map[string]bool),
+		statsStore: statsStore,
+		tracker:    NewAlertTracker(""),
+	}
+	cfgMgr, err := NewConfigManager(tmpDir+"/cfg.json", cfg)
+	if err != nil {
+		t.Fatalf("failed to create config manager: %v", err)
+	}
+	b.SetConfigManager(cfgMgr)
+
+	p := metrics.ProxyMetric{
+		StableID: "node_p1",
+		Name:     "Proxy 1",
+		NodeName: "finland-node",
+		Online:   true,
+	}
+
+	// Seed
+	b.ProcessSnapshot([]metrics.ProxyMetric{p})
+
+	// Drop
+	pDown := p
+	pDown.Online = false
+	pDown.LastErrorMsg = "connection refused"
+	b.ProcessSnapshot([]metrics.ProxyMetric{pDown})
+
+	// Check statsStore: should be recorded with [finland-node] prefix
+	incidents := statsStore.GetRecentIncidents(10)
+	if len(incidents) != 1 {
+		t.Fatalf("expected 1 incident in stats store, got %d", len(incidents))
+	}
+	if incidents[0].ProxyName != "[finland-node] Proxy 1" {
+		t.Errorf("expected proxy name with node prefix '[finland-node] Proxy 1', got %q", incidents[0].ProxyName)
 	}
 }

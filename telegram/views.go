@@ -435,10 +435,9 @@ func (b *Bot) getStatsOverviewText() string {
 		}
 	}
 
-	// Monospace table for proxies (up to 15)
+	// Proxies list (up to 15) with full names and clear metrics
 	if totalProxies > 0 {
-		sb.WriteString("\n<pre>")
-		sb.WriteString(fmt.Sprintf("%-11s %5s %5s %5s %5s %4s %4s\n", "ПРОКСИ", "24Ч", "7Д", "P50", "P95", "Σ", "ПАД."))
+		sb.WriteString("\n<b>📊 Мониторинг прокси-хостов:</b>\n")
 
 		sortedSnap := make([]metrics.ProxyMetric, len(snapshot))
 		copy(sortedSnap, snapshot)
@@ -457,10 +456,6 @@ func (b *Bot) getStatsOverviewText() string {
 		}
 		for i := 0; i < maxRows; i++ {
 			pm := sortedSnap[i]
-			pName := pm.Name
-			if len(pName) > 11 {
-				pName = pName[:10] + "…"
-			}
 			var u24, u7d float64 = 100.0, 100.0
 			if b.statsStore.GetRollingStats() != nil {
 				u24 = b.statsStore.GetRollingStats().UptimePercent24h(pm.StableID, now)
@@ -480,16 +475,25 @@ func (b *Bot) getStatsOverviewText() string {
 			}
 			flapWarning := ""
 			if flaps > 10 {
-				flapWarning = "⚠️"
+				flapWarning = " ⚠️"
 			}
-			sb.WriteString(fmt.Sprintf("%-11s %4.1f%% %4.1f%% %5s %5s %4.0f %3d%s\n",
-				pName, u24, u7d, p50Str, p95Str, jitter, flaps, flapWarning))
+			protoStr := ""
+			if pm.Protocol != "" {
+				protoStr = fmt.Sprintf(" <i>(%s)</i>", strings.ToUpper(pm.Protocol))
+			}
+			fmt.Fprintf(&sb, "• <b>%s</b>%s%s\n  24ч: %.1f%% | 7д: %.1f%% | P50: %s | P95: %s | Σ: %.0f | ПАД.: %d\n",
+				escapeHTML(pm.Name), protoStr, flapWarning, u24, u7d, p50Str, p95Str, jitter, flaps)
 		}
 		if len(sortedSnap) > maxRows {
-			sb.WriteString(fmt.Sprintf("... и ещё %d прокси-хостов\n", len(sortedSnap)-maxRows))
+			fmt.Fprintf(&sb, "<i>... и ещё %d прокси-хостов</i>\n", len(sortedSnap)-maxRows)
 		}
-		sb.WriteString("</pre>")
 	}
+
+	sb.WriteString("\n<b>ℹ️ Справка по метрикам:</b>\n" +
+		"• <b>24ч / 7д</b>: скользящий аптайм за последние 24 часа и 7 дней (% успешных проверок).\n" +
+		"• <b>P50 / P95</b>: медиана и 95-й перцентиль сетевой задержки (RTT пинга) в миллисекундах.\n" +
+		"• <b>Σ (Джиттер)</b>: среднеквадратичное отклонение латенси (вариативность задержки).\n" +
+		"• <b>ПАД.</b>: число переходов статуса (онлайн ↔ оффлайн / флаппинг) за 24 часа.\n")
 
 	sb.WriteString("\nВыберите раздел ниже:")
 	return sb.String()
@@ -581,7 +585,12 @@ func (b *Bot) getProtocolsStatsText() string {
 			escapeHTML(gd.name), n, avgUptime, p50, p95)
 	}
 
-	return strings.TrimRight(sb.String(), "\n")
+	sb.WriteString("<b>ℹ️ Справка:</b>\n" +
+		"• <b>(n=X)</b>: число серверов с данной связкой протокола и транспорта (при n < 3 данные ориентировочные).\n" +
+		"• <b>Аптайм 24ч</b>: средневзвешенная доступность протокольной группы.\n" +
+		"• <b>Латенси P50 / P95</b>: медиана и 95-й перцентиль задержки пакетов для протокола.")
+
+	return sb.String()
 }
 
 func (b *Bot) getHeatmapText() string {
@@ -608,10 +617,16 @@ func (b *Bot) getHeatmapText() string {
 	sb.WriteString("</pre>")
 
 	if maxDrops > 0 {
-		fmt.Fprintf(&sb, "\nПик падений: %02dч (%d сбоев, вероятно перегрузка канала)\n", peakHour, maxDrops)
+		fmt.Fprintf(&sb, "\nПик падений: %02dч (%d сбоев, вероятно перегрузка канала)\n\n", peakHour, maxDrops)
 	} else {
-		sb.WriteString("\nЗа последние 7 дней падений не зафиксировано.\n")
+		sb.WriteString("\nЗа последние 7 дней падений не зафиксировано.\n\n")
 	}
+
+	sb.WriteString("<b>ℹ️ Справка:</b>\n" +
+		"• <b>Сетка 24ч × 7д</b>: строки — часы суток (00–23) по вашему часовому поясу, столбцы — дни недели (Пн–Вс).\n" +
+		"• <b>Числа в ячейках</b>: суммарное количество сбоев за конкретный час.\n" +
+		"• <b>Пик</b>: час суток с наибольшим числом отказов (помогает выявить часы перегрузок или блокировок).")
+
 	return sb.String()
 }
 
@@ -621,7 +636,11 @@ func (b *Bot) getIncidentsText() string {
 	}
 	incidents := b.statsStore.GetRecentIncidents(15)
 	if len(incidents) == 0 {
-		return "<b>📋 Журнал инцидентов</b>\n\nЗафиксированных инцидентов нет — все прокси-хосты работают стабильно!"
+		return "<b>📋 Журнал инцидентов</b>\n\nЗафиксированных инцидентов нет — все прокси-хосты работают стабильно!\n\n" +
+			"<b>ℹ️ Справка:</b>\n" +
+			"• <b>Сбой</b>: точное время фиксации отказа в часовом поясе бота.\n" +
+			"• <b>Простой</b>: суммарная длительность недоступности до момента восстановления.\n" +
+			"• <b>Причина</b>: сетевой уровень сбоя (DNS, TCP timeout, TLS handshake, HTTP 204)."
 	}
 
 	var sb strings.Builder
@@ -636,6 +655,12 @@ func (b *Bot) getIncidentsText() string {
 				escapeHTML(inc.ProxyName), downTime, FormatDowntime(time.Duration(inc.DurationSec)*time.Second), escapeHTML(inc.Reason))
 		}
 	}
+
+	sb.WriteString("<b>ℹ️ Справка:</b>\n" +
+		"• <b>Сбой</b>: точное время фиксации отказа в часовом поясе бота.\n" +
+		"• <b>Простой</b>: суммарная длительность недоступности до момента восстановления (или текущее время аварии).\n" +
+		"• <b>Причина</b>: сетевая ошибка при тестировании (DNS failure, TCP connect timeout, TLS handshake, HTTP 204 failure).")
+
 	return sb.String()
 }
 
@@ -677,6 +702,14 @@ func (b *Bot) getTopProblematicText() string {
 		fmt.Fprintf(&sb, "%d. <b>%s</b>: инцидентов: %d, аптайм: %s%s%s, суммарный простой: %s\n",
 			i+1, escapeHTML(p.ProxyName), p.DropCount, uptimeStr, mtbfStr, mttrStr, FormatDowntime(time.Duration(p.DowntimeSec)*time.Second))
 	}
+
+	sb.WriteString("\n<b>ℹ️ Справка:</b>\n" +
+		"• <b>Инцидентов</b>: количество зафиксированных падений хоста за период.\n" +
+		"• <b>Аптайм</b>: процент доступности хоста за последние 24 часа.\n" +
+		"• <b>MTBF</b>: среднее время безотказной работы между инцидентами (Mean Time Between Failures).\n" +
+		"• <b>MTTR</b>: среднее время восстановления после аварии (Mean Time To Recovery).\n" +
+		"• <b>Суммарный простой</b>: общее накопленное время недоступности прокси.")
+
 	return sb.String()
 }
 
@@ -847,4 +880,111 @@ func (b *Bot) buildAddSubReport(count int) string {
 		}
 	}
 	return sb.String()
+}
+
+func (b *Bot) getNodesMainView() string {
+	if b.nodeMgr == nil {
+		return "🤖 <b>Агенты (удалённые чекер-ноды)</b>\n\n" +
+			"Ноды не настроены на мастере (переменная <code>NODES</code> пуста).\n\n" +
+			"Агенты позволяют распределённо проверять доступность прокси из разных локаций (РФ, Европа и т.д.)."
+	}
+	list := b.nodeMgr.Nodes()
+	onlineCount := 0
+	for _, n := range list {
+		if n.Up {
+			onlineCount++
+		}
+	}
+	var sb strings.Builder
+	sb.WriteString("🤖 <b>Агенты (удалённые чекер-ноды)</b>\n\n")
+	fmt.Fprintf(&sb, "• Сконфигурировано агентов: <b>%d</b>\n", len(list))
+	fmt.Fprintf(&sb, "• На связи: <b>%d</b> | Оффлайн: <b>%d</b>\n\n", onlineCount, len(list)-onlineCount)
+	sb.WriteString("Агенты выполняют независимые сетевые проверки ваших подписок из удалённых точек и передают данные в общий мониторинг.\n\n" +
+		"Выберите раздел ниже:")
+	return sb.String()
+}
+
+func (b *Bot) getNodesInstallGuideView() string {
+	return "📥 <b>Инструкция по установке агента</b>\n\n" +
+		"Агент разворачивается на любом внешнем VPS сервере или ПК в Docker.\n\n" +
+		"<b>1. Быстрый запуск через Docker:</b>\n" +
+		"<pre>docker run -d --name xray-agent \\\n" +
+		"  --restart always \\\n" +
+		"  -e ROLE=node \\\n" +
+		"  -e REPORT_URL=http://&lt;IP_МАСТЕРА&gt;:8080/api/v1/nodes/report \\\n" +
+		"  -e REPORT_TOKEN=&lt;ТОКЕН_НОДЫ&gt; \\\n" +
+		"  ghcr.io/your-repo/xray-checker:latest</pre>\n\n" +
+		"<b>2. Конфигурация на мастере:</b>\n" +
+		"В <code>.env</code> мастера добавьте ноду в переменную:\n" +
+		"<code>NODES=node-msk|секретный_токен,node-eu|токен2</code>\n\n" +
+		"<b>3. Синхронизация:</b>\n" +
+		"После первого отчёта агент автоматически получит назначенные подписки и настройки проверки от мастера."
+}
+
+func (b *Bot) getNodesHealthView() string {
+	if b.nodeMgr == nil {
+		return "🩺 <b>Проверка работоспособности и связи</b>\n\nНоды не настроены."
+	}
+	list := b.nodeMgr.Nodes()
+	if len(list) == 0 {
+		return "🩺 <b>Проверка работоспособности и связи</b>\n\nСписок нод пуст."
+	}
+	var sb strings.Builder
+	sb.WriteString("🩺 <b>Проверка связи и статуса агентов</b>\n\n")
+	now := b.now()
+	for _, n := range list {
+		icon := "🔴"
+		statusText := "оффлайн"
+		if n.Up {
+			icon = "🟢"
+			statusText = "на связи"
+		}
+		fmt.Fprintf(&sb, "%s <b>%s</b> — %s\n", icon, escapeHTML(n.Name), statusText)
+		if n.HostIP != "" {
+			asnStr := ""
+			if n.ASN != "" {
+				asnStr = fmt.Sprintf(" (%s)", escapeHTML(n.ASN))
+			}
+			fmt.Fprintf(&sb, "  • IP: <code>%s</code>%s\n", escapeHTML(n.HostIP), asnStr)
+		}
+		if !n.EverReported {
+			sb.WriteString("  • Отчётов от ноды ещё не поступало\n")
+		} else {
+			fmt.Fprintf(&sb, "  • Прокси: <b>%d / %d онлайн</b>\n", n.Online, n.Total)
+			fmt.Fprintf(&sb, "  • Последний отчёт: %s назад (интервал %ds)\n", formatAge(now.Sub(n.LastReport)), n.IntervalSec)
+			if n.Version != "" {
+				fmt.Fprintf(&sb, "  • Версия: v%s\n", escapeHTML(n.Version))
+			}
+		}
+		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+func (b *Bot) getNodesSettingsView() string {
+	cfg := b.GetConfig()
+	syncStr := "✅ Включена"
+	if !cfg.NodeSyncEnabled {
+		syncStr = "❌ Отключена"
+	}
+	alertsStr := "🔔 Включены"
+	if !cfg.NodeAlertsEnabled {
+		alertsStr = "🔕 Отключены"
+	}
+	proxyAlertsStr := "📢 В чат и журнал"
+	if !cfg.NodeProxyAlertsChat {
+		proxyAlertsStr = "📝 Только в журнал инцидентов"
+	}
+
+	return fmt.Sprintf("⚙️ <b>Настройки агентов</b>\n\n"+
+		"• Передача настроек агентам: <b>%s</b>\n"+
+		"• Алерты доступности нод: <b>%s</b>\n"+
+		"• Алерты по прокси от нод: <b>%s</b>\n"+
+		"• Порог молчания ноды: <b>%d сек</b>\n\n"+
+		"<i>При включённой передаче агенты получают интервал проверок, целевые серверы, списки выключенных хостов и режим алертов прямо от бота.</i>\n\n"+
+		"<b>Команды управления подписками нод:</b>\n"+
+		"• <code>/nodesubs &lt;имя_ноды&gt;</code> — просмотр подписок ноды\n"+
+		"• <code>/nodeaddsub &lt;имя_ноды&gt; &lt;url&gt;</code> — добавить подписку ноде\n"+
+		"• <code>/nodedelsub &lt;имя_ноды&gt; &lt;url&gt;</code> — удалить подписку у ноды",
+		syncStr, alertsStr, proxyAlertsStr, cfg.NodeStaleTimeoutSec)
 }
