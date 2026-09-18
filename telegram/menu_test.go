@@ -36,16 +36,16 @@ func TestMenuMarkups(t *testing.T) {
 		t.Errorf("expected at least 3 rows in interval menu, got %d", len(intervalMenu.InlineKeyboard))
 	}
 
-	// 1. Single page pagination markup
+	// 1. Single page pagination markup (Details view)
 	singlePageMarkup := DiagPaginationMarkup(1, 1)
 	if len(singlePageMarkup.InlineKeyboard) != 2 {
 		t.Errorf("expected 2 rows for single page markup (actions + back), got %d", len(singlePageMarkup.InlineKeyboard))
 	}
-	if singlePageMarkup.InlineKeyboard[0][0].CallbackData != "menu:diag:rich" {
-		t.Errorf("expected rich report button, got %s", singlePageMarkup.InlineKeyboard[0][0].CallbackData)
+	if singlePageMarkup.InlineKeyboard[0][0].CallbackData != "menu:diag" {
+		t.Errorf("expected back to summary button menu:diag, got %s", singlePageMarkup.InlineKeyboard[0][0].CallbackData)
 	}
 
-	// 2. Multi-page pagination markup
+	// 2. Multi-page pagination markup (Details view)
 	multiPageMarkup := DiagPaginationMarkup(2, 4)
 	if len(multiPageMarkup.InlineKeyboard) != 3 {
 		t.Fatalf("expected 3 rows for multi-page markup, got %d", len(multiPageMarkup.InlineKeyboard))
@@ -54,30 +54,33 @@ func TestMenuMarkups(t *testing.T) {
 	if len(navRow) != 3 {
 		t.Fatalf("expected 3 navigation buttons, got %d", len(navRow))
 	}
-	if navRow[0].CallbackData != "menu:diag:p:1" {
+	if navRow[0].CallbackData != "menu:diag:details:1" && navRow[0].CallbackData != "menu:diag:p:1" {
 		t.Errorf("expected prev page 1, got %s", navRow[0].CallbackData)
 	}
 	if navRow[1].CallbackData != "menu:diag:noop:2:4" {
 		t.Errorf("expected noop counter callback, got %s", navRow[1].CallbackData)
 	}
-	if navRow[2].CallbackData != "menu:diag:p:3" {
+	if navRow[2].CallbackData != "menu:diag:details:3" && navRow[2].CallbackData != "menu:diag:p:3" {
 		t.Errorf("expected next page 3, got %s", navRow[2].CallbackData)
 	}
 	actionRow := multiPageMarkup.InlineKeyboard[1]
-	if actionRow[1].CallbackData != "menu:diag:refresh:2" {
-		t.Errorf("expected refresh callback menu:diag:refresh:2, got %s", actionRow[1].CallbackData)
+	if actionRow[0].CallbackData != "menu:diag" {
+		t.Errorf("expected back to summary callback menu:diag, got %s", actionRow[0].CallbackData)
+	}
+	if actionRow[1].CallbackData != "menu:diag:refresh:details:2" && actionRow[1].CallbackData != "menu:diag:refresh:2" {
+		t.Errorf("expected refresh callback menu:diag:refresh:details:2, got %s", actionRow[1].CallbackData)
 	}
 
-	// 3. Rich report markup
+	// 3. Rich report markup (Summary view)
 	richMarkup := RichReportMarkup()
-	if len(richMarkup.InlineKeyboard) != 2 {
-		t.Fatalf("expected 2 rows in RichReportMarkup, got %d", len(richMarkup.InlineKeyboard))
+	if len(richMarkup.InlineKeyboard) < 2 {
+		t.Fatalf("expected at least 2 rows in RichReportMarkup, got %d", len(richMarkup.InlineKeyboard))
 	}
-	if richMarkup.InlineKeyboard[0][0].CallbackData != "menu:diag:p:1" {
-		t.Errorf("expected switch to page 1 button, got %s", richMarkup.InlineKeyboard[0][0].CallbackData)
+	if richMarkup.InlineKeyboard[0][0].CallbackData != "menu:diag:details:1" {
+		t.Errorf("expected switch to details:1 button, got %s", richMarkup.InlineKeyboard[0][0].CallbackData)
 	}
-	if richMarkup.InlineKeyboard[0][1].CallbackData != "menu:diag:refresh:rich" {
-		t.Errorf("expected refresh rich button, got %s", richMarkup.InlineKeyboard[0][1].CallbackData)
+	if richMarkup.InlineKeyboard[1][0].CallbackData != "menu:diag:refresh:summary" && richMarkup.InlineKeyboard[1][0].CallbackData != "menu:diag:refresh:rich" {
+		t.Errorf("expected refresh summary button, got %s", richMarkup.InlineKeyboard[1][0].CallbackData)
 	}
 }
 

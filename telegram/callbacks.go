@@ -61,36 +61,36 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		b.editWithMarkup(chatID, msgID, b.getSettingsText(), SettingsMenuMarkup(b.subs != nil))
 	case "menu:status":
 		b.editWithMarkup(chatID, msgID, b.getStatusText(), StatusMenuMarkup())
-	case "menu:diag":
+	case "menu:diag", "menu:diag:summary":
 		seq := b.nextMsgSeq(chatID, msgID)
-		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
-		go func() {
-			reports := b.getDiagnosticsReports(true)
-			if !b.isMsgSeqValid(chatID, msgID, seq) {
-				return
-			}
-			if b.isRichMode() {
-				rich := b.buildDiagnosticsRichMessage(reports)
-				b.showRichReport(ct, msgID, rich)
-				return
-			}
-			pageText, totalPages := b.getDiagnosticsPageText(reports, 1)
-			deepLinks := getDeepLinksForPage(reports, 1)
-			if !b.isMsgSeqValid(chatID, msgID, seq) {
-				return
-			}
-			b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(1, totalPages, deepLinks...))
-		}()
-	case "menu:diag:rich":
-		seq := b.nextMsgSeq(chatID, msgID)
-		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
+		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование сводного отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
 		go func() {
 			reports := b.getDiagnosticsReports(false)
 			if !b.isMsgSeqValid(chatID, msgID, seq) {
 				return
 			}
+			deepLinks := getDeepLinks(reports, 3)
+			markup := RichReportMarkup(deepLinks...)
+			if b.isRichMode() {
+				rich := b.buildDiagnosticsRichMessage(reports)
+				b.showRichReport(ct, msgID, rich, markup)
+				return
+			}
+			summaryText := b.getDiagnosticsSummaryText(reports)
+			b.editWithMarkup(chatID, msgID, summaryText, markup)
+		}()
+	case "menu:diag:rich":
+		seq := b.nextMsgSeq(chatID, msgID)
+		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование сводного отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
+		go func() {
+			reports := b.getDiagnosticsReports(false)
+			if !b.isMsgSeqValid(chatID, msgID, seq) {
+				return
+			}
+			deepLinks := getDeepLinks(reports, 3)
+			markup := RichReportMarkup(deepLinks...)
 			rich := b.buildDiagnosticsRichMessage(reports)
-			b.showRichReport(ct, msgID, rich)
+			b.showRichReport(ct, msgID, rich, markup)
 		}()
 	case "menu:stats":
 		b.editWithMarkup(chatID, msgID, b.getStatsOverviewText(), StatsMenuMarkup())
@@ -274,8 +274,11 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				text, markup := b.getDisabledHostsView(page)
 				b.editWithMarkup(chatID, msgID, text, markup)
 			}
-		} else if strings.HasPrefix(cb.Data, "menu:diag:p:") {
-			pageStr := strings.TrimPrefix(cb.Data, "menu:diag:p:")
+		} else if strings.HasPrefix(cb.Data, "menu:diag:details:") || strings.HasPrefix(cb.Data, "menu:diag:p:") {
+			pageStr := strings.TrimPrefix(cb.Data, "menu:diag:details:")
+			if strings.HasPrefix(cb.Data, "menu:diag:p:") {
+				pageStr = strings.TrimPrefix(cb.Data, "menu:diag:p:")
+			}
 			page, _ := strconv.Atoi(pageStr)
 			if page <= 0 {
 				page = 1
@@ -284,9 +287,14 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			if len(reports) == 0 {
 				reports = b.getDiagnosticsReports(false)
 			}
-			pageText, totalPages := b.getDiagnosticsPageText(reports, page)
 			deepLinks := getDeepLinksForPage(reports, page)
-			b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages, deepLinks...))
+			if b.isRichMode() {
+				rich, totalPages := b.buildDiagnosticsDetailsRichMessage(reports, page)
+				b.showRichReport(ct, msgID, rich, DiagPaginationMarkup(page, totalPages, deepLinks...))
+			} else {
+				pageText, totalPages := b.getDiagnosticsPageText(reports, page)
+				b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages, deepLinks...))
+			}
 		} else if strings.HasPrefix(cb.Data, "menu:diag:deep:") {
 			rest := strings.TrimPrefix(cb.Data, "menu:diag:deep:")
 			parts := strings.Split(rest, ":")
@@ -298,36 +306,50 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				}
 			}
 			b.handleDeepDiagnostics(chatID, msgID, stableID, page)
-		} else if strings.HasPrefix(cb.Data, "menu:diag:refresh:") {
+		} else if strings.HasPrefix(cb.Data, "menu:diag:refresh:") || cb.Data == "menu:diag:refresh" {
 			arg := strings.TrimPrefix(cb.Data, "menu:diag:refresh:")
+			if cb.Data == "menu:diag:refresh" {
+				arg = "summary"
+			}
 			seq := b.nextMsgSeq(chatID, msgID)
-			if arg == "rich" {
-				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>", BackToMenuMarkup())
+
+			if arg == "summary" || arg == "rich" {
+				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование сводного отчёта...</b>", BackToMenuMarkup())
 				go func() {
 					reports := b.getDiagnosticsReports(true)
 					if !b.isMsgSeqValid(chatID, msgID, seq) {
 						return
 					}
-					rich := b.buildDiagnosticsRichMessage(reports)
-					b.showRichReport(ct, msgID, rich)
+					deepLinks := getDeepLinks(reports, 3)
+					markup := RichReportMarkup(deepLinks...)
+					if b.isRichMode() || arg == "rich" {
+						rich := b.buildDiagnosticsRichMessage(reports)
+						b.showRichReport(ct, msgID, rich, markup)
+						return
+					}
+					summaryText := b.getDiagnosticsSummaryText(reports)
+					b.editWithMarkup(chatID, msgID, summaryText, markup)
 				}()
 			} else {
-				page, _ := strconv.Atoi(arg)
+				pageStr := strings.TrimPrefix(arg, "details:")
+				page, _ := strconv.Atoi(pageStr)
 				if page <= 0 {
 					page = 1
 				}
-				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>", BackToMenuMarkup())
+				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование подробного отчёта...</b>", BackToMenuMarkup())
 				go func() {
 					reports := b.getDiagnosticsReports(true)
 					if !b.isMsgSeqValid(chatID, msgID, seq) {
 						return
 					}
-					pageText, totalPages := b.getDiagnosticsPageText(reports, page)
 					deepLinks := getDeepLinksForPage(reports, page)
-					if !b.isMsgSeqValid(chatID, msgID, seq) {
-						return
+					if b.isRichMode() {
+						rich, totalPages := b.buildDiagnosticsDetailsRichMessage(reports, page)
+						b.showRichReport(ct, msgID, rich, DiagPaginationMarkup(page, totalPages, deepLinks...))
+					} else {
+						pageText, totalPages := b.getDiagnosticsPageText(reports, page)
+						b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages, deepLinks...))
 					}
-					b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages, deepLinks...))
 				}()
 			}
 		} else if strings.HasPrefix(cb.Data, "menu:checkhost:run:") {

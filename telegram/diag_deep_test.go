@@ -169,3 +169,89 @@ func TestFormatDeepDiagnostics(t *testing.T) {
 		t.Errorf("missing status line:\n%s", text)
 	}
 }
+
+func TestDiagnosticsSummaryText(t *testing.T) {
+	b := &Bot{}
+	reports := []checker.ProxyDiagReport{
+		{ProxyName: "Proxy-1", Protocol: "vless", Status: "online", Targets: []checker.TargetDiagResult{{Success: true, Latency: 35 * time.Millisecond}}},
+		{ProxyName: "Proxy-2", Protocol: "vmess", Status: "offline", Targets: []checker.TargetDiagResult{{Success: false, Error: "timeout"}}},
+		{ProxyName: "Proxy-3", Protocol: "trojan", Status: "disabled", Disabled: true},
+	}
+
+	summary := b.getDiagnosticsSummaryText(reports)
+	if !strings.Contains(summary, "📋 <b>Сводный отчёт о прокси (3 всего):</b>") {
+		t.Errorf("unexpected summary header:\n%s", summary)
+	}
+	if !strings.Contains(summary, "🟢 <b>Proxy-1</b> (VLESS) — 35 ms") {
+		t.Errorf("missing Proxy-1 in summary:\n%s", summary)
+	}
+	if !strings.Contains(summary, "🔴 <b>Proxy-2</b> (VMESS) — недоступен") {
+		t.Errorf("missing Proxy-2 in summary:\n%s", summary)
+	}
+	if !strings.Contains(summary, "⏸️ <b>Proxy-3</b> (TROJAN) — отключён") {
+		t.Errorf("missing Proxy-3 in summary:\n%s", summary)
+	}
+	if !strings.Contains(summary, "В сети: 1 | Сбоев: 1 | Отключено: 1") {
+		t.Errorf("missing status counts in summary:\n%s", summary)
+	}
+	if !strings.Contains(summary, "Нажмите «🔎 Подробнее» для детального разбора этапов.") {
+		t.Errorf("missing details prompt in summary:\n%s", summary)
+	}
+}
+
+func TestDiagnosticsRichBuilders(t *testing.T) {
+	b := &Bot{}
+	reports := []checker.ProxyDiagReport{
+		{ProxyName: "P1", Protocol: "vless", Status: "online", Targets: []checker.TargetDiagResult{{Success: true, Latency: 30 * time.Millisecond}}},
+		{ProxyName: "P2", Protocol: "shadowsocks", Status: "offline", NodeHealth: checker.NodeHealth{DNSErr: "no such host"}},
+		{ProxyName: "P3", Protocol: "trojan", Status: "disabled", Disabled: true},
+		{ProxyName: "P4", Protocol: "vmess", Status: "degraded"},
+		{ProxyName: "P5", Protocol: "vless", Status: "online"},
+		{ProxyName: "P6", Protocol: "vless", Status: "online"},
+	}
+
+	// Level 1: Summary rich message
+	richSummary := b.buildDiagnosticsRichMessage(reports)
+	if richSummary == nil || len(richSummary.Blocks) < 3 {
+		t.Fatalf("expected at least 3 blocks in summary rich message, got %v", richSummary)
+	}
+
+	// Level 2: Details rich message (6 proxies, page size 5 -> 2 pages)
+	richDetailsP1, totalPages := b.buildDiagnosticsDetailsRichMessage(reports, 1)
+	if totalPages != 2 {
+		t.Errorf("expected 2 total pages, got %d", totalPages)
+	}
+	if richDetailsP1 == nil || len(richDetailsP1.Blocks) != 6 { // 1 header + 5 proxy details
+		t.Errorf("expected 6 blocks on page 1, got %d", len(richDetailsP1.Blocks))
+	}
+
+	richDetailsP2, totalPages2 := b.buildDiagnosticsDetailsRichMessage(reports, 2)
+	if totalPages2 != 2 {
+		t.Errorf("expected 2 total pages, got %d", totalPages2)
+	}
+	if richDetailsP2 == nil || len(richDetailsP2.Blocks) != 2 { // 1 header + 1 proxy detail
+		t.Errorf("expected 2 blocks on page 2, got %d", len(richDetailsP2.Blocks))
+	}
+}
+
+func TestGetDeepLinks(t *testing.T) {
+	reports := []checker.ProxyDiagReport{
+		{ProxyName: "Online-1", StableID: "on-1", Status: "online"},
+		{ProxyName: "Offline-1", StableID: "off-1", Status: "offline"},
+		{ProxyName: "Degraded-1", StableID: "deg-1", Status: "degraded"},
+		{ProxyName: "Offline-2", StableID: "off-2", Status: "offline"},
+	}
+
+	linksAll := getDeepLinks(reports, 0)
+	if len(linksAll) != 3 {
+		t.Fatalf("expected 3 failing proxies, got %d", len(linksAll))
+	}
+	if linksAll[0].StableID != "off-1" || linksAll[1].StableID != "deg-1" || linksAll[2].StableID != "off-2" {
+		t.Errorf("unexpected links order: %+v", linksAll)
+	}
+
+	linksCapped := getDeepLinks(reports, 2)
+	if len(linksCapped) != 2 {
+		t.Fatalf("expected 2 capped proxies, got %d", len(linksCapped))
+	}
+}

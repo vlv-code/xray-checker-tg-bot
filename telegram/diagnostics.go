@@ -326,6 +326,76 @@ func getDeepLinksForPage(reports []checker.ProxyDiagReport, page int) []DiagDeep
 	return links
 }
 
+func getDeepLinks(reports []checker.ProxyDiagReport, maxCount int) []DiagDeepLink {
+	var links []DiagDeepLink
+	for _, rep := range reports {
+		if rep.Status == "offline" || rep.Status == "degraded" {
+			links = append(links, DiagDeepLink{
+				Name:     rep.ProxyName,
+				StableID: rep.StableID,
+			})
+			if maxCount > 0 && len(links) >= maxCount {
+				break
+			}
+		}
+	}
+	return links
+}
+
+func (b *Bot) getDiagnosticsSummaryText(reports []checker.ProxyDiagReport) string {
+	if len(reports) == 0 {
+		return "Нет доступных прокси для проверки."
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📋 <b>Сводный отчёт о прокси (%d всего):</b>\n\n", len(reports)))
+
+	onlineCount, offlineCount, disabledCount := 0, 0, 0
+	for _, rep := range reports {
+		latencyText := "—"
+		for _, tr := range rep.Targets {
+			if tr.Success {
+				latencyText = fmt.Sprintf("%.0f ms", float64(tr.Latency.Milliseconds()))
+				break
+			}
+		}
+
+		icon := "🟢"
+		statusDesc := latencyText
+		switch rep.Status {
+		case "offline":
+			icon = "🔴"
+			statusDesc = "недоступен"
+			offlineCount++
+		case "degraded":
+			icon = "🟡"
+			statusDesc = "ошибка"
+			offlineCount++
+		case "disabled":
+			icon = "⏸️"
+			statusDesc = "отключён"
+			disabledCount++
+		default:
+			onlineCount++
+		}
+
+		proto := strings.ToUpper(rep.Protocol)
+		if proto == "" {
+			proto = "PROXY"
+		}
+
+		fmt.Fprintf(&sb, "%s <b>%s</b> (%s) — %s\n", icon, escapeHTML(rep.ProxyName), proto, statusDesc)
+	}
+
+	fmt.Fprintf(&sb, "\n💡 <i>В сети: %d | Сбоев: %d", onlineCount, offlineCount)
+	if disabledCount > 0 {
+		fmt.Fprintf(&sb, " | Отключено: %d", disabledCount)
+	}
+	sb.WriteString("</i>\n<i>Нажмите «🔎 Подробнее» для детального разбора этапов.</i>")
+
+	return sb.String()
+}
+
 func (b *Bot) getDiagnosticsPageText(reports []checker.ProxyDiagReport, page int) (string, int) {
 	if len(reports) == 0 {
 		return "Нет доступных прокси для проверки.", 1
@@ -346,7 +416,7 @@ func (b *Bot) getDiagnosticsPageText(reports []checker.ProxyDiagReport, page int
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📋 <b>Детальный отчёт</b> (Стр. %d из %d, всего %d прокси):\n\n", page, totalPages, len(reports)))
+	sb.WriteString(fmt.Sprintf("🔎 <b>Подробный отчёт</b> (Стр. %d из %d, всего %d прокси):\n\n", page, totalPages, len(reports)))
 
 	for _, rep := range reports[start:end] {
 		b.formatSingleProxyDiagWithStats(&sb, rep)
@@ -609,7 +679,7 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 
 	// 1. Heading
 	blocks = append(blocks, tu.RichBlockSectionHeading(
-		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("📋 Результаты детального отчёта (%d прокси-хостов)", len(reports)))),
+		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("📋 Сводный отчёт (%d прокси-хостов)", len(reports)))),
 		2,
 	))
 
@@ -624,6 +694,7 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 	var tableRows [][]telego.RichBlockTableCell
 	tableRows = append(tableRows, headerRow)
 
+	onlineCount, offlineCount, disabledCount := 0, 0, 0
 	for _, rep := range reports {
 		latencyText := "—"
 		for _, tr := range rep.Targets {
@@ -637,11 +708,16 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 		switch rep.Status {
 		case "offline":
 			statusText = "🔴 Недоступен"
+			offlineCount++
 		case "degraded":
 			statusText = "🟡 Ошибка"
+			offlineCount++
 		case "disabled":
 			statusText = "⏸️ Отключён"
 			latencyText = "—"
+			disabledCount++
+		default:
+			onlineCount++
 		}
 
 		proto := strings.ToUpper(rep.Protocol)
@@ -661,22 +737,93 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 	blocks = append(blocks, table)
 	blocks = append(blocks, tu.RichBlockDivider())
 
-	// 3. Collapsible details for degraded/offline proxies
-	hasProblems := false
-	for _, rep := range reports {
-		if rep.Status == "online" || rep.Status == "disabled" || rep.Disabled {
+	summaryLine := fmt.Sprintf("💡 В сети: %d | Сбоев: %d", onlineCount, offlineCount)
+	if disabledCount > 0 {
+		summaryLine += fmt.Sprintf(" | Отключено: %d", disabledCount)
+	}
+	blocks = append(blocks, tu.RichBlockParagraph(tu.RichTextItalic(tu.RichTextPlain(summaryLine))))
+	blocks = append(blocks, tu.RichBlockParagraph(tu.RichTextItalic(tu.RichTextPlain("Нажмите «🔎 Подробнее» для детального разбора этапов."))))
+
+	msg := tu.RichMessage(blocks...)
+	return &msg
+}
+
+func (b *Bot) buildDiagnosticsDetailsRichMessage(reports []checker.ProxyDiagReport, page int) (*telego.InputRichMessage, int) {
+	if len(reports) == 0 {
+		msg := tu.RichMessage(tu.RichBlockParagraph(tu.RichTextPlain("Нет доступных прокси-хостов для проверки.")))
+		return &msg, 1
+	}
+
+	totalPages := (len(reports) + diagPageSize - 1) / diagPageSize
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+
+	start := (page - 1) * diagPageSize
+	end := start + diagPageSize
+	if end > len(reports) {
+		end = len(reports)
+	}
+
+	var blocks []telego.InputRichBlock
+
+	blocks = append(blocks, tu.RichBlockSectionHeading(
+		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("🔎 Подробный отчёт (Стр. %d из %d, всего %d)", page, totalPages, len(reports)))),
+		2,
+	))
+
+	for _, rep := range reports[start:end] {
+		proto := strings.ToUpper(rep.Protocol)
+		if proto == "" {
+			proto = "PROXY"
+		}
+
+		if rep.Disabled || rep.Status == "disabled" {
+			summary := tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("⏸️ %s (%s) — отключён", rep.ProxyName, proto)))
+			blocks = append(blocks, tu.RichBlockDetails(
+				summary,
+				tu.RichBlockParagraph(tu.RichTextItalic(tu.RichTextPlain("Проверка данного прокси отключена в конфигурации."))),
+			))
 			continue
 		}
-		hasProblems = true
 
-		summary := tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("🔴 %s — детали сбоя (%s)", rep.ProxyName, strings.ToUpper(rep.Protocol))))
+		icon := "🟢"
+		statusDesc := "доступен"
+		switch rep.Status {
+		case "offline":
+			icon = "🔴"
+			statusDesc = "недоступен"
+		case "degraded":
+			icon = "🟡"
+			statusDesc = "ошибка"
+		default:
+			for _, tr := range rep.Targets {
+				if tr.Success {
+					statusDesc = fmt.Sprintf("%.0f ms", float64(tr.Latency.Milliseconds()))
+					break
+				}
+			}
+		}
+
+		summary := tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("%s %s (%s) — %s", icon, rep.ProxyName, proto, statusDesc)))
 
 		var detailLines []string
+
+		// 1. DNS
 		if rep.NodeHealth.DNSErr != "" {
 			detailLines = append(detailLines, fmt.Sprintf("DNS: ❌ %s", rep.NodeHealth.DNSErr))
 		} else if rep.NodeHealth.ResolvedIP != "" {
-			detailLines = append(detailLines, fmt.Sprintf("DNS: ✅ %s", rep.NodeHealth.ResolvedIP))
+			if rep.NodeHealth.DNSLatency > 0 {
+				detailLines = append(detailLines, fmt.Sprintf("DNS: ✅ %s (%.0f ms)", rep.NodeHealth.ResolvedIP, float64(rep.NodeHealth.DNSLatency.Milliseconds())))
+			} else {
+				detailLines = append(detailLines, fmt.Sprintf("DNS: ✅ %s", rep.NodeHealth.ResolvedIP))
+			}
 		}
+
+		// 2. Transport / TCP
 		if checker.IsUDPProto(rep.Protocol) {
 			if rep.Port > 0 {
 				detailLines = append(detailLines, fmt.Sprintf("Порт (%d): ⚡ UDP / QUIC", rep.Port))
@@ -688,32 +835,60 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 				detailLines = append(detailLines, fmt.Sprintf("TCP (%d): ✅ %.0f ms", rep.Port, float64(rep.NodeHealth.TCPPing.Milliseconds())))
 			}
 		}
+
+		// 3. TLS
 		if rep.NodeHealth.TLSErr != "" {
 			detailLines = append(detailLines, fmt.Sprintf("TLS: ❌ %s", rep.NodeHealth.TLSErr))
+		} else if rep.NodeHealth.TLSLatency > 0 {
+			detailLines = append(detailLines, fmt.Sprintf("TLS: ✅ %.0f ms", float64(rep.NodeHealth.TLSLatency.Milliseconds())))
 		}
+
+		// 4. Targets
 		for _, tr := range rep.Targets {
-			site := simplifyTargetName(tr.URL)
+			siteName := simplifyTargetName(tr.URL)
 			if tr.Success {
-				detailLines = append(detailLines, fmt.Sprintf("%s: ✅ %.0f ms", site, float64(tr.Latency.Milliseconds())))
+				detailLines = append(detailLines, fmt.Sprintf("%s: ✅ %.0f ms", siteName, float64(tr.Latency.Milliseconds())))
 			} else {
-				detailLines = append(detailLines, fmt.Sprintf("%s: ❌ %s", site, tr.Error))
+				detailLines = append(detailLines, fmt.Sprintf("%s: ❌ %s", siteName, tr.Error))
 			}
 		}
+
+		// 5. Check-Host
 		if rep.CheckHost != nil {
-			detailLines = append(detailLines, fmt.Sprintf("Check-Host: %s", rep.CheckHost.Verdict))
+			ruStatus := "❌"
+			if rep.CheckHost.RUAvailable {
+				ruStatus = "✅"
+			}
+			worldStatus := "❌"
+			if rep.CheckHost.WorldAvailable {
+				worldStatus = "✅"
+			}
+			detailLines = append(detailLines, fmt.Sprintf("Check-Host: РФ %s | Мир %s", ruStatus, worldStatus))
 		}
 
-		detailsBlock := tu.RichBlockDetails(
+		// 6. Verdict
+		if rep.Verdict != "" {
+			detailLines = append(detailLines, fmt.Sprintf("Вердикт: %s", rep.Verdict))
+		}
+
+		// 7. Downtime / Flapping
+		if rep.Status == "offline" && b != nil && b.tracker != nil {
+			dt := b.tracker.GetDowntime(rep.StableID, b.now())
+			if dt > 0 {
+				detailLines = append(detailLines, fmt.Sprintf("Недоступен уже: %s", FormatDowntime(dt)))
+			}
+		}
+
+		if len(detailLines) == 0 {
+			detailLines = append(detailLines, "Данные проверки отсутствуют")
+		}
+
+		blocks = append(blocks, tu.RichBlockDetails(
 			summary,
 			tu.RichBlockPreformatted(tu.RichTextPlain(strings.Join(detailLines, "\n"))),
-		)
-		blocks = append(blocks, detailsBlock)
-	}
-
-	if !hasProblems {
-		blocks = append(blocks, tu.RichBlockParagraph(tu.RichTextItalic(tu.RichTextPlain("Все прокси-хосты работают стабильно, аварий не обнаружено."))))
+		))
 	}
 
 	msg := tu.RichMessage(blocks...)
-	return &msg
+	return &msg, totalPages
 }

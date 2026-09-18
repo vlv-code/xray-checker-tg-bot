@@ -517,7 +517,7 @@ type DiagDeepLink struct {
 	StableID string
 }
 
-// DiagPaginationMarkup builds inline keyboard for paginated diagnostics report.
+// DiagPaginationMarkup builds inline keyboard for paginated details report (Level 2).
 func DiagPaginationMarkup(page, totalPages int, deepLinks ...DiagDeepLink) *telego.InlineKeyboardMarkup {
 	if page < 1 {
 		page = 1
@@ -539,14 +539,14 @@ func DiagPaginationMarkup(page, totalPages int, deepLinks ...DiagDeepLink) *tele
 	if totalPages > 1 {
 		var prevBtn telego.InlineKeyboardButton
 		if page > 1 {
-			prevBtn = btn("⬅️ Пред", fmt.Sprintf("menu:diag:p:%d", page-1))
+			prevBtn = btn("⬅️ Пред", fmt.Sprintf("menu:diag:details:%d", page-1))
 		} else {
 			prevBtn = btn("·", "menu:noop")
 		}
 
 		var nextBtn telego.InlineKeyboardButton
 		if page < totalPages {
-			nextBtn = btn("След ➡️", fmt.Sprintf("menu:diag:p:%d", page+1))
+			nextBtn = btn("След ➡️", fmt.Sprintf("menu:diag:details:%d", page+1))
 		} else {
 			nextBtn = btn("·", "menu:noop")
 		}
@@ -558,21 +558,21 @@ func DiagPaginationMarkup(page, totalPages int, deepLinks ...DiagDeepLink) *tele
 		))
 	}
 
-	// Action row: Open Rich Report + Refresh current page
+	// Action row: Back to Summary + Refresh current page
 	rows = append(rows, tu.InlineKeyboardRow(
-		btn("📊 Открыть Rich-отчёт", "menu:diag:rich"),
-		btn("🔄 Обновить", fmt.Sprintf("menu:diag:refresh:%d", page)),
+		btn("🔙 К сводке", "menu:diag"),
+		btn("🔄 Обновить", fmt.Sprintf("menu:diag:refresh:details:%d", page)),
 	))
 
 	// Back row
 	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔙 Главное меню", "menu:main"),
+		btn("🏠 Главное меню", "menu:main"),
 	))
 
 	return tu.InlineKeyboard(rows...)
 }
 
-// DeepDiagnosticsMarkup returns navigation buttons for Level 2 Deep diagnostics.
+// DeepDiagnosticsMarkup returns navigation buttons for Level 3 Deep diagnostics.
 func DeepDiagnosticsMarkup(stableID string, page ...int) *telego.InlineKeyboardMarkup {
 	curPage := 1
 	if len(page) > 0 && page[0] > 1 {
@@ -580,7 +580,7 @@ func DeepDiagnosticsMarkup(stableID string, page ...int) *telego.InlineKeyboardM
 	}
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🔙 К детальному отчёту", fmt.Sprintf("menu:diag:p:%d", curPage)),
+			btn("🔙 К подробному отчёту", fmt.Sprintf("menu:diag:details:%d", curPage)),
 			btn("🔄 Перепроверить", fmt.Sprintf("menu:diag:deep:%s:%d", stableID, curPage)),
 		),
 		tu.InlineKeyboardRow(
@@ -599,15 +599,27 @@ func CheckHostResultMarkup() *telego.InlineKeyboardMarkup {
 	)
 }
 
-// RichReportMarkup returns buttons under a rich diagnostics message.
-func RichReportMarkup() *telego.InlineKeyboardMarkup {
-	return tu.InlineKeyboard(
-		tu.InlineKeyboardRow(
-			btn("📄 Постраничный вид", "menu:diag:p:1"),
-			btn("🔄 Обновить", "menu:diag:refresh:rich"),
-		),
-		tu.InlineKeyboardRow(
-			btn("🔙 Главное меню", "menu:main"),
-		),
-	)
+// RichReportMarkup returns buttons under the Level 1 summary report.
+func RichReportMarkup(deepLinks ...DiagDeepLink) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+
+	// Primary action: Drill down into details
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("🔎 Подробнее", "menu:diag:details:1"),
+	))
+
+	// Quick deep links for problematic proxies if any
+	for _, dl := range deepLinks {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn(fmt.Sprintf("🔬 Углублённая: %s", truncateButtonText(dl.Name, 24)), fmt.Sprintf("menu:diag:deep:%s:1", dl.StableID)),
+		))
+	}
+
+	// Refresh and navigation
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("🔄 Обновить", "menu:diag:refresh:summary"),
+		btn("🔙 Главное меню", "menu:main"),
+	))
+
+	return tu.InlineKeyboard(rows...)
 }

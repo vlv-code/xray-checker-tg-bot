@@ -305,24 +305,27 @@ func (b *Bot) replyTimezone(t ChatTarget) {
 }
 
 func (b *Bot) replyDiagnostics(t ChatTarget, arg string) {
-	sent, _ := b.sendAndReturn(t, "⏳ <b>Формирование детального отчёта...</b>\nПожалуйста, подождите несколько секунд...")
+	sent, _ := b.sendAndReturn(t, "⏳ <b>Формирование сводного отчёта...</b>\nПожалуйста, подождите несколько секунд...")
 	reports := b.getDiagnosticsReports(true)
 	msgID := 0
 	if sent != nil {
 		msgID = sent.GetMessageID()
 	}
 
+	deepLinks := getDeepLinks(reports, 3)
+	markup := RichReportMarkup(deepLinks...)
+
 	if b.isRichMode() || strings.ToLower(strings.TrimSpace(arg)) == "rich" {
 		rich := b.buildDiagnosticsRichMessage(reports)
-		b.showRichReport(t, msgID, rich)
+		b.showRichReport(t, msgID, rich, markup)
 		return
 	}
 
-	pageText, totalPages := b.getDiagnosticsPageText(reports, 1)
+	summaryText := b.getDiagnosticsSummaryText(reports)
 	if msgID > 0 {
-		b.editWithMarkup(t.ChatID, msgID, pageText, DiagPaginationMarkup(1, totalPages))
+		b.editWithMarkup(t.ChatID, msgID, summaryText, markup)
 	} else {
-		b.sendWithMarkup(t, pageText, DiagPaginationMarkup(1, totalPages))
+		b.sendWithMarkup(t, summaryText, markup)
 	}
 }
 

@@ -609,11 +609,15 @@ func (b *Bot) sendRich(t ChatTarget, rich *telego.InputRichMessage, markup *tele
 	return sent, nil
 }
 
-func (b *Bot) showRichReport(t ChatTarget, messageID int, rich *telego.InputRichMessage) {
+func (b *Bot) showRichReport(t ChatTarget, messageID int, rich *telego.InputRichMessage, markup ...*telego.InlineKeyboardMarkup) {
+	mk := RichReportMarkup()
+	if len(markup) > 0 && markup[0] != nil {
+		mk = markup[0]
+	}
 	if messageID > 0 {
-		if err := b.editWithRichMarkup(t.ChatID, messageID, rich, RichReportMarkup()); err == nil {
+		if err := b.editWithRichMarkup(t.ChatID, messageID, rich, mk); err == nil {
 			return
 		}
 	}
-	_, _ = b.sendRich(t, rich, RichReportMarkup())
+	_, _ = b.sendRich(t, rich, mk)
 }
