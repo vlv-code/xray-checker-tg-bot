@@ -305,7 +305,7 @@ func (b *Bot) replyTimezone(t ChatTarget) {
 }
 
 func (b *Bot) replyDiagnostics(t ChatTarget, arg string) {
-	sent, _ := b.sendAndReturn(t, "⏳ <b>Формирование сводного отчёта...</b>\nПожалуйста, подождите несколько секунд...")
+	sent, _ := b.sendAndReturn(t, "⏳ <b>Формирование подробной сводки...</b>\nПожалуйста, подождите несколько секунд...")
 	reports := b.getDiagnosticsReports(true)
 	msgID := 0
 	if sent != nil {

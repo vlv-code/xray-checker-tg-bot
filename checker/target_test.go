@@ -194,6 +194,13 @@ func TestEnrichVerdictWithCheckHost(t *testing.T) {
 		t.Errorf("expected RU online verdict, got: %s", v3)
 	}
 
+	// DNS error + both offline -> domain doesn't resolve externally either
+	chDNS := &CheckHostSummary{RUAvailable: false, WorldAvailable: false}
+	vDNS := EnrichVerdictWithCheckHost("Сбой DNS домена ноды (no such host)", chDNS, "no such host")
+	if !strings.Contains(vDNS, "домен не резолвится также и на внешних узлах") {
+		t.Errorf("expected DNS external failure verdict, got: %s", vDNS)
+	}
+
 	// Nil CheckHost returns original verdict
 	v4 := EnrichVerdictWithCheckHost(baseVerdict, nil)
 	if v4 != baseVerdict {

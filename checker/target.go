@@ -445,16 +445,23 @@ func DetermineVerdict(proto string, health NodeHealth, targets []TargetDiagResul
 }
 
 // EnrichVerdictWithCheckHost enriches a diagnostic verdict with objective Check-Host findings
-func EnrichVerdictWithCheckHost(verdict string, ch *CheckHostSummary) string {
+func EnrichVerdictWithCheckHost(verdict string, ch *CheckHostSummary, dnsErr ...string) string {
 	if ch == nil {
 		return verdict
 	}
+	hasDNSErr := len(dnsErr) > 0 && dnsErr[0] != ""
 	switch {
 	case !ch.RUAvailable && ch.WorldAvailable:
 		return fmt.Sprintf("%s | Check-Host: хост недоступен из узлов РФ, но отвечает из зарубежных сетей", verdict)
 	case !ch.RUAvailable && !ch.WorldAvailable:
+		if hasDNSErr {
+			return fmt.Sprintf("%s | Check-Host: домен не резолвится также и на внешних узлах (РФ и Мир)", verdict)
+		}
 		return fmt.Sprintf("%s | Check-Host: хост недоступен как из РФ, так и из других стран", verdict)
 	case ch.RUAvailable && ch.WorldAvailable:
+		if hasDNSErr {
+			return fmt.Sprintf("%s | Check-Host: внешние узлы смогли отрезолвить домен (возможен локальный сбой DNS у чекера)", verdict)
+		}
 		return fmt.Sprintf("%s | Check-Host: хост отвечает из РФ и других стран", verdict)
 	default:
 		return fmt.Sprintf("%s | Check-Host: хост доступен из РФ, но недоступен из части внешних сетей", verdict)
@@ -565,6 +572,30 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 			innerWg.Wait()
 			nodeWg.Wait()
 
+			// If the proxy node itself is down at the DNS or transport level,
+			// target probes that received EOF or connection resets did so because
+			// the local SOCKS client closed the connection when the outbound dial failed.
+			// Align the target errors so they don't misleadingly blame Cloudflare/Google!
+			if health.DNSErr != "" {
+				for tIdx := range targetResults {
+					if !targetResults[tIdx].Success {
+						targetResults[tIdx].Error = fmt.Sprintf("Туннель не поднят (сбой DNS ноды: %s)", health.DNSErr)
+					}
+				}
+			} else if health.TCPErr != "" {
+				for tIdx := range targetResults {
+					if !targetResults[tIdx].Success {
+						targetResults[tIdx].Error = fmt.Sprintf("Туннель не поднят (сбой TCP ноды: %s)", health.TCPErr)
+					}
+				}
+			} else if IsUDPProto(proxy.Protocol) && health.UDPErr != "" {
+				for tIdx := range targetResults {
+					if !targetResults[tIdx].Success {
+						targetResults[tIdx].Error = fmt.Sprintf("Туннель не поднят (сбой UDP ноды: %s)", health.UDPErr)
+					}
+				}
+			}
+
 			status, verdict := DetermineVerdict(proxy.Protocol, health, targetResults)
 
 			var checkHostSummary *CheckHostSummary
@@ -589,7 +620,7 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 				chCancel()
 				if chErr == nil && chSummary != nil {
 					checkHostSummary = chSummary
-					verdict = EnrichVerdictWithCheckHost(verdict, chSummary)
+					verdict = EnrichVerdictWithCheckHost(verdict, chSummary, health.DNSErr)
 				}
 			}
 

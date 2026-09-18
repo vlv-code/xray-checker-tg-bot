@@ -261,15 +261,19 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 
 	// 5. External Check-Host
 	if rep.CheckHost != nil {
-		ruStatus := "❌ недоступен"
-		if rep.CheckHost.RUAvailable {
-			ruStatus = "✅ отвечает"
+		if rep.NodeHealth.DNSErr != "" && !rep.CheckHost.RUAvailable && !rep.CheckHost.WorldAvailable {
+			fmt.Fprintf(sb, "  • Check-Host: РФ ❌, Мир ❌ (домен не резолвится внешними узлами)\n")
+		} else {
+			ruStatus := "❌ недоступен"
+			if rep.CheckHost.RUAvailable {
+				ruStatus = "✅ отвечает"
+			}
+			worldStatus := "❌ недоступен"
+			if rep.CheckHost.WorldAvailable {
+				worldStatus = "✅ отвечает"
+			}
+			fmt.Fprintf(sb, "  • Check-Host: РФ %s, Мир %s\n", ruStatus, worldStatus)
 		}
-		worldStatus := "❌ недоступен"
-		if rep.CheckHost.WorldAvailable {
-			worldStatus = "✅ отвечает"
-		}
-		fmt.Fprintf(sb, "  • Check-Host: РФ %s, Мир %s\n", ruStatus, worldStatus)
 		if rep.CheckHost.PermanentLink != "" {
 			fmt.Fprintf(sb, "    🔗 <a href=\"%s\">отчёт Check-Host</a>\n", escapeHTML(rep.CheckHost.PermanentLink))
 		}
@@ -348,7 +352,7 @@ func (b *Bot) getDiagnosticsSummaryText(reports []checker.ProxyDiagReport) strin
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📋 <b>Сводный отчёт о прокси (%d всего):</b>\n\n", len(reports)))
+	sb.WriteString(fmt.Sprintf("📊 <b>Подробная сводка (%d всего):</b>\n\n", len(reports)))
 
 	onlineCount, offlineCount, disabledCount := 0, 0, 0
 	for _, rep := range reports {
@@ -391,7 +395,7 @@ func (b *Bot) getDiagnosticsSummaryText(reports []checker.ProxyDiagReport) strin
 	if disabledCount > 0 {
 		fmt.Fprintf(&sb, " | Отключено: %d", disabledCount)
 	}
-	sb.WriteString("</i>\n<i>Нажмите «🔎 Подробнее» для детального разбора этапов.</i>")
+	sb.WriteString("</i>\n<i>Нажмите «📑 Детальный отчёт» для постраничного разбора этапов.</i>")
 
 	return sb.String()
 }
@@ -416,7 +420,7 @@ func (b *Bot) getDiagnosticsPageText(reports []checker.ProxyDiagReport, page int
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🔎 <b>Подробный отчёт</b> (Стр. %d из %d, всего %d прокси):\n\n", page, totalPages, len(reports)))
+	sb.WriteString(fmt.Sprintf("📑 <b>Детальный отчёт</b> (Стр. %d из %d, всего %d прокси):\n\n", page, totalPages, len(reports)))
 
 	for _, rep := range reports[start:end] {
 		b.formatSingleProxyDiagWithStats(&sb, rep)
@@ -679,7 +683,7 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 
 	// 1. Heading
 	blocks = append(blocks, tu.RichBlockSectionHeading(
-		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("📋 Сводный отчёт (%d прокси-хостов)", len(reports)))),
+		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("📊 Подробная сводка (%d прокси-хостов)", len(reports)))),
 		2,
 	))
 
@@ -742,7 +746,7 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 		summaryLine += fmt.Sprintf(" | Отключено: %d", disabledCount)
 	}
 	blocks = append(blocks, tu.RichBlockParagraph(tu.RichTextItalic(tu.RichTextPlain(summaryLine))))
-	blocks = append(blocks, tu.RichBlockParagraph(tu.RichTextItalic(tu.RichTextPlain("Нажмите «🔎 Подробнее» для детального разбора этапов."))))
+	blocks = append(blocks, tu.RichBlockParagraph(tu.RichTextItalic(tu.RichTextPlain("Нажмите «📑 Детальный отчёт» для постраничного разбора этапов."))))
 
 	msg := tu.RichMessage(blocks...)
 	return &msg
@@ -771,7 +775,7 @@ func (b *Bot) buildDiagnosticsDetailsRichMessage(reports []checker.ProxyDiagRepo
 	var blocks []telego.InputRichBlock
 
 	blocks = append(blocks, tu.RichBlockSectionHeading(
-		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("🔎 Подробный отчёт (Стр. %d из %d, всего %d)", page, totalPages, len(reports)))),
+		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("📑 Детальный отчёт (Стр. %d из %d, всего %d)", page, totalPages, len(reports)))),
 		2,
 	))
 
@@ -863,7 +867,11 @@ func (b *Bot) buildDiagnosticsDetailsRichMessage(reports []checker.ProxyDiagRepo
 			if rep.CheckHost.WorldAvailable {
 				worldStatus = "✅"
 			}
-			detailLines = append(detailLines, fmt.Sprintf("Check-Host: РФ %s | Мир %s", ruStatus, worldStatus))
+			if rep.NodeHealth.DNSErr != "" && !rep.CheckHost.RUAvailable && !rep.CheckHost.WorldAvailable {
+				detailLines = append(detailLines, "Check-Host: РФ ❌ | Мир ❌ (домен не резолвится внешними узлами)")
+			} else {
+				detailLines = append(detailLines, fmt.Sprintf("Check-Host: РФ %s | Мир %s", ruStatus, worldStatus))
+			}
 		}
 
 		// 6. Verdict

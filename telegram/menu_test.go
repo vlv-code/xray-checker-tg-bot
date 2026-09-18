@@ -36,6 +36,14 @@ func TestMenuMarkups(t *testing.T) {
 		t.Errorf("expected at least 3 rows in interval menu, got %d", len(intervalMenu.InlineKeyboard))
 	}
 
+	mainMarkup := MainMenuMarkup()
+	if len(mainMarkup.InlineKeyboard) < 4 {
+		t.Fatalf("expected at least 4 rows in main menu, got %d", len(mainMarkup.InlineKeyboard))
+	}
+	if mainMarkup.InlineKeyboard[1][0].Text != "🔎 Подробнее" {
+		t.Errorf("expected button text '🔎 Подробнее', got '%s'", mainMarkup.InlineKeyboard[1][0].Text)
+	}
+
 	// 1. Single page pagination markup (Details view)
 	singlePageMarkup := DiagPaginationMarkup(1, 1)
 	if len(singlePageMarkup.InlineKeyboard) != 2 {
@@ -43,6 +51,9 @@ func TestMenuMarkups(t *testing.T) {
 	}
 	if singlePageMarkup.InlineKeyboard[0][0].CallbackData != "menu:diag" {
 		t.Errorf("expected back to summary button menu:diag, got %s", singlePageMarkup.InlineKeyboard[0][0].CallbackData)
+	}
+	if singlePageMarkup.InlineKeyboard[0][0].Text != "🔙 К подробной сводке" {
+		t.Errorf("expected button text '🔙 К подробной сводке', got '%s'", singlePageMarkup.InlineKeyboard[0][0].Text)
 	}
 
 	// 2. Multi-page pagination markup (Details view)
@@ -78,6 +89,9 @@ func TestMenuMarkups(t *testing.T) {
 	}
 	if richMarkup.InlineKeyboard[0][0].CallbackData != "menu:diag:details:1" {
 		t.Errorf("expected switch to details:1 button, got %s", richMarkup.InlineKeyboard[0][0].CallbackData)
+	}
+	if richMarkup.InlineKeyboard[0][0].Text != "📑 Детальный отчёт" {
+		t.Errorf("expected button text '📑 Детальный отчёт', got '%s'", richMarkup.InlineKeyboard[0][0].Text)
 	}
 	if richMarkup.InlineKeyboard[1][0].CallbackData != "menu:diag:refresh:summary" && richMarkup.InlineKeyboard[1][0].CallbackData != "menu:diag:refresh:rich" {
 		t.Errorf("expected refresh summary button, got %s", richMarkup.InlineKeyboard[1][0].CallbackData)

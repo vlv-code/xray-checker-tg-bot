@@ -63,7 +63,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		b.editWithMarkup(chatID, msgID, b.getStatusText(), StatusMenuMarkup())
 	case "menu:diag", "menu:diag:summary":
 		seq := b.nextMsgSeq(chatID, msgID)
-		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование сводного отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
+		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование подробной сводки...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
 		go func() {
 			reports := b.getDiagnosticsReports(false)
 			if !b.isMsgSeqValid(chatID, msgID, seq) {
@@ -81,7 +81,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		}()
 	case "menu:diag:rich":
 		seq := b.nextMsgSeq(chatID, msgID)
-		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование сводного отчёта...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
+		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование подробной сводки...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
 		go func() {
 			reports := b.getDiagnosticsReports(false)
 			if !b.isMsgSeqValid(chatID, msgID, seq) {
@@ -314,7 +314,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			seq := b.nextMsgSeq(chatID, msgID)
 
 			if arg == "summary" || arg == "rich" {
-				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование сводного отчёта...</b>", BackToMenuMarkup())
+				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование подробной сводки...</b>", BackToMenuMarkup())
 				go func() {
 					reports := b.getDiagnosticsReports(true)
 					if !b.isMsgSeqValid(chatID, msgID, seq) {
@@ -336,7 +336,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				if page <= 0 {
 					page = 1
 				}
-				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование подробного отчёта...</b>", BackToMenuMarkup())
+				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>", BackToMenuMarkup())
 				go func() {
 					reports := b.getDiagnosticsReports(true)
 					if !b.isMsgSeqValid(chatID, msgID, seq) {

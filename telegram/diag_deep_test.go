@@ -179,7 +179,7 @@ func TestDiagnosticsSummaryText(t *testing.T) {
 	}
 
 	summary := b.getDiagnosticsSummaryText(reports)
-	if !strings.Contains(summary, "📋 <b>Сводный отчёт о прокси (3 всего):</b>") {
+	if !strings.Contains(summary, "📊 <b>Подробная сводка (3 всего):</b>") {
 		t.Errorf("unexpected summary header:\n%s", summary)
 	}
 	if !strings.Contains(summary, "🟢 <b>Proxy-1</b> (VLESS) — 35 ms") {
@@ -194,7 +194,7 @@ func TestDiagnosticsSummaryText(t *testing.T) {
 	if !strings.Contains(summary, "В сети: 1 | Сбоев: 1 | Отключено: 1") {
 		t.Errorf("missing status counts in summary:\n%s", summary)
 	}
-	if !strings.Contains(summary, "Нажмите «🔎 Подробнее» для детального разбора этапов.") {
+	if !strings.Contains(summary, "Нажмите «📑 Детальный отчёт» для постраничного разбора этапов.") {
 		t.Errorf("missing details prompt in summary:\n%s", summary)
 	}
 }

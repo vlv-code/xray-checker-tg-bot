@@ -303,7 +303,7 @@ func (b *Bot) Stop() {
 func (b *Bot) setupBotMenuButton() {
 	commands := []telego.BotCommand{
 		{Command: "menu", Description: "Главное меню и сводка"},
-		{Command: "diag", Description: "Детальный отчёт"},
+		{Command: "diag", Description: "Подробная сводка"},
 		{Command: "checkhost", Description: "Проверка Check-Host"},
 		{Command: "settings", Description: "Настройки бота"},
 		{Command: "status", Description: "Статус прокси-хостов"},
