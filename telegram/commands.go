@@ -42,18 +42,29 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 	}
 
 	b.waitingNodeAddMu.Lock()
-	var isWaiting bool
+	var isWaitingAdd bool
 	if b.waitingNodeAdd != nil {
-		isWaiting = b.waitingNodeAdd[msg.Chat.ID]
-		if isWaiting {
+		isWaitingAdd = b.waitingNodeAdd[msg.Chat.ID]
+		if isWaitingAdd {
 			delete(b.waitingNodeAdd, msg.Chat.ID)
+		}
+	}
+	var waitingSubNode string
+	if b.waitingNodeSub != nil {
+		waitingSubNode = b.waitingNodeSub[msg.Chat.ID]
+		if waitingSubNode != "" {
+			delete(b.waitingNodeSub, msg.Chat.ID)
 		}
 	}
 	b.waitingNodeAddMu.Unlock()
 
 	cmd, arg := parseCommand(msg.Text)
-	if isWaiting && cmd == "" {
+	if isWaitingAdd && cmd == "" {
 		b.handleNodeAdd(msg, strings.TrimSpace(msg.Text))
+		return
+	}
+	if waitingSubNode != "" && cmd == "" {
+		b.handleNodeAddSubURL(msg, waitingSubNode, strings.TrimSpace(msg.Text))
 		return
 	}
 	if cmd == "" {

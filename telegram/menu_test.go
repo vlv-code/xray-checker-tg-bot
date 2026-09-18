@@ -278,4 +278,58 @@ func TestNodesMarkups(t *testing.T) {
 	if len(setMenu.InlineKeyboard) < 4 {
 		t.Fatalf("expected at least 4 rows in NodesSettingsMarkup, got %d", len(setMenu.InlineKeyboard))
 	}
+	if setMenu.InlineKeyboard[3][0].CallbackData != "menu:nodes:subs" {
+		t.Errorf("expected menu:nodes:subs callback, got %s", setMenu.InlineKeyboard[3][0].CallbackData)
+	}
+
+	// 4. NodesSubsListMarkup
+	subItems := []NodeSubListItem{
+		{Name: "m31a", SubCount: 2},
+		{Name: "msk-1", SubCount: 0},
+	}
+	listMarkup := NodesSubsListMarkup(subItems)
+	if len(listMarkup.InlineKeyboard) < 3 {
+		t.Fatalf("expected at least 3 rows in NodesSubsListMarkup, got %d", len(listMarkup.InlineKeyboard))
+	}
+	if listMarkup.InlineKeyboard[0][0].CallbackData != "menu:nodes:subnode:m31a" {
+		t.Errorf("expected menu:nodes:subnode:m31a, got %s", listMarkup.InlineKeyboard[0][0].CallbackData)
+	}
+	if !strings.Contains(listMarkup.InlineKeyboard[0][0].Text, "m31a (2 подп.)") {
+		t.Errorf("expected 'm31a (2 подп.)' in button text, got %s", listMarkup.InlineKeyboard[0][0].Text)
+	}
+	if listMarkup.InlineKeyboard[1][0].CallbackData != "menu:nodes:subnode:msk-1" {
+		t.Errorf("expected menu:nodes:subnode:msk-1, got %s", listMarkup.InlineKeyboard[1][0].CallbackData)
+	}
+	// Back button should lead to node settings
+	lastRow := listMarkup.InlineKeyboard[len(listMarkup.InlineKeyboard)-1]
+	if lastRow[0].CallbackData != "menu:nodes:settings" {
+		t.Errorf("expected back button to menu:nodes:settings, got %s", lastRow[0].CallbackData)
+	}
+
+	// 5. NodeSubsManageMarkup
+	nodeSubs := []ManagedSubInfo{
+		{URL: "https://sub.one/x", ProxyCount: 15},
+		{URL: "https://sub.two/y", ProxyCount: -1},
+	}
+	manageMarkup := NodeSubsManageMarkup("m31a", nodeSubs)
+	// Expect delete buttons for each sub, add button, and back buttons
+	if len(manageMarkup.InlineKeyboard) < 4 {
+		t.Fatalf("expected at least 4 rows in NodeSubsManageMarkup, got %d", len(manageMarkup.InlineKeyboard))
+	}
+	if manageMarkup.InlineKeyboard[0][0].CallbackData != "menu:nodes:delsub:m31a:0" {
+		t.Errorf("expected delsub row 0, got %s", manageMarkup.InlineKeyboard[0][0].CallbackData)
+	}
+	if manageMarkup.InlineKeyboard[1][0].CallbackData != "menu:nodes:delsub:m31a:1" {
+		t.Errorf("expected delsub row 1, got %s", manageMarkup.InlineKeyboard[1][0].CallbackData)
+	}
+	// Add sub button
+	if manageMarkup.InlineKeyboard[2][0].CallbackData != "menu:nodes:addsub:m31a" {
+		t.Errorf("expected addsub callback, got %s", manageMarkup.InlineKeyboard[2][0].CallbackData)
+	}
+	// Back buttons
+	backRow := manageMarkup.InlineKeyboard[len(manageMarkup.InlineKeyboard)-1]
+	if backRow[0].CallbackData != "menu:nodes:subs" {
+		t.Errorf("expected back to menu:nodes:subs, got %s", backRow[0].CallbackData)
+	}
 }
+

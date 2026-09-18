@@ -990,3 +990,58 @@ func (b *Bot) getNodesSettingsView() string {
 		"• <code>/nodedelsub &lt;имя_ноды&gt; &lt;url&gt;</code> — удалить подписку у ноды",
 		syncStr, alertsStr, proxyAlertsStr, cfg.NodeStaleTimeoutSec)
 }
+
+func (b *Bot) getNodesSubsListView() (string, *telego.InlineKeyboardMarkup) {
+	if b.nodeMgr == nil {
+		return "📋 <b>Управление подписками нод</b>\n\nНоды не настроены.", NodesSubsListMarkup(nil)
+	}
+	nodes := b.nodeMgr.Nodes()
+	if len(nodes) == 0 {
+		return "📋 <b>Управление подписками нод</b>\n\nНет подключенных нод.\nСначала подключите ноду через меню нод (<code>/nodeadd</code>).", NodesSubsListMarkup(nil)
+	}
+
+	var items []NodeSubListItem
+	for _, n := range nodes {
+		subs, _ := b.nodeMgr.ManagedSubs(n.Name)
+		items = append(items, NodeSubListItem{
+			Name:     n.Name,
+			SubCount: len(subs),
+		})
+	}
+
+	text := "📋 <b>Управление подписками нод</b>\n\n" +
+		"Выберите ноду, чтобы посмотреть назначенные подписки, добавить новую или удалить существующие:"
+
+	return text, NodesSubsListMarkup(items)
+}
+
+func (b *Bot) getNodeSubsManageView(nodeName string) (string, *telego.InlineKeyboardMarkup) {
+	if b.nodeMgr == nil {
+		return "Ноды не настроены.", NodesSubsListMarkup(nil)
+	}
+	subs, err := b.nodeMgr.ManagedSubs(nodeName)
+	if err != nil {
+		return "❌ " + escapeHTML(err.Error()), NodesSubsListMarkup(nil)
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "📋 <b>Подписки ноды:</b> <code>%s</code>\n\n", escapeHTML(nodeName))
+
+	if len(subs) == 0 {
+		sb.WriteString("<i>Этой ноде пока не назначено ни одной подписки.</i>\nНода ожидает конфигурацию или проводит проверку с 0 прокси.\n\nНажмите <b>«➕ Назначить подписку»</b> ниже, чтобы привязать URL подписки.")
+	} else {
+		fmt.Fprintf(&sb, "Назначено подписок: <b>%d</b>\n\n", len(subs))
+		for i, s := range subs {
+			fmt.Fprintf(&sb, "<b>#%d:</b> <code>%s</code>\n", i+1, escapeHTML(s.URL))
+			if s.ProxyCount >= 0 {
+				fmt.Fprintf(&sb, "   • Прокси: <b>%d</b> (по отчёту ноды)\n\n", s.ProxyCount)
+			} else {
+				sb.WriteString("   • Прокси: <i>нет данных (нода ещё не применяла)</i>\n\n")
+			}
+		}
+		sb.WriteString("Чтобы удалить подписку, нажмите <b>«🗑 Удалить: #N»</b> ниже.")
+	}
+
+	return sb.String(), NodeSubsManageMarkup(nodeName, subs)
+}
+

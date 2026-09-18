@@ -86,6 +86,7 @@ type Bot struct {
 
 	waitingNodeAddMu sync.Mutex
 	waitingNodeAdd   map[int64]bool
+	waitingNodeSub   map[int64]string
 
 	nowFunc func() time.Time
 }
@@ -135,6 +136,7 @@ func New(token string, targets []ChatTarget, source metrics.MetricsSource, notif
 		msgSeq:           make(map[string]int64),
 		subFreshness:     make(map[string]SubFreshness),
 		waitingNodeAdd:   make(map[int64]bool),
+		waitingNodeSub:   make(map[int64]string),
 		stopChan:         make(chan struct{}),
 	}, nil
 }

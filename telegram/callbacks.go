@@ -48,7 +48,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		strings.HasPrefix(cb.Data, "menu:toggle_host:") ||
 		cb.Data == "menu:checkhost:run_now"
 
-	if !isToastCallback {
+	if !isToastCallback && b.api != nil {
 		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID))
 	}
 
@@ -204,6 +204,14 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		b.editWithMarkup(chatID, msgID, b.getNodesHealthView(), NodesHealthMarkup())
 	case "menu:nodes:settings":
 		b.editWithMarkup(chatID, msgID, b.getNodesSettingsView(), NodesSettingsMarkup(b.GetConfig()))
+	case "menu:nodes:subs":
+		b.waitingNodeAddMu.Lock()
+		if b.waitingNodeSub != nil {
+			delete(b.waitingNodeSub, chatID)
+		}
+		b.waitingNodeAddMu.Unlock()
+		text, markup := b.getNodesSubsListView()
+		b.editWithMarkup(chatID, msgID, text, markup)
 	case "menu:nodes:toggle_sync":
 		_ = b.updateConfig(func(c *BotConfig) {
 			c.NodeSyncEnabled = !c.NodeSyncEnabled
@@ -220,7 +228,53 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		})
 		b.editWithMarkup(chatID, msgID, b.getNodesSettingsView(), NodesSettingsMarkup(b.GetConfig()))
 	default:
-		if strings.HasPrefix(cb.Data, "menu:tz:") {
+		if strings.HasPrefix(cb.Data, "menu:nodes:subnode:") {
+			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:subnode:")
+			b.waitingNodeAddMu.Lock()
+			if b.waitingNodeSub != nil {
+				delete(b.waitingNodeSub, chatID)
+			}
+			b.waitingNodeAddMu.Unlock()
+			text, markup := b.getNodeSubsManageView(nodeName)
+			b.editWithMarkup(chatID, msgID, text, markup)
+		} else if strings.HasPrefix(cb.Data, "menu:nodes:addsub:") {
+			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:addsub:")
+			b.waitingNodeAddMu.Lock()
+			if b.waitingNodeSub == nil {
+				b.waitingNodeSub = make(map[int64]string)
+			}
+			b.waitingNodeSub[chatID] = nodeName
+			b.waitingNodeAddMu.Unlock()
+			text := fmt.Sprintf("➕ <b>Назначение подписки для ноды</b> <code>%s</code>\n\n"+
+				"Отправьте URL подписки ответным сообщением в этот чат (например: <code>https://example.com/sub/token</code>).\n\n"+
+				"<i>Или выполните команду:</i> <code>/nodeaddsub %s &lt;URL&gt;</code>",
+				escapeHTML(nodeName), escapeHTML(nodeName))
+			b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
+				tu.InlineKeyboardRow(
+					btn("🔙 Отмена", fmt.Sprintf("menu:nodes:subnode:%s", nodeName)),
+				),
+			))
+		} else if strings.HasPrefix(cb.Data, "menu:nodes:delsub:") {
+			rest := strings.TrimPrefix(cb.Data, "menu:nodes:delsub:")
+			parts := strings.Split(rest, ":")
+			if len(parts) == 2 && b.nodeMgr != nil {
+				nodeName := parts[0]
+				idx, err := strconv.Atoi(parts[1])
+				if err == nil && idx >= 0 {
+					subs, err := b.nodeMgr.ManagedSubs(nodeName)
+					if err == nil && idx < len(subs) {
+						subURL := subs[idx].URL
+						if err := b.nodeMgr.RemoveSub(nodeName, subURL); err != nil && b.api != nil {
+							_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("❌ Ошибка: "+err.Error()))
+						} else if b.api != nil {
+							_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🗑 Подписка удалена"))
+						}
+					}
+				}
+				text, markup := b.getNodeSubsManageView(nodeName)
+				b.editWithMarkup(chatID, msgID, text, markup)
+			}
+		} else if strings.HasPrefix(cb.Data, "menu:tz:") {
 			tz := strings.TrimPrefix(cb.Data, "menu:tz:")
 			_ = b.updateConfig(func(c *BotConfig) {
 				c.Timezone = tz

@@ -133,13 +133,56 @@ func NodesSettingsMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 			btn(proxyAlertsStatus, "menu:nodes:toggle_proxy_alerts"),
 		),
 		tu.InlineKeyboardRow(
-			btn("📋 Подписки нод (/nodesubs)", "menu:subs"),
+			btn("📋 Подписки нод", "menu:nodes:subs"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🔙 К нодам", "menu:nodes"),
 			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
+}
+
+// NodeSubListItem holds a node name and count of assigned subscriptions.
+type NodeSubListItem struct {
+	Name     string
+	SubCount int
+}
+
+// NodesSubsListMarkup returns keyboard with a button for each node and navigation buttons.
+func NodesSubsListMarkup(nodes []NodeSubListItem) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+	for _, n := range nodes {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn(fmt.Sprintf("🖥 %s (%d подп.)", n.Name, n.SubCount), fmt.Sprintf("menu:nodes:subnode:%s", n.Name)),
+		))
+	}
+	rows = append(rows,
+		tu.InlineKeyboardRow(
+			btn("🔙 К настройкам нод", "menu:nodes:settings"),
+			btn("🏠 Главное меню", "menu:main"),
+		),
+	)
+	return tu.InlineKeyboard(rows...)
+}
+
+// NodeSubsManageMarkup returns keyboard to manage subscriptions for a specific node.
+func NodeSubsManageMarkup(node string, subs []ManagedSubInfo) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+	for i := range subs {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn(fmt.Sprintf("🗑 Удалить: #%d", i+1), fmt.Sprintf("menu:nodes:delsub:%s:%d", node, i)),
+		))
+	}
+	rows = append(rows,
+		tu.InlineKeyboardRow(
+			btn("➕ Назначить подписку", fmt.Sprintf("menu:nodes:addsub:%s", node)),
+		),
+		tu.InlineKeyboardRow(
+			btn("🔙 К списку нод", "menu:nodes:subs"),
+			btn("⚙️ Настройки нод", "menu:nodes:settings"),
+		),
+	)
+	return tu.InlineKeyboard(rows...)
 }
 
 // SettingsMenuMarkup returns buttons for the settings view.

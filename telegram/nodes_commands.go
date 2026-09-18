@@ -211,7 +211,7 @@ func (b *Bot) handleNodeAdd(msg *telego.Message, rawName string) {
 	markup := tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
 			btn("🩺 Проверить связь", "menu:nodes:health"),
-			btn("📋 Подписки нод", "menu:subs"),
+			btn("📋 Подписки нод", "menu:nodes:subs"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🔙 К списку нод", "menu:nodes"),
@@ -238,4 +238,35 @@ func (b *Bot) handleNodeDel(msg *telego.Message, rawName string) {
 		return
 	}
 	b.replyCommand(msg, fmt.Sprintf("✅ Нода <b>%s</b> удалена с мастера.", escapeHTML(name)))
+}
+
+func (b *Bot) handleNodeAddSubURL(msg *telego.Message, node string, rawURL string) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		b.replyCommand(msg, "❌ Пустой URL подписки.")
+		return
+	}
+	if b.nodeMgr == nil {
+		b.replyCommand(msg, "❌ Модуль управления нодами недоступен на этом сервере.")
+		return
+	}
+	if err := b.nodeMgr.AddSub(node, rawURL); err != nil {
+		b.replyCommand(msg, "❌ "+escapeHTML(err.Error()))
+		return
+	}
+	text := fmt.Sprintf("✅ <b>Подписка успешно назначена ноде <code>%s</code>!</b>\n\n"+
+		"URL: <code>%s</code>\n\n"+
+		"Нода применит её и начнёт проверку прокси при следующем отчёте.",
+		escapeHTML(node), escapeHTML(rawURL))
+	markup := tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn(fmt.Sprintf("📋 К подпискам %s", node), fmt.Sprintf("menu:nodes:subnode:%s", node)),
+		),
+		tu.InlineKeyboardRow(
+			btn("🔙 К списку нод", "menu:nodes:subs"),
+			btn("⚙️ Настройки нод", "menu:nodes:settings"),
+		),
+	)
+	t := targetFromMessage(msg)
+	b.sendOrUpdateMenu(t, text, markup)
 }
