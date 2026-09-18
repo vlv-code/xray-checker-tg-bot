@@ -107,3 +107,22 @@ func TestReconcileManagedLeavesUnmanagedDynamicAlone(t *testing.T) {
 		t.Errorf("no-op reconciliation must not reload, got %d", reloadCalls)
 	}
 }
+
+func TestReadFromMultipleSourcesDetailed_Empty(t *testing.T) {
+	cfgs, counts, err := ReadFromMultipleSourcesDetailed(nil)
+	if err != nil {
+		t.Fatalf("unexpected error for nil urls: %v", err)
+	}
+	if len(cfgs) != 0 || len(counts) != 0 {
+		t.Fatalf("expected empty configs and counts, got cfgs=%d, counts=%d", len(cfgs), len(counts))
+	}
+
+	cfgs, counts, err = ReadFromMultipleSourcesDetailed([]string{})
+	if err != nil {
+		t.Fatalf("unexpected error for empty urls: %v", err)
+	}
+	if len(cfgs) != 0 || len(counts) != 0 {
+		t.Fatalf("expected empty configs and counts, got cfgs=%d, counts=%d", len(cfgs), len(counts))
+	}
+}
+

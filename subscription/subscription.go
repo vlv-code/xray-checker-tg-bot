@@ -74,7 +74,7 @@ func ReadFromMultipleSources(urls []string) ([]*models.ProxyConfig, error) {
 
 func ReadFromMultipleSourcesDetailed(urls []string) ([]*models.ProxyConfig, map[string]int, error) {
 	if len(urls) == 0 {
-		return nil, nil, fmt.Errorf("no subscription URLs provided")
+		return []*models.ProxyConfig{}, make(map[string]int), nil
 	}
 
 	counts := make(map[string]int)

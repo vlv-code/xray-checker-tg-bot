@@ -125,7 +125,11 @@ func main() {
 		logger.Fatal("Error initializing configuration: %v", err)
 	}
 
-	logger.Info("Loaded %d proxy configurations", len(*proxyConfigs))
+	if len(*proxyConfigs) == 0 {
+		logger.Info("Loaded 0 proxy configurations (waiting for subscriptions)")
+	} else {
+		logger.Info("Loaded %d proxy configurations", len(*proxyConfigs))
+	}
 	if dynamicURLs := subURLStore.Dynamic(); len(dynamicURLs) > 0 {
 		logger.Info("%d subscription(s) previously added via the Telegram bot", len(dynamicURLs))
 	}

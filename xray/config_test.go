@@ -287,3 +287,9 @@ func TestGenerateWireGuardConfigBuild(t *testing.T) {
 		t.Error("expected a wireguard outbound")
 	}
 }
+
+func TestEmptyProxiesConfigBuilds(t *testing.T) {
+	buildsWithXrayCore(t, nil)
+	buildsWithXrayCore(t, []*models.ProxyConfig{})
+}
+
