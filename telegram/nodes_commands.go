@@ -138,7 +138,11 @@ func GenerateNodeToken() string {
 func (b *Bot) getMasterReportURL() string {
 	cfg := b.GetConfig()
 	if cfg.MasterPublicURL != "" {
-		return strings.TrimRight(cfg.MasterPublicURL, "/") + "/api/v1/nodes/report"
+		u := strings.TrimRight(cfg.MasterPublicURL, "/")
+		if !strings.HasSuffix(u, "/api/v1/nodes/report") {
+			u += "/api/v1/nodes/report"
+		}
+		return u
 	}
 	if b.diagSource != nil {
 		if ip, err := b.diagSource.GetCurrentIP(); err == nil && ip != "" {
@@ -158,20 +162,18 @@ func (b *Bot) handleNodeAdd(msg *telego.Message, rawName string) {
 		b.waitingNodeAdd[msg.Chat.ID] = true
 		b.waitingNodeAddMu.Unlock()
 		b.replyCommand(msg, "➕ <b>Подключение новой ноды</b>\n\n"+
-			"Как назвать новую ноду?\n"+
-			"Отправьте имя ноды ответным сообщением (латиница, цифры, дефис, например: <code>msk-1</code>, <code>vps-germany</code>).\n\n"+
-			"<i>Или выполните команду:</i> <code>/nodeadd &lt;имя_ноды&gt;</code>")
+			"Введите имя для новой ноды (например: <code>germany-1</code>, <code>vps-nl</code>, <code>finland-node</code>):\n\n"+
+			"<i>Допустимы латинские буквы, цифры, дефис и подчёркивание (до 32 символов).</i>")
 		return
 	}
 
 	if !validNodeName.MatchString(name) {
-		b.replyCommand(msg, "❌ <b>Некорректное имя ноды</b>\n"+
-			"Имя должно содержать только латинские буквы, цифры, дефис или подчёркивание (длина 1–32 символа, например: <code>msk-1</code>).")
+		b.replyCommand(msg, "❌ Недопустимое имя ноды. Используйте только латиницу, цифры, дефис и подчёркивание (от 1 до 32 символов).")
 		return
 	}
 
 	if b.nodeMgr == nil {
-		b.replyCommand(msg, "❌ Подсистема управления нодами не активна на мастере.")
+		b.replyCommand(msg, "❌ Модуль управления нодами недоступен на этом сервере.")
 		return
 	}
 
@@ -185,24 +187,26 @@ func (b *Bot) handleNodeAdd(msg *telego.Message, rawName string) {
 	text := fmt.Sprintf("✅ <b>Нода %s успешно зарегистрирована!</b>\n\n"+
 		"🔑 <b>Токен ноды:</b>\n<code>%s</code>\n\n"+
 		"🌐 <b>URL для отправки отчётов:</b>\n<code>%s</code>\n\n"+
-		"📦 <b>Команда запуска (Docker run):</b>\n"+
-		"<pre>docker run -d --name xray-node-%s \\\n"+
-		"  --restart unless-stopped \\\n"+
-		"  -e REPORT_URL=%s \\\n"+
-		"  -e REPORT_TOKEN=%s \\\n"+
-		"  ghcr.io/vlv-code/xray-checker-tg-bot:latest</pre>\n\n"+
-		"📋 <b>Блок для docker-compose.yml:</b>\n"+
-		"<pre>  xray-node-%s:\n"+
-		"    image: ghcr.io/vlv-code/xray-checker-tg-bot:latest\n"+
+		"📋 <b>Способ 1: через Docker Compose (рекомендуется):</b>\n"+
+		"<pre>services:\n"+
+		"  xray-node-%s:\n"+
+		"    build: https://github.com/vlv-code/xray-checker-tg-bot.git#main\n"+
 		"    container_name: xray-node-%s\n"+
 		"    restart: unless-stopped\n"+
 		"    environment:\n"+
 		"      - REPORT_URL=%s\n"+
 		"      - REPORT_TOKEN=%s</pre>\n\n"+
+		"📦 <b>Способ 2: через Docker run (однострочник):</b>\n"+
+		"<pre>docker run -d --name xray-node-%s \\\n"+
+		"  --restart unless-stopped \\\n"+
+		"  -e REPORT_URL=%s \\\n"+
+		"  -e REPORT_TOKEN=%s \\\n"+
+		"  ghcr.io/vlv-code/xray-checker-tg-bot:latest</pre>\n"+
+		"<i>(Если образ ещё не скачан: <code>docker build -t xray-checker-node https://github.com/vlv-code/xray-checker-tg-bot.git#main</code>)</i>\n\n"+
 		"<i>После запуска на удалённом сервере нода автоматически подключится к мастеру и появится в списке.</i>",
 		escapeHTML(name), token, reportURL,
-		escapeHTML(name), reportURL, token,
-		escapeHTML(name), escapeHTML(name), reportURL, token)
+		escapeHTML(name), escapeHTML(name), reportURL, token,
+		escapeHTML(name), reportURL, token)
 
 	markup := tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
