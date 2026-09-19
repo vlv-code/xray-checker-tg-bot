@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"xray-checker/checker"
 	"xray-checker/metrics"
 )
 
@@ -311,5 +312,57 @@ func TestRegistry_NodeSnapshot(t *testing.T) {
 	snap2 := reg.NodeSnapshot("n1")
 	if snap2[0].Name != "Proxy1" {
 		t.Errorf("NodeSnapshot did not return an isolated copy")
+	}
+}
+
+func TestRegistry_NodeDiagReports(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	if reports := reg.NodeDiagReports("n1"); reports != nil {
+		t.Fatalf("expected nil diag reports before report, got %v", reports)
+	}
+
+	h := reg.HandleReport()
+	postReport(t, h, "t1", ReportPayload{
+		Version: "1.0", CheckIntervalSec: 60, HostIP: "1.2.3.4",
+		Proxies: []ReportProxy{
+			{
+				StableID:  "p1",
+				Name:      "Proxy1",
+				Address:   "1.1.1.1:443",
+				Protocol:  "vless",
+				Online:    true,
+				LatencyMs: 50,
+				Verdict:   "Полностью исправен",
+				NodeHealth: &checker.NodeHealth{
+					ResolvedIP: "1.1.1.1",
+					TCPPing:    25 * time.Millisecond,
+				},
+				Targets: []checker.TargetDiagResult{
+					{URL: "https://cp.cloudflare.com/generate_204", Success: true, StatusCode: 204, Latency: 50 * time.Millisecond},
+				},
+			},
+		},
+	})
+
+	reports := reg.NodeDiagReports("n1")
+	if len(reports) != 1 {
+		t.Fatalf("expected 1 diag report, got %d", len(reports))
+	}
+	rep := reports[0]
+	if rep.ProxyName != "Proxy1" || rep.Verdict != "Полностью исправен" {
+		t.Errorf("bad diag report: %+v", rep)
+	}
+	if rep.NodeHealth.ResolvedIP != "1.1.1.1" || rep.NodeHealth.TCPPing != 25*time.Millisecond {
+		t.Errorf("bad node health: %+v", rep.NodeHealth)
+	}
+	if len(rep.Targets) != 1 || rep.Targets[0].StatusCode != 204 {
+		t.Errorf("bad targets: %+v", rep.Targets)
+	}
+
+	// Verify mutating returned slice does not mutate internal slice
+	reports[0].ProxyName = "Mutated"
+	reports2 := reg.NodeDiagReports("n1")
+	if reports2[0].ProxyName != "Proxy1" {
+		t.Errorf("NodeDiagReports did not return an isolated copy")
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/mymmrac/telego"
 
+	"xray-checker/checker"
 	"xray-checker/metrics"
 )
 
@@ -116,6 +117,10 @@ func (f *fakeNodeManager) RemoveNode(name string) error {
 }
 
 func (f *fakeNodeManager) NodeSnapshot(node string) []metrics.ProxyMetric {
+	return nil
+}
+
+func (f *fakeNodeManager) NodeDiagReports(node string) []checker.ProxyDiagReport {
 	return nil
 }
 

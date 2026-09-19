@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"xray-checker/checker"
 	"xray-checker/metrics"
 )
 
@@ -37,6 +38,10 @@ func (m *viewsTestNodeManager) RemoveNode(name string) error {
 }
 
 func (m *viewsTestNodeManager) NodeSnapshot(node string) []metrics.ProxyMetric {
+	return nil
+}
+
+func (m *viewsTestNodeManager) NodeDiagReports(node string) []checker.ProxyDiagReport {
 	return nil
 }
 

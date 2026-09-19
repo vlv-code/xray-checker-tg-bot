@@ -387,6 +387,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				} else {
 					reports = b.getNodeDiagnosticsReports(target)
 					asn = b.getNodeASN(target)
+					deepLinks = getDeepLinks(reports, 3)
 				}
 				if !b.isMsgSeqValid(chatID, msgID, seq) {
 					return
@@ -401,14 +402,11 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				summaryText := b.getDiagnosticsSummaryTextWithTarget(reports, target, asn)
 				b.editWithMarkup(chatID, msgID, summaryText, markup)
 			}()
-		} else if strings.HasPrefix(cb.Data, "menu:diag:details:") || strings.HasPrefix(cb.Data, "menu:diag:p:") {
+		} else if strings.HasPrefix(cb.Data, "menu:diag:details:") || cb.Data == "menu:diag:details" {
+			rest := strings.TrimPrefix(cb.Data, "menu:diag:details:")
 			target := "local"
 			page := 1
-			if strings.HasPrefix(cb.Data, "menu:diag:p:") {
-				pageStr := strings.TrimPrefix(cb.Data, "menu:diag:p:")
-				page, _ = strconv.Atoi(pageStr)
-			} else {
-				rest := strings.TrimPrefix(cb.Data, "menu:diag:details:")
+			if cb.Data != "menu:diag:details" && rest != "" {
 				parts := strings.Split(rest, ":")
 				if len(parts) == 1 {
 					if p, err := strconv.Atoi(parts[0]); err == nil {
@@ -449,15 +447,34 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			tabs := b.getNodeTabs("")
 			b.editWithMarkup(chatID, msgID, b.getIncidentsTextFiltered(filter), IncidentsFilterMarkup(filter, tabs))
 		} else if strings.HasPrefix(cb.Data, "menu:diag:pick_deep:") {
-			pageStr := strings.TrimPrefix(cb.Data, "menu:diag:pick_deep:")
-			page, _ := strconv.Atoi(pageStr)
+			rest := strings.TrimPrefix(cb.Data, "menu:diag:pick_deep:")
+			target := "local"
+			page := 1
+			parts := strings.Split(rest, ":")
+			if len(parts) == 1 {
+				if p, err := strconv.Atoi(parts[0]); err == nil {
+					page = p
+				} else {
+					target = parts[0]
+				}
+			} else if len(parts) >= 2 {
+				target = parts[0]
+				page, _ = strconv.Atoi(parts[1])
+			}
 			if page <= 0 {
 				page = 1
 			}
-			reports := b.getCachedDiagnosticsReports()
-			if len(reports) == 0 {
-				reports = b.getDiagnosticsReports(false)
+
+			var reports []checker.ProxyDiagReport
+			if target == "local" || target == "" {
+				reports = b.getCachedDiagnosticsReports()
+				if len(reports) == 0 {
+					reports = b.getDiagnosticsReports(false)
+				}
+			} else {
+				reports = b.getNodeDiagnosticsReports(target)
 			}
+
 			pageSize := diagPageSize
 			if b.isRichMode() {
 				pageSize = diagRichDetailsPageSize
@@ -473,7 +490,8 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			pageReports := reports[start:end]
 			text := "🔬 <b>Углубленная проверка соединения</b>\n\n" +
 				"Выберите прокси-хост для глубокого тестирования сетевых этапов (DNS, TCP, TLS, HTTP-мишени, Check-Host):"
-			markup := PickDeepDiagnosticsMarkup(pageReports, page)
+			tabs := b.getNodeTabs(target)
+			markup := PickDeepDiagnosticsMarkupWithTabs(target, tabs, pageReports, page)
 			b.editWithMarkup(chatID, msgID, text, markup)
 		} else if strings.HasPrefix(cb.Data, "menu:diag:deep:") {
 			rest := strings.TrimPrefix(cb.Data, "menu:diag:deep:")
@@ -510,6 +528,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 					} else {
 						reports = b.getNodeDiagnosticsReports(target)
 						asn = b.getNodeASN(target)
+						deepLinks = getDeepLinks(reports, 3)
 					}
 					if !b.isMsgSeqValid(chatID, msgID, seq) {
 						return

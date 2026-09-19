@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"xray-checker/checker"
 	"xray-checker/metrics"
 )
 
@@ -234,5 +235,188 @@ func TestGetNodeDiagnosticsReports_FromNodeManager(t *testing.T) {
 	}
 	if reports[1].ProxyName != "RemoteProxy1" || reports[1].Status != "online" {
 		t.Errorf("expected online RemoteProxy1 second, got: %+v", reports[1])
+	}
+}
+
+type mockNodeDiagManager struct {
+	viewsTestNodeManager
+	diagReports map[string][]checker.ProxyDiagReport
+}
+
+func (m *mockNodeDiagManager) NodeDiagReports(node string) []checker.ProxyDiagReport {
+	return m.diagReports[node]
+}
+
+func TestGetNodeDiagnosticsReports_FullDiagnostics(t *testing.T) {
+	mgr := &mockNodeDiagManager{
+		diagReports: map[string][]checker.ProxyDiagReport{
+			"m31a": {
+				{
+					ProxyName: "RemoteProxy1",
+					Protocol:  "vless",
+					Server:    "2.2.2.2",
+					Port:      443,
+					StableID:  "node1",
+					Status:    "online",
+					Verdict:   "Полностью исправен",
+					NodeHealth: checker.NodeHealth{
+						ResolvedIP: "2.2.2.2",
+						DNSLatency: 10 * time.Millisecond,
+						TCPPing:    35 * time.Millisecond,
+					},
+					Targets: []checker.TargetDiagResult{
+						{URL: "https://cp.cloudflare.com/generate_204", Success: true, StatusCode: 204, Latency: 120 * time.Millisecond},
+						{URL: "https://www.gstatic.com/generate_204", Success: true, StatusCode: 204, Latency: 135 * time.Millisecond},
+					},
+				},
+			},
+		},
+	}
+	b := &Bot{}
+	b.SetNodeManager(mgr)
+
+	reports := b.getNodeDiagnosticsReports("m31a")
+	if len(reports) != 1 {
+		t.Fatalf("expected 1 report, got %d", len(reports))
+	}
+	rep := reports[0]
+	if rep.ProxyName != "RemoteProxy1" || rep.Verdict != "Полностью исправен" {
+		t.Errorf("unexpected report: %+v", rep)
+	}
+	if rep.NodeHealth.ResolvedIP != "2.2.2.2" || rep.NodeHealth.TCPPing != 35*time.Millisecond {
+		t.Errorf("NodeHealth lost: %+v", rep.NodeHealth)
+	}
+	if len(rep.Targets) != 2 {
+		t.Errorf("expected 2 targets, got %d", len(rep.Targets))
+	}
+
+	pageText, _ := b.getDiagnosticsPageTextWithTarget(reports, "m31a", 1)
+	if !strings.Contains(pageText, "DNS:") || !strings.Contains(pageText, "2.2.2.2") {
+		t.Errorf("expected DNS info in page text, got:\n%s", pageText)
+	}
+	if !strings.Contains(pageText, "TCP (443):") {
+		t.Errorf("expected TCP info in page text, got:\n%s", pageText)
+	}
+	if !strings.Contains(pageText, "Cloudflare 204:") || !strings.Contains(pageText, "Google 204:") {
+		t.Errorf("expected multi-target info in page text, got:\n%s", pageText)
+	}
+}
+
+func TestPickDeepDiagnosticsMarkupWithTabs(t *testing.T) {
+	tabs := []NodeTabItem{
+		{ID: "local", Label: "🏠 Мастер", Status: "14/15", IsActive: false},
+		{ID: "m31a", Label: "🖥 m31a", Status: "17/17", IsActive: true},
+	}
+	reports := []checker.ProxyDiagReport{
+		{ProxyName: "RemoteProxy1", StableID: "m31a/rem1", Status: "online"},
+	}
+
+	markup := PickDeepDiagnosticsMarkupWithTabs("m31a", tabs, reports, 2)
+	if len(markup.InlineKeyboard) < 3 {
+		t.Fatalf("expected at least 3 rows (tabs, proxy, back), got %d", len(markup.InlineKeyboard))
+	}
+
+	// Tabs row
+	tabRow := markup.InlineKeyboard[0]
+	if len(tabRow) != 2 {
+		t.Fatalf("expected 2 tab buttons, got %d", len(tabRow))
+	}
+	if tabRow[0].CallbackData != "menu:diag:pick_deep:local:1" {
+		t.Errorf("expected tab callback menu:diag:pick_deep:local:1, got %s", tabRow[0].CallbackData)
+	}
+	if tabRow[1].CallbackData != "menu:diag:pick_deep:m31a:1" {
+		t.Errorf("expected tab callback menu:diag:pick_deep:m31a:1, got %s", tabRow[1].CallbackData)
+	}
+	if !strings.Contains(tabRow[1].Text, "• 🖥 m31a") {
+		t.Errorf("expected active marker on m31a tab, got %s", tabRow[1].Text)
+	}
+
+	// Proxy button
+	proxyRow := markup.InlineKeyboard[1]
+	if len(proxyRow) != 1 || proxyRow[0].CallbackData != "menu:diag:deep:m31a/rem1:2" {
+		t.Errorf("unexpected proxy button callback: %v", proxyRow)
+	}
+
+	// Back button returns to m31a detailed report
+	backRow := markup.InlineKeyboard[2]
+	if len(backRow) != 1 || backRow[0].CallbackData != "menu:diag:details:m31a:2" {
+		t.Errorf("expected back button callback menu:diag:details:m31a:2, got %v", backRow)
+	}
+}
+
+func TestDiagnosticsPaginationMarkupWithTabs_NodeDeepButton(t *testing.T) {
+	tabs := []NodeTabItem{
+		{ID: "local", Label: "🏠 Мастер", Status: "14/15", IsActive: false},
+		{ID: "m31a", Label: "🖥 m31a", Status: "17/17", IsActive: true},
+	}
+
+	markup := DiagnosticsPaginationMarkupWithTabs("m31a", 1, 2, tabs)
+
+	// Search for deep diagnostics button
+	found := false
+	for _, row := range markup.InlineKeyboard {
+		for _, btn := range row {
+			if strings.Contains(btn.Text, "Углубленная проверка") {
+				found = true
+				if btn.CallbackData != "menu:diag:pick_deep:m31a:1" {
+					t.Errorf("expected callback 'menu:diag:pick_deep:m31a:1', got %q", btn.CallbackData)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected deep diagnostics button on node detailed report page, but it was missing")
+	}
+}
+
+func TestDeepDiagnosticsMarkup_NodeReturn(t *testing.T) {
+	markup := DeepDiagnosticsMarkup("m31a/p1", 2)
+	backBtn := markup.InlineKeyboard[0][0]
+	if backBtn.CallbackData != "menu:diag:details:m31a:2" {
+		t.Errorf("expected back button to return to node detailed report 'menu:diag:details:m31a:2', got %s", backBtn.CallbackData)
+	}
+}
+
+func TestFormatDeepDiagnostics_NodeContext(t *testing.T) {
+	b := &Bot{}
+	pm := metrics.ProxyMetric{
+		Name:     "NodeProxy",
+		Address:  "2.2.2.2:443",
+		Protocol: "vless",
+		NodeName: "m31a",
+		NodeASN:  "AS12345 Test ISP",
+		Online:   true,
+	}
+	health := checker.NodeHealth{
+		ResolvedIP: "2.2.2.2",
+		DNSLatency: 15 * time.Millisecond,
+		TCPPing:    45 * time.Millisecond,
+	}
+
+	text := b.formatDeepDiagnostics(pm, health, nil)
+	if !strings.Contains(text, "🖥 [m31a] NodeProxy") {
+		t.Errorf("expected node tag in deep diagnostics title, got:\n%s", text)
+	}
+	if !strings.Contains(text, "🖥 Нода m31a (AS12345 Test ISP)") {
+		t.Errorf("expected node ASN in deep diagnostics, got:\n%s", text)
+	}
+}
+
+func TestDeepLinks_NodeReports(t *testing.T) {
+	reports := []checker.ProxyDiagReport{
+		{ProxyName: "OnlineProxy", StableID: "m31a/p1", Status: "online"},
+		{ProxyName: "OfflineProxy", StableID: "m31a/p2", Status: "offline"},
+		{ProxyName: "DegradedProxy", StableID: "m31a/p3", Status: "degraded"},
+	}
+
+	links := getDeepLinks(reports, 3)
+	if len(links) != 2 {
+		t.Fatalf("expected 2 deep links for offline/degraded node proxies, got %d", len(links))
+	}
+	if links[0].Name != "OfflineProxy" || links[0].StableID != "m31a/p2" {
+		t.Errorf("unexpected link 0: %+v", links[0])
+	}
+	if links[1].Name != "DegradedProxy" || links[1].StableID != "m31a/p3" {
+		t.Errorf("unexpected link 1: %+v", links[1])
 	}
 }

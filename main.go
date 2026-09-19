@@ -331,8 +331,16 @@ func main() {
 					checkSchedulerMu.Lock()
 					interval := config.CLIConfig.Proxy.CheckInterval
 					checkSchedulerMu.Unlock()
-					payload := nodes.BuildReport(
-						proxyChecker.MetricsSnapshot(), version, interval,
+					targets := []string{
+						"https://cp.cloudflare.com/generate_204",
+						"https://www.gstatic.com/generate_204",
+					}
+					if tm := proxyChecker.GetTargetManager(); tm != nil && len(tm.GetTargets()) > 0 {
+						targets = tm.GetTargets()
+					}
+					diagReports := proxyChecker.RunDiagnostics(targets)
+					payload := nodes.BuildReportFromDiagWithMetrics(
+						diagReports, proxyChecker.MetricsSnapshot(), version, interval,
 						config.CLIConfig.Proxy.CheckMethod, hostIP,
 					)
 					desired, err := reporter.Send(payload)

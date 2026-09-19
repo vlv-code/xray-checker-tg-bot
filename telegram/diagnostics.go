@@ -71,6 +71,13 @@ func (b *Bot) getDiagnosticsReports(force bool) []checker.ProxyDiagReport {
 
 // getNodeDiagnosticsReports converts metrics for a specific remote node into ProxyDiagReport slice.
 func (b *Bot) getNodeDiagnosticsReports(nodeName string) []checker.ProxyDiagReport {
+	if b.nodeMgr != nil {
+		if diag := b.nodeMgr.NodeDiagReports(nodeName); len(diag) > 0 {
+			b.sortDiagnosticsReports(diag)
+			return diag
+		}
+	}
+
 	var snapshot []metrics.ProxyMetric
 	if b.nodeMgr != nil {
 		snapshot = b.nodeMgr.NodeSnapshot(nodeName)
@@ -594,7 +601,18 @@ func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeH
 		transport = "Reality / TCP"
 	}
 
-	fmt.Fprintf(&sb, "🔬 <b>Углублённая проверка — %s</b>\n\n", escapeHTML(pm.Name))
+	if pm.NodeName != "" {
+		fmt.Fprintf(&sb, "🔬 <b>Углублённая проверка — 🖥 [%s] %s</b>\n\n", escapeHTML(pm.NodeName), escapeHTML(pm.Name))
+	} else {
+		fmt.Fprintf(&sb, "🔬 <b>Углублённая проверка — %s</b>\n\n", escapeHTML(pm.Name))
+	}
+	if pm.NodeName != "" {
+		nodeInfo := fmt.Sprintf("🖥 Нода %s", pm.NodeName)
+		if pm.NodeASN != "" {
+			nodeInfo += fmt.Sprintf(" (%s)", pm.NodeASN)
+		}
+		fmt.Fprintf(&sb, "<b>УЗЕЛ:</b>      %s\n", escapeHTML(nodeInfo))
+	}
 	fmt.Fprintf(&sb, "<b>ПРОТОКОЛ:</b>  %s\n", proto)
 	fmt.Fprintf(&sb, "<b>ТРАНСПОРТ:</b> %s\n", transport)
 	fmt.Fprintf(&sb, "<b>АДРЕС:</b>     %s\n\n", escapeHTML(pm.Address))
@@ -769,13 +787,32 @@ func (b *Bot) handleDeepDiagnostics(chatID int64, msgID int, stableID string, pa
 			}
 		}
 
+		nodeName := targetMetric.NodeName
+		if nodeName == "" && strings.Contains(stableID, "/") {
+			nodeName = strings.Split(stableID, "/")[0]
+		}
+
 		// Also find report from cached or run diagnostics
-		reports := b.getDiagnosticsReports(false)
 		var rep *checker.ProxyDiagReport
-		for i := range reports {
-			if reports[i].StableID == stableID {
-				rep = &reports[i]
-				break
+		if nodeName != "" {
+			nodeReports := b.getNodeDiagnosticsReports(nodeName)
+			rawID := stableID
+			if strings.Contains(stableID, "/") {
+				rawID = strings.SplitN(stableID, "/", 2)[1]
+			}
+			for i := range nodeReports {
+				if nodeReports[i].StableID == stableID || nodeReports[i].StableID == rawID || nodeName+"/"+nodeReports[i].StableID == stableID {
+					rep = &nodeReports[i]
+					break
+				}
+			}
+		} else {
+			reports := b.getDiagnosticsReports(false)
+			for i := range reports {
+				if reports[i].StableID == stableID {
+					rep = &reports[i]
+					break
+				}
 			}
 		}
 
@@ -787,6 +824,7 @@ func (b *Bot) handleDeepDiagnostics(chatID int64, msgID int, stableID string, pa
 				StableID:  rep.StableID,
 				Online:    rep.Status == "online",
 				LatencyMs: float64(rep.NodeHealth.TCPPing.Milliseconds()),
+				NodeName:  nodeName,
 			}
 			found = true
 		}
@@ -807,8 +845,8 @@ func (b *Bot) handleDeepDiagnostics(chatID int64, msgID int, stableID string, pa
 			ch = rep.CheckHost
 		}
 
-		// If health is empty, do a direct probe
-		if health.ResolvedIP == "" && health.TCPPing == 0 && health.UDPPing == 0 {
+		// If health is empty and proxy is local, do a direct probe
+		if health.ResolvedIP == "" && health.TCPPing == 0 && health.UDPPing == 0 && nodeName == "" {
 			host, portStr, _ := net.SplitHostPort(targetMetric.Address)
 			port, _ := strconv.Atoi(portStr)
 			health = checker.ProbeNodeHealth(host, port, targetMetric.Protocol, "", "", false)

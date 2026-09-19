@@ -705,9 +705,17 @@ func DeepDiagnosticsMarkup(stableID string, page ...int) *telego.InlineKeyboardM
 	if len(page) > 0 && page[0] > 0 {
 		curPage = page[0]
 	}
+	backTarget := ""
+	if strings.Contains(stableID, "/") {
+		backTarget = strings.Split(stableID, "/")[0]
+	}
+	backCb := fmt.Sprintf("menu:diag:details:%d", curPage)
+	if backTarget != "" && backTarget != "local" {
+		backCb = fmt.Sprintf("menu:diag:details:%s:%d", backTarget, curPage)
+	}
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🔙 К детальному отчёту", fmt.Sprintf("menu:diag:details:%d", curPage)),
+			btn("🔙 К детальному отчёту", backCb),
 			btn("🔄 Перепроверить", fmt.Sprintf("menu:diag:deep:%s:%d", stableID, curPage)),
 		),
 		tu.InlineKeyboardRow(
@@ -718,7 +726,27 @@ func DeepDiagnosticsMarkup(stableID string, page ...int) *telego.InlineKeyboardM
 
 // PickDeepDiagnosticsMarkup returns keyboard to select any proxy for deep diagnostics.
 func PickDeepDiagnosticsMarkup(reports []checker.ProxyDiagReport, page int) *telego.InlineKeyboardMarkup {
+	return PickDeepDiagnosticsMarkupWithTabs("local", nil, reports, page)
+}
+
+// PickDeepDiagnosticsMarkupWithTabs returns keyboard with node tabs to select any proxy for deep diagnostics.
+func PickDeepDiagnosticsMarkupWithTabs(target string, tabs []NodeTabItem, reports []checker.ProxyDiagReport, page int) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
+	if len(tabs) > 1 {
+		var tabButtons []telego.InlineKeyboardButton
+		for _, t := range tabs {
+			title := t.Label
+			if t.Status != "" {
+				title += fmt.Sprintf(" (%s)", t.Status)
+			}
+			if t.IsActive {
+				title = fmt.Sprintf("• %s •", title)
+			}
+			tabButtons = append(tabButtons, btn(title, fmt.Sprintf("menu:diag:pick_deep:%s:1", t.ID)))
+		}
+		rows = append(rows, tabButtons)
+	}
+
 	for _, rep := range reports {
 		icon := "🟢"
 		switch rep.Status {
@@ -734,8 +762,17 @@ func PickDeepDiagnosticsMarkup(reports []checker.ProxyDiagReport, page int) *tel
 			btn(btnText, fmt.Sprintf("menu:diag:deep:%s:%d", rep.StableID, page)),
 		))
 	}
+
+	backTarget := target
+	if backTarget == "" {
+		backTarget = "local"
+	}
+	backCb := fmt.Sprintf("menu:diag:details:%s:%d", backTarget, page)
+	if backTarget == "local" {
+		backCb = fmt.Sprintf("menu:diag:details:%d", page)
+	}
 	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔙 К детальному отчёту", fmt.Sprintf("menu:diag:details:%d", page)),
+		btn("🔙 К детальному отчёту", backCb),
 	))
 	return tu.InlineKeyboard(rows...)
 }
@@ -863,12 +900,14 @@ func DiagnosticsPaginationMarkupWithTabs(target string, page, totalPages int, ta
 		))
 	}
 
-	// Trigger deep connection diagnostics on any proxy from this page (only for local target)
+	// Trigger deep connection diagnostics on any proxy from this page
+	pickDeepCb := fmt.Sprintf("menu:diag:pick_deep:%s:%d", target, page)
 	if target == "local" || target == "" {
-		rows = append(rows, tu.InlineKeyboardRow(
-			btn("🔬 Углубленная проверка соединения", fmt.Sprintf("menu:diag:pick_deep:%d", page)),
-		))
+		pickDeepCb = fmt.Sprintf("menu:diag:pick_deep:%d", page)
 	}
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("🔬 Углубленная проверка соединения", pickDeepCb),
+	))
 
 	// Action row: Back to Detailed Summary + Refresh current page
 	backSummaryCb := "menu:diag"

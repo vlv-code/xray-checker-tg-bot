@@ -1,8 +1,11 @@
 package nodes
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 
+	"xray-checker/checker"
 	"xray-checker/metrics"
 )
 
@@ -52,5 +55,104 @@ func TestMapReportDisabledPassthrough(t *testing.T) {
 	out := ProxyMetricsFromReport("n1", "", payload)
 	if !out[0].Disabled {
 		t.Error("Disabled must pass through for the grace/alert-cleanup path")
+	}
+}
+
+func TestBuildReportFromDiag(t *testing.T) {
+	reports := []checker.ProxyDiagReport{
+		{
+			ProxyName: "de-01",
+			Protocol:  "vless",
+			Server:    "host.example",
+			Port:      443,
+			StableID:  "a1b2c3",
+			Status:    "online",
+			Verdict:   "Полностью исправен",
+			NodeHealth: checker.NodeHealth{
+				ResolvedIP: "1.2.3.4",
+				DNSLatency: 15 * time.Millisecond,
+				TCPPing:    45 * time.Millisecond,
+				TLSLatency: 60 * time.Millisecond,
+			},
+			Targets: []checker.TargetDiagResult{
+				{URL: "https://cp.cloudflare.com/generate_204", Success: true, StatusCode: 204, Latency: 110 * time.Millisecond},
+				{URL: "https://www.gstatic.com/generate_204", Success: true, StatusCode: 204, Latency: 125 * time.Millisecond},
+			},
+		},
+	}
+
+	payload := BuildReportFromDiag(reports, "1.2.3", 300, "multi", "203.0.113.7")
+	if len(payload.Proxies) != 1 {
+		t.Fatalf("want 1 proxy, got %d", len(payload.Proxies))
+	}
+	rp := payload.Proxies[0]
+	if rp.Name != "de-01" || rp.StableID != "a1b2c3" || !rp.Online || rp.LatencyMs != 110 {
+		t.Errorf("bad proxy summary: %+v", rp)
+	}
+	if rp.NodeHealth == nil || rp.NodeHealth.ResolvedIP != "1.2.3.4" || rp.NodeHealth.TCPPing != 45*time.Millisecond {
+		t.Errorf("bad node health: %+v", rp.NodeHealth)
+	}
+	if len(rp.Targets) != 2 || rp.Targets[0].StatusCode != 204 {
+		t.Errorf("bad targets: %+v", rp.Targets)
+	}
+	if rp.Verdict != "Полностью исправен" {
+		t.Errorf("bad verdict: %s", rp.Verdict)
+	}
+
+	// Test JSON serialization roundtrip
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	var decoded ReportPayload
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if decoded.Proxies[0].NodeHealth == nil || decoded.Proxies[0].NodeHealth.ResolvedIP != "1.2.3.4" {
+		t.Errorf("decoded NodeHealth corrupted: %+v", decoded.Proxies[0].NodeHealth)
+	}
+	if len(decoded.Proxies[0].Targets) != 2 {
+		t.Errorf("decoded Targets corrupted: %+v", decoded.Proxies[0].Targets)
+	}
+}
+
+func TestBuildReportFromDiagWithMetrics(t *testing.T) {
+	reports := []checker.ProxyDiagReport{
+		{
+			ProxyName: "proxy1",
+			StableID:  "sid-1",
+			Protocol:  "vless",
+			Server:    "example.com",
+			Port:      443,
+			Status:    "online",
+			Verdict:   "OK",
+		},
+	}
+	snap := []metrics.ProxyMetric{
+		{
+			StableID:          "sid-1",
+			SubName:           "Premium Sub",
+			GroupName:         "Europe",
+			LastErrorCategory: 1,
+			LastCheckSec:      1700000000,
+		},
+	}
+
+	payload := BuildReportFromDiagWithMetrics(reports, snap, "1.0", 60, "connect", "1.1.1.1")
+	if len(payload.Proxies) != 1 {
+		t.Fatalf("expected 1 proxy, got %d", len(payload.Proxies))
+	}
+	rp := payload.Proxies[0]
+	if rp.SubName != "Premium Sub" {
+		t.Errorf("expected SubName 'Premium Sub', got %q", rp.SubName)
+	}
+	if rp.GroupName != "Europe" {
+		t.Errorf("expected GroupName 'Europe', got %q", rp.GroupName)
+	}
+	if rp.LastErrorCategory != 1 {
+		t.Errorf("expected LastErrorCategory 1, got %d", rp.LastErrorCategory)
+	}
+	if rp.LastCheck != 1700000000 {
+		t.Errorf("expected LastCheck 1700000000, got %d", rp.LastCheck)
 	}
 }

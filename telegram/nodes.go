@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"xray-checker/checker"
 	"xray-checker/metrics"
 )
 
@@ -48,6 +49,8 @@ type NodeManager interface {
 	RemoveNode(name string) error
 	// NodeSnapshot returns a snapshot of proxy metrics for the given node.
 	NodeSnapshot(node string) []metrics.ProxyMetric
+	// NodeDiagReports returns full diagnostic reports for the given node.
+	NodeDiagReports(node string) []checker.ProxyDiagReport
 }
 
 // nodeHealthState tracks what the alert loop knows about a node. alerted

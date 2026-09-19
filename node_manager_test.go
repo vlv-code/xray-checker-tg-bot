@@ -49,6 +49,25 @@ func TestNodeManagerAdapter(t *testing.T) {
 	if snap := a.NodeSnapshot("n1"); snap != nil {
 		t.Fatalf("expected nil snapshot initially, got %v", snap)
 	}
+	if diag := a.NodeDiagReports("n1"); diag != nil {
+		t.Fatalf("expected nil diag reports initially, got %v", diag)
+	}
+
+	// When node reports diagnostics, a.NodeDiagReports returns them
+	h := reg.HandleReport()
+	body := []byte(`{"version":"1.0","checkIntervalSec":60,"proxies":[{"stableID":"rem1","name":"NodeProxy","online":true,"verdict":"OK","targets":[{"url":"https://cp.cloudflare.com/generate_204","online":true,"latencyMs":45}]}]}`)
+	req, _ := http.NewRequest("POST", "/api/v1/nodes/report", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer t")
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	diags := a.NodeDiagReports("n1")
+	if len(diags) != 1 {
+		t.Fatalf("expected 1 diag report, got %d", len(diags))
+	}
+	if diags[0].ProxyName != "NodeProxy" || diags[0].Verdict != "OK" || len(diags[0].Targets) != 1 {
+		t.Fatalf("unexpected diag report: %+v", diags[0])
+	}
 }
 
 func TestMergedMetricsSource(t *testing.T) {

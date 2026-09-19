@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"xray-checker/checker"
 	"xray-checker/logger"
 	"xray-checker/metrics"
 )
@@ -43,6 +44,7 @@ type nodeState struct {
 	hostIP       string
 	asn          string
 	snapshot     []metrics.ProxyMetric
+	diagReports  []checker.ProxyDiagReport
 	gracePending bool // emit last snapshot with Disabled=true exactly once
 }
 
@@ -215,6 +217,7 @@ func (r *Registry) HandleReport() http.HandlerFunc {
 			asn = r.asn(payload.HostIP)
 		}
 		snap := ProxyMetricsFromReport(name, asn, payload)
+		diag := ProxyDiagReportsFromReport(payload)
 
 		r.mu.Lock()
 		st := r.nodes[name]
@@ -225,6 +228,7 @@ func (r *Registry) HandleReport() http.HandlerFunc {
 		st.hostIP = payload.HostIP
 		st.asn = asn
 		st.snapshot = snap
+		st.diagReports = diag
 		st.gracePending = false
 		cb := r.onUpdate
 		r.mu.Unlock()
@@ -320,6 +324,20 @@ func (r *Registry) NodeSnapshot(name string) []metrics.ProxyMetric {
 	}
 	out := make([]metrics.ProxyMetric, len(st.snapshot))
 	copy(out, st.snapshot)
+	return out
+}
+
+// NodeDiagReports returns a copy of the latest diagnostic reports reported by the specified node.
+// Returns nil if the node does not exist or has never reported any diagnostic reports.
+func (r *Registry) NodeDiagReports(name string) []checker.ProxyDiagReport {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	st, ok := r.nodes[name]
+	if !ok || len(st.diagReports) == 0 {
+		return nil
+	}
+	out := make([]checker.ProxyDiagReport, len(st.diagReports))
+	copy(out, st.diagReports)
 	return out
 }
 
