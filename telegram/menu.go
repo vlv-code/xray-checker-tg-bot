@@ -752,24 +752,172 @@ func CheckHostResultMarkup() *telego.InlineKeyboardMarkup {
 
 // RichReportMarkup returns buttons under the Level 1 detailed summary report.
 func RichReportMarkup(deepLinks ...DiagDeepLink) *telego.InlineKeyboardMarkup {
+	return RichReportMarkupWithTabs("local", nil, deepLinks...)
+}
+
+// NodeTabItem describes one tab in multi-node navigation.
+type NodeTabItem struct {
+	ID       string // "local" or node name
+	Label    string // e.g. "🏠 Мастер" or "🖥 m31a"
+	Status   string // e.g. "14/15" or "⚠️ 14/17"
+	IsActive bool
+}
+
+// RichReportMarkupWithTabs returns buttons under the Level 1 detailed summary report with node tabs.
+func RichReportMarkupWithTabs(target string, tabs []NodeTabItem, deepLinks ...DiagDeepLink) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
 
-	// Primary action: Drill down into paginated detailed report
+	// Tab bar row (if multiple tabs exist)
+	if len(tabs) > 1 {
+		var tabButtons []telego.InlineKeyboardButton
+		for _, t := range tabs {
+			title := t.Label
+			if t.Status != "" {
+				title += fmt.Sprintf(" (%s)", t.Status)
+			}
+			if t.IsActive {
+				title = "• " + title + " •"
+			}
+			tabButtons = append(tabButtons, btn(title, fmt.Sprintf("menu:diag:node:%s", t.ID)))
+		}
+		rows = append(rows, tabButtons)
+	}
+
+	// Primary action: Drill down into paginated detailed report for target
+	detailsCallback := fmt.Sprintf("menu:diag:details:%s:1", target)
+	if target == "local" || target == "" {
+		detailsCallback = "menu:diag:details:1"
+	}
 	rows = append(rows, tu.InlineKeyboardRow(
-		btn("📑 Детальный отчёт", "menu:diag:details:1"),
+		btn("📑 Детальный отчёт", detailsCallback),
 	))
 
-	// Quick deep links for problematic proxies if any
-	for _, dl := range deepLinks {
-		rows = append(rows, tu.InlineKeyboardRow(
-			btn(fmt.Sprintf("🔬 Углублённая: %s", truncateButtonText(dl.Name, 24)), fmt.Sprintf("menu:diag:deep:%s:1", dl.StableID)),
-		))
+	// Quick deep links for problematic proxies (only for local target where deep engine runs)
+	if target == "local" || target == "" {
+		for _, dl := range deepLinks {
+			rows = append(rows, tu.InlineKeyboardRow(
+				btn(fmt.Sprintf("🔬 Углублённая: %s", truncateButtonText(dl.Name, 24)), fmt.Sprintf("menu:diag:deep:%s:1", dl.StableID)),
+			))
+		}
 	}
 
 	// Refresh and navigation
+	refreshCallback := fmt.Sprintf("menu:diag:refresh:%s", target)
+	if target == "local" || target == "" {
+		refreshCallback = "menu:diag:refresh:summary"
+	}
 	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔄 Обновить", "menu:diag:refresh:summary"),
+		btn("🔄 Обновить", refreshCallback),
 		btn("🔙 Главное меню", "menu:main"),
+	))
+
+	return tu.InlineKeyboard(rows...)
+}
+
+// DiagnosticsPaginationMarkupWithTabs returns paginated navigation for detailed report with node tabs.
+func DiagnosticsPaginationMarkupWithTabs(target string, page, totalPages int, tabs []NodeTabItem) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+
+	// Tab bar row (if multiple tabs exist)
+	if len(tabs) > 1 {
+		var tabButtons []telego.InlineKeyboardButton
+		for _, t := range tabs {
+			title := t.Label
+			if t.IsActive {
+				title = "• " + title + " •"
+			}
+			cb := fmt.Sprintf("menu:diag:details:%s:1", t.ID)
+			tabButtons = append(tabButtons, btn(title, cb))
+		}
+		rows = append(rows, tabButtons)
+	}
+
+	// Pagination row if more than 1 page
+	if totalPages > 1 {
+		var prevBtn telego.InlineKeyboardButton
+		if page > 1 {
+			prevCb := fmt.Sprintf("menu:diag:details:%s:%d", target, page-1)
+			if target == "local" || target == "" {
+				prevCb = fmt.Sprintf("menu:diag:details:%d", page-1)
+			}
+			prevBtn = btn("⬅️ Пред", prevCb)
+		} else {
+			prevBtn = btn("·", "menu:noop")
+		}
+
+		var nextBtn telego.InlineKeyboardButton
+		if page < totalPages {
+			nextCb := fmt.Sprintf("menu:diag:details:%s:%d", target, page+1)
+			if target == "local" || target == "" {
+				nextCb = fmt.Sprintf("menu:diag:details:%d", page+1)
+			}
+			nextBtn = btn("След ➡️", nextCb)
+		} else {
+			nextBtn = btn("·", "menu:noop")
+		}
+
+		rows = append(rows, tu.InlineKeyboardRow(
+			prevBtn,
+			btn(fmt.Sprintf("%d / %d", page, totalPages), fmt.Sprintf("menu:diag:noop:%d:%d", page, totalPages)),
+			nextBtn,
+		))
+	}
+
+	// Trigger deep connection diagnostics on any proxy from this page (only for local target)
+	if target == "local" || target == "" {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("🔬 Углубленная проверка соединения", fmt.Sprintf("menu:diag:pick_deep:%d", page)),
+		))
+	}
+
+	// Action row: Back to Detailed Summary + Refresh current page
+	backSummaryCb := "menu:diag"
+	if target != "local" && target != "" {
+		backSummaryCb = fmt.Sprintf("menu:diag:node:%s", target)
+	}
+	refreshPageCb := fmt.Sprintf("menu:diag:refresh:details:%s:%d", target, page)
+	if target == "local" || target == "" {
+		refreshPageCb = fmt.Sprintf("menu:diag:refresh:details:%d", page)
+	}
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("🔙 К подробной сводке", backSummaryCb),
+		btn("🔄 Обновить", refreshPageCb),
+	))
+
+	// Back row
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("🏠 Главное меню", "menu:main"),
+	))
+
+	return tu.InlineKeyboard(rows...)
+}
+
+// IncidentsFilterMarkup returns controls for filtering the incident log by check point.
+func IncidentsFilterMarkup(currentFilter string, tabs []NodeTabItem) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+
+	if len(tabs) > 1 {
+		var filterButtons []telego.InlineKeyboardButton
+		// "All" button
+		allTitle := "Все"
+		if currentFilter == "" || currentFilter == "all" {
+			allTitle = "• Все •"
+		}
+		filterButtons = append(filterButtons, btn(allTitle, "menu:stats:incidents:all"))
+
+		for _, t := range tabs {
+			title := t.Label
+			if t.ID == currentFilter {
+				title = "• " + title + " •"
+			}
+			filterButtons = append(filterButtons, btn(title, fmt.Sprintf("menu:stats:incidents:%s", t.ID)))
+		}
+		rows = append(rows, filterButtons)
+	}
+
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("🔙 К статистике", "menu:stats"),
+		btn("🏠 Главное меню", "menu:main"),
 	))
 
 	return tu.InlineKeyboard(rows...)

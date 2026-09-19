@@ -9,6 +9,7 @@ import (
 	"github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
 
+	"xray-checker/checker"
 	"xray-checker/logger"
 )
 
@@ -69,14 +70,15 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			if !b.isMsgSeqValid(chatID, msgID, seq) {
 				return
 			}
+			tabs := b.getNodeTabs("local")
 			deepLinks := getDeepLinks(reports, 3)
-			markup := RichReportMarkup(deepLinks...)
+			markup := RichReportMarkupWithTabs("local", tabs, deepLinks...)
 			if b.isRichMode() {
-				rich := b.buildDiagnosticsRichMessage(reports)
+				rich := b.buildDiagnosticsRichMessageWithTarget(reports, "local", b.getMasterASN())
 				b.showRichReport(ct, msgID, rich, markup)
 				return
 			}
-			summaryText := b.getDiagnosticsSummaryText(reports)
+			summaryText := b.getDiagnosticsSummaryTextWithTarget(reports, "local", b.getMasterASN())
 			b.editWithMarkup(chatID, msgID, summaryText, markup)
 		}()
 	case "menu:diag:rich":
@@ -87,15 +89,17 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			if !b.isMsgSeqValid(chatID, msgID, seq) {
 				return
 			}
+			tabs := b.getNodeTabs("local")
 			deepLinks := getDeepLinks(reports, 3)
-			markup := RichReportMarkup(deepLinks...)
-			rich := b.buildDiagnosticsRichMessage(reports)
+			markup := RichReportMarkupWithTabs("local", tabs, deepLinks...)
+			rich := b.buildDiagnosticsRichMessageWithTarget(reports, "local", b.getMasterASN())
 			b.showRichReport(ct, msgID, rich, markup)
 		}()
 	case "menu:stats":
 		b.editWithMarkup(chatID, msgID, b.getStatsOverviewText(), StatsMenuMarkup())
 	case "menu:stats:incidents":
-		b.editWithMarkup(chatID, msgID, b.getIncidentsText(), BackToStatsMarkup())
+		tabs := b.getNodeTabs("")
+		b.editWithMarkup(chatID, msgID, b.getIncidentsTextFiltered("all"), IncidentsFilterMarkup("all", tabs))
 	case "menu:stats:top":
 		b.editWithMarkup(chatID, msgID, b.getTopProblematicText(), BackToStatsMarkup())
 	case "menu:stats:protocols":
@@ -368,27 +372,82 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				text, markup := b.getDisabledHostsView(page)
 				b.editWithMarkup(chatID, msgID, text, markup)
 			}
+		} else if strings.HasPrefix(cb.Data, "menu:diag:node:") {
+			target := strings.TrimPrefix(cb.Data, "menu:diag:node:")
+			seq := b.nextMsgSeq(chatID, msgID)
+			b.editWithMarkup(chatID, msgID, "⏳ <b>Загрузка данных узла...</b>", BackToMenuMarkup())
+			go func() {
+				var reports []checker.ProxyDiagReport
+				asn := ""
+				var deepLinks []DiagDeepLink
+				if target == "local" || target == "" {
+					reports = b.getDiagnosticsReports(false)
+					asn = b.getMasterASN()
+					deepLinks = getDeepLinks(reports, 3)
+				} else {
+					reports = b.getNodeDiagnosticsReports(target)
+					asn = b.getNodeASN(target)
+				}
+				if !b.isMsgSeqValid(chatID, msgID, seq) {
+					return
+				}
+				tabs := b.getNodeTabs(target)
+				markup := RichReportMarkupWithTabs(target, tabs, deepLinks...)
+				if b.isRichMode() {
+					rich := b.buildDiagnosticsRichMessageWithTarget(reports, target, asn)
+					b.showRichReport(ct, msgID, rich, markup)
+					return
+				}
+				summaryText := b.getDiagnosticsSummaryTextWithTarget(reports, target, asn)
+				b.editWithMarkup(chatID, msgID, summaryText, markup)
+			}()
 		} else if strings.HasPrefix(cb.Data, "menu:diag:details:") || strings.HasPrefix(cb.Data, "menu:diag:p:") {
-			pageStr := strings.TrimPrefix(cb.Data, "menu:diag:details:")
+			target := "local"
+			page := 1
 			if strings.HasPrefix(cb.Data, "menu:diag:p:") {
-				pageStr = strings.TrimPrefix(cb.Data, "menu:diag:p:")
+				pageStr := strings.TrimPrefix(cb.Data, "menu:diag:p:")
+				page, _ = strconv.Atoi(pageStr)
+			} else {
+				rest := strings.TrimPrefix(cb.Data, "menu:diag:details:")
+				parts := strings.Split(rest, ":")
+				if len(parts) == 1 {
+					if p, err := strconv.Atoi(parts[0]); err == nil {
+						page = p
+					} else {
+						target = parts[0]
+						page = 1
+					}
+				} else if len(parts) >= 2 {
+					target = parts[0]
+					page, _ = strconv.Atoi(parts[1])
+				}
 			}
-			page, _ := strconv.Atoi(pageStr)
 			if page <= 0 {
 				page = 1
 			}
-			reports := b.getCachedDiagnosticsReports()
-			if len(reports) == 0 {
-				reports = b.getDiagnosticsReports(false)
-			}
-			deepLinks := getDeepLinksForPage(reports, page)
-			if b.isRichMode() {
-				rich, totalPages := b.buildDiagnosticsDetailsRichMessage(reports, page)
-				b.showRichReport(ct, msgID, rich, DiagPaginationMarkup(page, totalPages, deepLinks...))
+
+			var reports []checker.ProxyDiagReport
+			if target == "local" || target == "" {
+				reports = b.getCachedDiagnosticsReports()
+				if len(reports) == 0 {
+					reports = b.getDiagnosticsReports(false)
+				}
 			} else {
-				pageText, totalPages := b.getDiagnosticsPageText(reports, page)
-				b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages, deepLinks...))
+				reports = b.getNodeDiagnosticsReports(target)
 			}
+
+			tabs := b.getNodeTabs(target)
+			if b.isRichMode() {
+				rich, totalPages := b.buildDiagnosticsDetailsRichMessageWithTarget(reports, target, page)
+				b.showRichReport(ct, msgID, rich, DiagnosticsPaginationMarkupWithTabs(target, page, totalPages, tabs))
+			} else {
+				pageText, totalPages := b.getDiagnosticsPageTextWithTarget(reports, target, page)
+				b.editWithMarkup(chatID, msgID, pageText, DiagnosticsPaginationMarkupWithTabs(target, page, totalPages, tabs))
+			}
+		} else if strings.HasPrefix(cb.Data, "menu:stats:incidents:") {
+			filter := strings.TrimPrefix(cb.Data, "menu:stats:incidents:")
+			tabs := b.getNodeTabs("")
+			b.editWithMarkup(chatID, msgID, b.getIncidentsTextFiltered(filter), IncidentsFilterMarkup(filter, tabs))
 		} else if strings.HasPrefix(cb.Data, "menu:diag:pick_deep:") {
 			pageStr := strings.TrimPrefix(cb.Data, "menu:diag:pick_deep:")
 			page, _ := strconv.Atoi(pageStr)
@@ -434,42 +493,74 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			}
 			seq := b.nextMsgSeq(chatID, msgID)
 
-			if arg == "summary" || arg == "rich" {
+			if arg == "summary" || arg == "rich" || (!strings.HasPrefix(arg, "details") && arg != "") {
+				target := "local"
+				if arg != "summary" && arg != "rich" {
+					target = arg
+				}
 				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование подробной сводки...</b>", BackToMenuMarkup())
 				go func() {
-					reports := b.getDiagnosticsReports(true)
+					var reports []checker.ProxyDiagReport
+					asn := ""
+					var deepLinks []DiagDeepLink
+					if target == "local" || target == "" {
+						reports = b.getDiagnosticsReports(true)
+						asn = b.getMasterASN()
+						deepLinks = getDeepLinks(reports, 3)
+					} else {
+						reports = b.getNodeDiagnosticsReports(target)
+						asn = b.getNodeASN(target)
+					}
 					if !b.isMsgSeqValid(chatID, msgID, seq) {
 						return
 					}
-					deepLinks := getDeepLinks(reports, 3)
-					markup := RichReportMarkup(deepLinks...)
+					tabs := b.getNodeTabs(target)
+					markup := RichReportMarkupWithTabs(target, tabs, deepLinks...)
 					if b.isRichMode() || arg == "rich" {
-						rich := b.buildDiagnosticsRichMessage(reports)
+						rich := b.buildDiagnosticsRichMessageWithTarget(reports, target, asn)
 						b.showRichReport(ct, msgID, rich, markup)
 						return
 					}
-					summaryText := b.getDiagnosticsSummaryText(reports)
+					summaryText := b.getDiagnosticsSummaryTextWithTarget(reports, target, asn)
 					b.editWithMarkup(chatID, msgID, summaryText, markup)
 				}()
 			} else {
-				pageStr := strings.TrimPrefix(arg, "details:")
-				page, _ := strconv.Atoi(pageStr)
+				detailsRest := strings.TrimPrefix(arg, "details:")
+				target := "local"
+				page := 1
+				parts := strings.Split(detailsRest, ":")
+				if len(parts) == 1 {
+					if p, err := strconv.Atoi(parts[0]); err == nil {
+						page = p
+					} else {
+						target = parts[0]
+					}
+				} else if len(parts) >= 2 {
+					target = parts[0]
+					page, _ = strconv.Atoi(parts[1])
+				}
 				if page <= 0 {
 					page = 1
 				}
+
 				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>", BackToMenuMarkup())
 				go func() {
-					reports := b.getDiagnosticsReports(true)
+					var reports []checker.ProxyDiagReport
+					if target == "local" || target == "" {
+						reports = b.getDiagnosticsReports(true)
+					} else {
+						reports = b.getNodeDiagnosticsReports(target)
+					}
 					if !b.isMsgSeqValid(chatID, msgID, seq) {
 						return
 					}
-					deepLinks := getDeepLinksForPage(reports, page)
+					tabs := b.getNodeTabs(target)
 					if b.isRichMode() {
-						rich, totalPages := b.buildDiagnosticsDetailsRichMessage(reports, page)
-						b.showRichReport(ct, msgID, rich, DiagPaginationMarkup(page, totalPages, deepLinks...))
+						rich, totalPages := b.buildDiagnosticsDetailsRichMessageWithTarget(reports, target, page)
+						b.showRichReport(ct, msgID, rich, DiagnosticsPaginationMarkupWithTabs(target, page, totalPages, tabs))
 					} else {
-						pageText, totalPages := b.getDiagnosticsPageText(reports, page)
-						b.editWithMarkup(chatID, msgID, pageText, DiagPaginationMarkup(page, totalPages, deepLinks...))
+						pageText, totalPages := b.getDiagnosticsPageTextWithTarget(reports, target, page)
+						b.editWithMarkup(chatID, msgID, pageText, DiagnosticsPaginationMarkupWithTabs(target, page, totalPages, tabs))
 					}
 				}()
 			}

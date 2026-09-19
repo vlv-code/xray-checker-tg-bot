@@ -115,6 +115,10 @@ func (f *fakeNodeManager) RemoveNode(name string) error {
 	return nil
 }
 
+func (f *fakeNodeManager) NodeSnapshot(node string) []metrics.ProxyMetric {
+	return nil
+}
+
 func TestGenerateNodeToken(t *testing.T) {
 	tok1 := GenerateNodeToken()
 	tok2 := GenerateNodeToken()

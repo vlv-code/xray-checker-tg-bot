@@ -69,6 +69,126 @@ func (b *Bot) getDiagnosticsReports(force bool) []checker.ProxyDiagReport {
 	return reports
 }
 
+// getNodeDiagnosticsReports converts metrics for a specific remote node into ProxyDiagReport slice.
+func (b *Bot) getNodeDiagnosticsReports(nodeName string) []checker.ProxyDiagReport {
+	var snapshot []metrics.ProxyMetric
+	if b.nodeMgr != nil {
+		snapshot = b.nodeMgr.NodeSnapshot(nodeName)
+	}
+	if len(snapshot) == 0 && b.source != nil {
+		for _, pm := range b.source.MetricsSnapshot() {
+			if pm.NodeName == nodeName {
+				snapshot = append(snapshot, pm)
+			}
+		}
+	}
+	if len(snapshot) == 0 {
+		return nil
+	}
+
+	var reports []checker.ProxyDiagReport
+	for _, pm := range snapshot {
+		status := "online"
+		if pm.Disabled {
+			status = "disabled"
+		} else if !pm.Online {
+			status = "offline"
+		}
+		targets := []checker.TargetDiagResult{
+			{
+				URL:     "node-check",
+				Latency: time.Duration(pm.LatencyMs * float64(time.Millisecond)),
+				Success: pm.Online,
+				Error:   pm.LastErrorMsg,
+			},
+		}
+		server, portStr, _ := net.SplitHostPort(pm.Address)
+		port, _ := strconv.Atoi(portStr)
+		rep := checker.ProxyDiagReport{
+			ProxyName: pm.Name,
+			Protocol:  pm.Protocol,
+			Server:    server,
+			Port:      port,
+			StableID:  pm.StableID,
+			Status:    status,
+			Targets:   targets,
+			Verdict:   pm.LastErrorMsg,
+			Disabled:  pm.Disabled,
+		}
+		reports = append(reports, rep)
+	}
+	b.sortDiagnosticsReports(reports)
+	return reports
+}
+
+// getNodeTabs returns the navigation tabs for Master and remote nodes.
+func (b *Bot) getNodeTabs(activeTarget string) []NodeTabItem {
+	if b.nodeMgr == nil {
+		return nil
+	}
+	nodes := b.nodeMgr.Nodes()
+	if len(nodes) == 0 {
+		return nil
+	}
+
+	masterOnline := 0
+	masterTotal := 0
+	if b.source != nil {
+		for _, pm := range b.source.MetricsSnapshot() {
+			if pm.NodeName == "" && !pm.Disabled {
+				masterTotal++
+				if pm.Online {
+					masterOnline++
+				}
+			}
+		}
+	}
+
+	masterActive := activeTarget == "local" || activeTarget == ""
+	tabs := []NodeTabItem{
+		{
+			ID:       "local",
+			Label:    "🏠 Мастер",
+			Status:   fmt.Sprintf("%d/%d", masterOnline, masterTotal),
+			IsActive: masterActive,
+		},
+	}
+
+	for _, n := range nodes {
+		badge := ""
+		if !n.Up {
+			badge = "🔴 оффлайн"
+		} else if n.Total > 0 && n.Online < n.Total {
+			badge = fmt.Sprintf("⚠️ %d/%d", n.Online, n.Total)
+		} else if n.Total > 0 {
+			badge = fmt.Sprintf("%d/%d", n.Online, n.Total)
+		} else {
+			badge = "0"
+		}
+
+		tabs = append(tabs, NodeTabItem{
+			ID:       n.Name,
+			Label:    fmt.Sprintf("🖥 %s", n.Name),
+			Status:   badge,
+			IsActive: activeTarget == n.Name,
+		})
+	}
+	return tabs
+}
+
+// getNodeASN returns the ASN of a remote node by name, or empty string.
+func (b *Bot) getNodeASN(name string) string {
+	if b.nodeMgr == nil {
+		return ""
+	}
+	for _, n := range b.nodeMgr.Nodes() {
+		if n.Name == name {
+			return n.ASN
+		}
+	}
+	return ""
+}
+
 func (b *Bot) sortDiagnosticsReports(reports []checker.ProxyDiagReport) {
 	now := b.now()
 	getSeverityRank := func(rep *checker.ProxyDiagReport) int {
@@ -348,12 +468,30 @@ func getDeepLinks(reports []checker.ProxyDiagReport, maxCount int) []DiagDeepLin
 }
 
 func (b *Bot) getDiagnosticsSummaryText(reports []checker.ProxyDiagReport) string {
-	if len(reports) == 0 {
-		return "Нет доступных прокси для проверки."
-	}
+	return b.getDiagnosticsSummaryTextWithTarget(reports, "local", b.getMasterASN())
+}
 
+func (b *Bot) getDiagnosticsSummaryTextWithTarget(reports []checker.ProxyDiagReport, target string, asn string) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📊 <b>Подробная сводка (%d всего):</b>\n\n", len(reports)))
+	hasNodes := b != nil && b.nodeMgr != nil && len(b.nodeMgr.Nodes()) > 0
+	title := ""
+	if target != "" && target != "local" {
+		title = fmt.Sprintf("📊 <b>Подробная сводка — 🖥 Нода %s (%d всего):</b>", escapeHTML(target), len(reports))
+	} else if hasNodes {
+		title = fmt.Sprintf("📊 <b>Подробная сводка — 🏠 Мастер (%d всего):</b>", len(reports))
+	} else {
+		title = fmt.Sprintf("📊 <b>Подробная сводка (%d всего):</b>", len(reports))
+	}
+	sb.WriteString(title + "\n")
+	if asn != "" {
+		sb.WriteString(fmt.Sprintf("<i>ASN: %s</i>\n", escapeHTML(asn)))
+	}
+	sb.WriteString("\n")
+
+	if len(reports) == 0 {
+		sb.WriteString("Нет доступных прокси для проверки.")
+		return sb.String()
+	}
 
 	onlineCount, offlineCount, disabledCount := 0, 0, 0
 	for _, rep := range reports {
@@ -402,6 +540,10 @@ func (b *Bot) getDiagnosticsSummaryText(reports []checker.ProxyDiagReport) strin
 }
 
 func (b *Bot) getDiagnosticsPageText(reports []checker.ProxyDiagReport, page int) (string, int) {
+	return b.getDiagnosticsPageTextWithTarget(reports, "local", page)
+}
+
+func (b *Bot) getDiagnosticsPageTextWithTarget(reports []checker.ProxyDiagReport, target string, page int) (string, int) {
 	if len(reports) == 0 {
 		return "Нет доступных прокси для проверки.", 1
 	}
@@ -421,7 +563,14 @@ func (b *Bot) getDiagnosticsPageText(reports []checker.ProxyDiagReport, page int
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📑 <b>Детальный отчёт</b> (Стр. %d из %d, всего %d прокси):\n\n", page, totalPages, len(reports)))
+	hasNodes := b != nil && b.nodeMgr != nil && len(b.nodeMgr.Nodes()) > 0
+	nodePrefix := ""
+	if target != "" && target != "local" {
+		nodePrefix = fmt.Sprintf(" — 🖥 Нода %s", escapeHTML(target))
+	} else if hasNodes {
+		nodePrefix = " — 🏠 Мастер"
+	}
+	sb.WriteString(fmt.Sprintf("📑 <b>Детальный отчёт%s</b> (Стр. %d из %d, всего %d прокси):\n\n", nodePrefix, page, totalPages, len(reports)))
 
 	for _, rep := range reports[start:end] {
 		b.formatSingleProxyDiagWithStats(&sb, rep)
@@ -675,6 +824,10 @@ func (b *Bot) handleDeepDiagnostics(chatID int64, msgID int, stableID string, pa
 }
 
 func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *telego.InputRichMessage {
+	return b.buildDiagnosticsRichMessageWithTarget(reports, "local", b.getMasterASN())
+}
+
+func (b *Bot) buildDiagnosticsRichMessageWithTarget(reports []checker.ProxyDiagReport, target string, asn string) *telego.InputRichMessage {
 	if len(reports) == 0 {
 		msg := tu.RichMessage(tu.RichBlockParagraph(tu.RichTextPlain("Нет доступных прокси-хостов для проверки.")))
 		return &msg
@@ -682,11 +835,27 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 
 	var blocks []telego.InputRichBlock
 
+	hasNodes := b != nil && b.nodeMgr != nil && len(b.nodeMgr.Nodes()) > 0
+	title := ""
+	if target != "" && target != "local" {
+		title = fmt.Sprintf("📊 Подробная сводка — 🖥 Нода %s (%d прокси-хостов)", target, len(reports))
+	} else if hasNodes {
+		title = fmt.Sprintf("📊 Подробная сводка — 🏠 Мастер (%d прокси-хостов)", len(reports))
+	} else {
+		title = fmt.Sprintf("📊 Подробная сводка (%d прокси-хостов)", len(reports))
+	}
+
 	// 1. Heading
 	blocks = append(blocks, tu.RichBlockSectionHeading(
-		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("📊 Подробная сводка (%d прокси-хостов)", len(reports)))),
+		tu.RichTextBold(tu.RichTextPlain(title)),
 		2,
 	))
+
+	if asn != "" {
+		blocks = append(blocks, tu.RichBlockParagraph(
+			tu.RichTextItalic(tu.RichTextPlain("ASN: "+asn)),
+		))
+	}
 
 	// 2. Table: Прокси-хост | Протокол | Пинг | Статус
 	headerRow := []telego.RichBlockTableCell{
@@ -754,6 +923,10 @@ func (b *Bot) buildDiagnosticsRichMessage(reports []checker.ProxyDiagReport) *te
 }
 
 func (b *Bot) buildDiagnosticsDetailsRichMessage(reports []checker.ProxyDiagReport, page int) (*telego.InputRichMessage, int) {
+	return b.buildDiagnosticsDetailsRichMessageWithTarget(reports, "local", page)
+}
+
+func (b *Bot) buildDiagnosticsDetailsRichMessageWithTarget(reports []checker.ProxyDiagReport, target string, page int) (*telego.InputRichMessage, int) {
 	if len(reports) == 0 {
 		msg := tu.RichMessage(tu.RichBlockParagraph(tu.RichTextPlain("Нет доступных прокси-хостов для проверки.")))
 		return &msg, 1
@@ -775,8 +948,16 @@ func (b *Bot) buildDiagnosticsDetailsRichMessage(reports []checker.ProxyDiagRepo
 
 	var blocks []telego.InputRichBlock
 
+	hasNodes := b != nil && b.nodeMgr != nil && len(b.nodeMgr.Nodes()) > 0
+	nodePrefix := ""
+	if target != "" && target != "local" {
+		nodePrefix = fmt.Sprintf(" — 🖥 Нода %s", target)
+	} else if hasNodes {
+		nodePrefix = " — 🏠 Мастер"
+	}
+
 	blocks = append(blocks, tu.RichBlockSectionHeading(
-		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("📑 Детальный отчёт (Стр. %d из %d, всего %d)", page, totalPages, len(reports)))),
+		tu.RichTextBold(tu.RichTextPlain(fmt.Sprintf("📑 Детальный отчёт%s (Стр. %d из %d, всего %d)", nodePrefix, page, totalPages, len(reports)))),
 		2,
 	))
 

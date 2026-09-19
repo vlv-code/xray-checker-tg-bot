@@ -3,6 +3,8 @@ package telegram
 import (
 	"fmt"
 	"time"
+
+	"xray-checker/metrics"
 )
 
 // NodeInfo is the bot's view of one remote checker node. It mirrors
@@ -44,6 +46,8 @@ type NodeManager interface {
 	AddNode(name, token string) error
 	// RemoveNode unregisters a node dynamically.
 	RemoveNode(name string) error
+	// NodeSnapshot returns a snapshot of proxy metrics for the given node.
+	NodeSnapshot(node string) []metrics.ProxyMetric
 }
 
 // nodeHealthState tracks what the alert loop knows about a node. alerted

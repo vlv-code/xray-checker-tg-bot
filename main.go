@@ -73,6 +73,7 @@ func main() {
 	var nodeRegistry *nodes.Registry
 	var nodeSubsStore *nodes.NodeSubsStore
 	var nodesStore *nodes.NodesStore
+	asnLookup := asn.NopLookup
 
 	if config.CLIConfig.Report.URL == "" {
 		var nodeCfgs []nodes.NodeConfig
@@ -97,7 +98,6 @@ func main() {
 		if err != nil {
 			logger.Warn("Error loading dynamic nodes store: %v", err)
 		}
-		asnLookup := asn.NopLookup
 		asnPath := "geo/asn.mmdb"
 		if err := asn.EnsureDB(asnPath, config.CLIConfig.ASN.DBURL); err != nil {
 			logger.Warn("ASN database unavailable (node ASN will be empty): %v", err)
@@ -521,10 +521,15 @@ func main() {
 				logger.Fatal("Invalid TELEGRAM_CHAT_IDS entry: %v", err)
 			}
 
+			var botMetricsSource metrics.MetricsSource = proxyChecker
+			if nodeRegistry != nil {
+				botMetricsSource = &mergedMetricsSource{local: proxyChecker, reg: nodeRegistry}
+			}
+
 			if bot, err := telegram.New(
 				config.CLIConfig.Telegram.BotToken,
 				chatTargets,
-				proxyChecker,
+				botMetricsSource,
 				config.CLIConfig.Telegram.NotifyOnRecovery,
 				config.CLIConfig.Telegram.Commands,
 				subManager,
@@ -543,6 +548,7 @@ func main() {
 				if nodeRegistry != nil {
 					bot.SetNodeManager(&nodeManagerAdapter{reg: nodeRegistry, subs: nodeSubsStore})
 				}
+				bot.SetASNLookup(asnLookup)
 				bot.SetDiagnosticsSource(proxyChecker)
 				bot.SetIntervalHandler(rescheduleChecks)
 				if config.CLIConfig.Telegram.RichMode {

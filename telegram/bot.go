@@ -56,6 +56,8 @@ type Bot struct {
 	diagSource      DiagnosticsSource
 	intervalHandler func(seconds int)
 	richMode        bool
+	asnLookup       func(ip string) string
+	masterASN       string
 
 	mu            sync.Mutex
 	lastSeen      map[string]bool // stable_id -> last known online status
@@ -212,6 +214,32 @@ func (b *Bot) SetRichMode(enabled bool) {
 	_ = b.updateConfig(func(cfg *BotConfig) {
 		cfg.RichMode = enabled
 	})
+}
+
+// SetASNLookup sets the function to resolve host IP addresses to autonomous system names.
+func (b *Bot) SetASNLookup(lookup func(ip string) string) {
+	b.mu.Lock()
+	b.asnLookup = lookup
+	b.masterASN = ""
+	b.mu.Unlock()
+}
+
+// getMasterASN retrieves and caches the master host's autonomous system name.
+func (b *Bot) getMasterASN() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.masterASN != "" {
+		return b.masterASN
+	}
+	if b.asnLookup == nil || b.diagSource == nil {
+		return ""
+	}
+	ip, err := b.diagSource.GetCurrentIP()
+	if err != nil || ip == "" {
+		return ""
+	}
+	b.masterASN = b.asnLookup(ip)
+	return b.masterASN
 }
 
 func (b *Bot) isRichMode() bool {

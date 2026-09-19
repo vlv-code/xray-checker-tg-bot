@@ -23,6 +23,22 @@ func (b *Bot) getMenuText() string {
 	disabledCount := 0
 	var downProxies []string
 
+	var nodes []NodeInfo
+	if b.nodeMgr != nil {
+		nodes = b.nodeMgr.Nodes()
+	}
+
+	localOnline := 0
+	localTotal := 0
+	type nodeStats struct {
+		online int
+		total  int
+	}
+	nodeMap := make(map[string]*nodeStats, len(nodes))
+	for _, n := range nodes {
+		nodeMap[n.Name] = &nodeStats{}
+	}
+
 	for _, pm := range snapshot {
 		host, _, err := net.SplitHostPort(pm.Address)
 		if err != nil {
@@ -36,15 +52,93 @@ func (b *Bot) getMenuText() string {
 		if pm.Online {
 			online++
 		} else {
-			downProxies = append(downProxies, pm.Name)
+			pName := pm.Name
+			if pm.NodeName != "" {
+				pName = fmt.Sprintf("[%s] %s", pm.NodeName, pm.Name)
+			}
+			downProxies = append(downProxies, pName)
+		}
+
+		if pm.NodeName == "" {
+			localTotal++
+			if pm.Online {
+				localOnline++
+			}
+		} else if ns, ok := nodeMap[pm.NodeName]; ok {
+			ns.total++
+			if pm.Online {
+				ns.online++
+			}
+		}
+	}
+
+	var downNodes []string
+	for _, n := range nodes {
+		if !n.Up {
+			downNodes = append(downNodes, fmt.Sprintf("🖥 Нода %s: оффлайн", escapeHTML(n.Name)))
 		}
 	}
 
 	var statusLine string
-	if disabledCount > 0 {
-		statusLine = fmt.Sprintf("• Текущий статус: <b>%d/%d онлайн</b> <i>(⏸️ %d отключено)</i>\n", online, totalActive, disabledCount)
+	if len(nodes) > 0 {
+		var sb strings.Builder
+		if disabledCount > 0 {
+			fmt.Fprintf(&sb, "• Статус прокси: <b>%d/%d онлайн</b> <i>(⏸️ %d отключено)</i>\n", online, totalActive, disabledCount)
+		} else {
+			fmt.Fprintf(&sb, "• Статус прокси: <b>%d/%d онлайн</b>\n", online, len(snapshot))
+		}
+
+		masterASN := b.getMasterASN()
+		masterASNStr := ""
+		if masterASN != "" {
+			masterASNStr = fmt.Sprintf(" (%s)", escapeHTML(masterASN))
+		}
+		prefix := "├"
+		if len(nodes) == 0 {
+			prefix = "└"
+		}
+		fmt.Fprintf(&sb, "  %s 🏠 Мастер: <b>%d/%d онлайн</b>%s\n", prefix, localOnline, localTotal, masterASNStr)
+
+		for i, n := range nodes {
+			branch := "├"
+			if i == len(nodes)-1 {
+				branch = "└"
+			}
+			ns := nodeMap[n.Name]
+			nOnline := 0
+			nTotal := 0
+			if ns != nil {
+				nOnline = ns.online
+				nTotal = ns.total
+			}
+			if nTotal == 0 && n.Total > 0 {
+				nOnline = n.Online
+				nTotal = n.Total
+			}
+
+			asnInfo := ""
+			if n.ASN != "" {
+				asnInfo = fmt.Sprintf(" (%s)", escapeHTML(n.ASN))
+			}
+
+			if !n.Up {
+				fmt.Fprintf(&sb, "  %s 🖥 %s: 🔴 <b>оффлайн</b> <i>(потеряна связь)</i>\n", branch, escapeHTML(n.Name))
+			} else if nTotal > 0 && nOnline == nTotal {
+				fmt.Fprintf(&sb, "  %s 🖥 %s: 🟢 <b>%d/%d онлайн</b>%s\n", branch, escapeHTML(n.Name), nOnline, nTotal, asnInfo)
+			} else if nTotal > 0 && nOnline < nTotal {
+				downCount := nTotal - nOnline
+				fmt.Fprintf(&sb, "  %s 🖥 %s: ⚠️ <b>%d/%d онлайн</b> <i>(%d сбоит)</i>%s\n", branch, escapeHTML(n.Name), nOnline, nTotal, downCount, asnInfo)
+			} else {
+				fmt.Fprintf(&sb, "  %s 🖥 %s: 🟢 <b>на связи</b> <i>(0 прокси)</i>%s\n", branch, escapeHTML(n.Name), asnInfo)
+			}
+		}
+		statusLine = sb.String()
 	} else {
-		statusLine = fmt.Sprintf("• Текущий статус: <b>%d/%d онлайн</b>\n", online, len(snapshot))
+		if disabledCount > 0 {
+			statusLine = fmt.Sprintf("• Текущий статус: <b>%d/%d онлайн</b> <i>(⏸️ %d отключено)</i>\n", online, totalActive, disabledCount)
+		} else {
+			statusLine = fmt.Sprintf("• Текущий статус: <b>%d/%d онлайн</b>\n", online, len(snapshot))
+		}
 	}
 
 	nowStr := b.now().Format("15:04:05 02.01.2006")
@@ -61,8 +155,11 @@ func (b *Bot) getMenuText() string {
 		sb.WriteString(uptimeStr)
 	}
 
-	if len(downProxies) > 0 {
+	if len(downProxies) > 0 || len(downNodes) > 0 {
 		sb.WriteString("\n<b>🔴 Требуют внимания:</b>\n")
+		for _, dn := range downNodes {
+			sb.WriteString(fmt.Sprintf("• %s\n", dn))
+		}
 		limit := 5
 		if len(downProxies) < limit {
 			limit = len(downProxies)
@@ -316,32 +413,163 @@ func (b *Bot) getStatusText() string {
 
 	sort.Slice(snapshot, func(i, j int) bool { return snapshot[i].Name < snapshot[j].Name })
 
+	var nodes []NodeInfo
+	if b.nodeMgr != nil {
+		nodes = b.nodeMgr.Nodes()
+	}
+
+	if len(nodes) == 0 {
+		online := 0
+		activeTotal := 0
+		disabledCount := 0
+		var activeBody strings.Builder
+		var disabledBody strings.Builder
+
+		for _, pm := range snapshot {
+			if pm.Disabled {
+				disabledCount++
+				fmt.Fprintf(&disabledBody, "⏸️ <b>%s</b> — отключён\n", escapeHTML(pm.Name))
+				continue
+			}
+			activeTotal++
+			if pm.Online {
+				online++
+				fmt.Fprintf(&activeBody, "✅ <b>%s</b> — %.0f ms\n", escapeHTML(pm.Name), pm.LatencyMs)
+			} else {
+				fmt.Fprintf(&activeBody, "🔴 <b>%s</b> — недоступен\n", escapeHTML(pm.Name))
+			}
+		}
+
+		header := fmt.Sprintf("<b>Статус прокси-хостов: %d/%d онлайн</b>\n\n", online, activeTotal)
+		if disabledCount > 0 {
+			return header + activeBody.String() + fmt.Sprintf("\n<b>Отключённые прокси-хосты (%d):</b>\n", disabledCount) + disabledBody.String()
+		}
+		return header + activeBody.String()
+	}
+
+	// Grouping by local checker and nodes
+	var localProxies []metrics.ProxyMetric
+	nodeProxiesMap := make(map[string][]metrics.ProxyMetric)
+	var disabledProxies []metrics.ProxyMetric
+
 	online := 0
 	activeTotal := 0
-	disabledCount := 0
-	var activeBody strings.Builder
-	var disabledBody strings.Builder
 
 	for _, pm := range snapshot {
 		if pm.Disabled {
-			disabledCount++
-			fmt.Fprintf(&disabledBody, "⏸️ <b>%s</b> — отключён\n", escapeHTML(pm.Name))
+			disabledProxies = append(disabledProxies, pm)
 			continue
 		}
 		activeTotal++
 		if pm.Online {
 			online++
-			fmt.Fprintf(&activeBody, "✅ <b>%s</b> — %.0f ms\n", escapeHTML(pm.Name), pm.LatencyMs)
+		}
+		if pm.NodeName == "" {
+			localProxies = append(localProxies, pm)
 		} else {
-			fmt.Fprintf(&activeBody, "🔴 <b>%s</b> — недоступен\n", escapeHTML(pm.Name))
+			nodeProxiesMap[pm.NodeName] = append(nodeProxiesMap[pm.NodeName], pm)
 		}
 	}
 
-	header := fmt.Sprintf("<b>Статус прокси-хостов: %d/%d онлайн</b>\n\n", online, activeTotal)
-	if disabledCount > 0 {
-		return header + activeBody.String() + fmt.Sprintf("\n<b>Отключённые прокси-хосты (%d):</b>\n", disabledCount) + disabledBody.String()
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "<b>Статус прокси-хостов: %d/%d онлайн</b>\n\n", online, activeTotal)
+
+	if len(localProxies) > 0 {
+		locOnline := 0
+		for _, pm := range localProxies {
+			if pm.Online {
+				locOnline++
+			}
+		}
+		fmt.Fprintf(&sb, "🏠 <b>Локальный чекер · %d/%d онлайн:</b>\n", locOnline, len(localProxies))
+		for _, pm := range localProxies {
+			if pm.Online {
+				fmt.Fprintf(&sb, "✅ <b>%s</b> — %.0f ms\n", escapeHTML(pm.Name), pm.LatencyMs)
+			} else {
+				fmt.Fprintf(&sb, "🔴 <b>%s</b> — недоступен\n", escapeHTML(pm.Name))
+			}
+		}
+		sb.WriteString("\n")
 	}
-	return header + activeBody.String()
+
+	handledNodes := make(map[string]bool)
+	for _, n := range nodes {
+		handledNodes[n.Name] = true
+		pms := nodeProxiesMap[n.Name]
+		nOnline := 0
+		for _, pm := range pms {
+			if pm.Online {
+				nOnline++
+			}
+		}
+
+		asnStr := ""
+		if n.ASN != "" {
+			asnStr = fmt.Sprintf(" (%s)", escapeHTML(n.ASN))
+		}
+
+		if !n.Up {
+			fmt.Fprintf(&sb, "🖥 <b>Нода %s</b>%s · 🔴 оффлайн:\n", escapeHTML(n.Name), asnStr)
+		} else if len(pms) == 0 {
+			fmt.Fprintf(&sb, "🖥 <b>Нода %s</b>%s · 🟢 на связи <i>(нет прокси)</i>:\n", escapeHTML(n.Name), asnStr)
+		} else if nOnline == len(pms) {
+			fmt.Fprintf(&sb, "🖥 <b>Нода %s</b>%s · 🟢 %d/%d онлайн:\n", escapeHTML(n.Name), asnStr, nOnline, len(pms))
+		} else {
+			fmt.Fprintf(&sb, "🖥 <b>Нода %s</b>%s · ⚠️ %d/%d онлайн:\n", escapeHTML(n.Name), asnStr, nOnline, len(pms))
+		}
+
+		if len(pms) == 0 {
+			sb.WriteString("<i>• Нет данных о проверенных прокси</i>\n\n")
+		} else {
+			for _, pm := range pms {
+				if pm.Online {
+					fmt.Fprintf(&sb, "✅ <b>%s</b> — %.0f ms\n", escapeHTML(pm.Name), pm.LatencyMs)
+				} else {
+					fmt.Fprintf(&sb, "🔴 <b>%s</b> — недоступен\n", escapeHTML(pm.Name))
+				}
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	// Any node proxies from nodes not currently in registry
+	for nodeName, pms := range nodeProxiesMap {
+		if handledNodes[nodeName] {
+			continue
+		}
+		nOnline := 0
+		for _, pm := range pms {
+			if pm.Online {
+				nOnline++
+			}
+		}
+		badge := "🟢"
+		if nOnline < len(pms) {
+			badge = "⚠️"
+		}
+		fmt.Fprintf(&sb, "🖥 <b>Нода %s</b> · %s %d/%d онлайн:\n", escapeHTML(nodeName), badge, nOnline, len(pms))
+		for _, pm := range pms {
+			if pm.Online {
+				fmt.Fprintf(&sb, "✅ <b>%s</b> — %.0f ms\n", escapeHTML(pm.Name), pm.LatencyMs)
+			} else {
+				fmt.Fprintf(&sb, "🔴 <b>%s</b> — недоступен\n", escapeHTML(pm.Name))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(disabledProxies) > 0 {
+		fmt.Fprintf(&sb, "<b>Отключённые прокси-хосты (%d):</b>\n", len(disabledProxies))
+		for _, pm := range disabledProxies {
+			name := pm.Name
+			if pm.NodeName != "" {
+				name = fmt.Sprintf("[%s] %s", pm.NodeName, pm.Name)
+			}
+			fmt.Fprintf(&sb, "⏸️ <b>%s</b> — отключён\n", escapeHTML(name))
+		}
+	}
+
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 func (b *Bot) getStatsOverviewText() string {
@@ -630,13 +858,56 @@ func (b *Bot) getHeatmapText() string {
 	return sb.String()
 }
 
+func parseIncidentSource(inc Incident) (badge string, displayName string, origin string) {
+	if strings.HasPrefix(inc.StableID, "node:") || strings.HasPrefix(inc.ProxyName, "🖥 [Нода]") {
+		nodeName := strings.TrimPrefix(inc.StableID, "node:")
+		if nodeName == "" || nodeName == inc.StableID {
+			parts := strings.Split(inc.ProxyName, "] ")
+			if len(parts) > 1 {
+				nodeName = strings.TrimSpace(parts[1])
+			}
+		}
+		return "🔌 [Связь]", inc.ProxyName, nodeName
+	}
+	if strings.HasPrefix(inc.ProxyName, "[") {
+		idx := strings.Index(inc.ProxyName, "]")
+		if idx > 1 {
+			nodeName := inc.ProxyName[1:idx]
+			name := strings.TrimSpace(inc.ProxyName[idx+1:])
+			return fmt.Sprintf("🖥 [%s]", nodeName), name, nodeName
+		}
+	}
+	return "🏠 [Мастер]", inc.ProxyName, "local"
+}
+
 func (b *Bot) getIncidentsText() string {
+	return b.getIncidentsTextFiltered("")
+}
+
+func (b *Bot) getIncidentsTextFiltered(filterNode string) string {
 	if b.statsStore == nil {
 		return "Статистика недоступна."
 	}
-	incidents := b.statsStore.GetRecentIncidents(15)
-	if len(incidents) == 0 {
-		return "<b>📋 Журнал инцидентов</b>\n\nЗафиксированных инцидентов нет — все прокси-хосты работают стабильно!\n\n" +
+	allIncidents := b.statsStore.GetRecentIncidents(30)
+	var filtered []Incident
+	for _, inc := range allIncidents {
+		_, _, origin := parseIncidentSource(inc)
+		if filterNode == "" || filterNode == "all" || origin == filterNode {
+			filtered = append(filtered, inc)
+		}
+	}
+	if len(filtered) > 15 {
+		filtered = filtered[:15]
+	}
+
+	if len(filtered) == 0 {
+		filterLabel := ""
+		if filterNode == "local" {
+			filterLabel = " (🏠 Мастер)"
+		} else if filterNode != "" && filterNode != "all" {
+			filterLabel = fmt.Sprintf(" (🖥 %s)", filterNode)
+		}
+		return fmt.Sprintf("<b>📋 Журнал инцидентов%s</b>\n\nЗафиксированных инцидентов нет — все прокси-хосты работают стабильно!\n\n", filterLabel) +
 			"<b>ℹ️ Справка:</b>\n" +
 			"• <b>Сбой</b>: точное время фиксации отказа в часовом поясе бота.\n" +
 			"• <b>Простой</b>: суммарная длительность недоступности до момента восстановления.\n" +
@@ -644,15 +915,23 @@ func (b *Bot) getIncidentsText() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("<b>📋 Последние инциденты:</b>\n\n")
-	for _, inc := range incidents {
+	filterHeader := ""
+	if filterNode == "local" {
+		filterHeader = " (🏠 Мастер)"
+	} else if filterNode != "" && filterNode != "all" {
+		filterHeader = fmt.Sprintf(" (🖥 %s)", escapeHTML(filterNode))
+	}
+	sb.WriteString(fmt.Sprintf("<b>📋 Последние инциденты%s:</b>\n\n", filterHeader))
+
+	for _, inc := range filtered {
+		badge, name, _ := parseIncidentSource(inc)
 		downTime := time.Unix(inc.DownAt, 0).In(b.loc()).Format("15:04 02.01")
 		if inc.UpAt == 0 {
-			fmt.Fprintf(&sb, "🔴 <b>%s</b> — сбой %s (<i>сейчас недоступен</i>)\nПричина: %s\n\n",
-				escapeHTML(inc.ProxyName), downTime, escapeHTML(inc.Reason))
+			fmt.Fprintf(&sb, "🔴 %s <b>%s</b> — сбой %s (<i>сейчас недоступен</i>)\nПричина: %s\n\n",
+				badge, escapeHTML(name), downTime, escapeHTML(inc.Reason))
 		} else {
-			fmt.Fprintf(&sb, "🟡 <b>%s</b> — %s (простой: %s)\nПричина: %s\n\n",
-				escapeHTML(inc.ProxyName), downTime, FormatDowntime(time.Duration(inc.DurationSec)*time.Second), escapeHTML(inc.Reason))
+			fmt.Fprintf(&sb, "🟡 %s <b>%s</b> — %s (простой: %s)\nПричина: %s\n\n",
+				badge, escapeHTML(name), downTime, FormatDowntime(time.Duration(inc.DurationSec)*time.Second), escapeHTML(inc.Reason))
 		}
 	}
 

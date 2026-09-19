@@ -309,6 +309,20 @@ func (r *Registry) MergedSnapshot(local []metrics.ProxyMetric) []metrics.ProxyMe
 	return out
 }
 
+// NodeSnapshot returns a copy of the latest proxy snapshot reported by the specified node.
+// Returns nil if the node does not exist or has never reported a snapshot.
+func (r *Registry) NodeSnapshot(name string) []metrics.ProxyMetric {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	st, ok := r.nodes[name]
+	if !ok || len(st.snapshot) == 0 {
+		return nil
+	}
+	out := make([]metrics.ProxyMetric, len(st.snapshot))
+	copy(out, st.snapshot)
+	return out
+}
+
 func (r *Registry) sortedNamesLocked() []string {
 	names := make([]string, 0, len(r.nodes))
 	for name := range r.nodes {

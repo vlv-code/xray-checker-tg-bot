@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"xray-checker/metrics"
 	"xray-checker/nodes"
 	"xray-checker/telegram"
 )
@@ -80,4 +81,25 @@ func (a *nodeManagerAdapter) AddNode(name, token string) error {
 
 func (a *nodeManagerAdapter) RemoveNode(name string) error {
 	return a.reg.RemoveNode(name)
+}
+
+func (a *nodeManagerAdapter) NodeSnapshot(node string) []metrics.ProxyMetric {
+	return a.reg.NodeSnapshot(node)
+}
+
+// mergedMetricsSource combines local master metrics with metrics reported by remote nodes.
+type mergedMetricsSource struct {
+	local metrics.MetricsSource
+	reg   *nodes.Registry
+}
+
+func (m *mergedMetricsSource) MetricsSnapshot() []metrics.ProxyMetric {
+	var local []metrics.ProxyMetric
+	if m.local != nil {
+		local = m.local.MetricsSnapshot()
+	}
+	if m.reg != nil {
+		return m.reg.MergedSnapshot(local)
+	}
+	return local
 }

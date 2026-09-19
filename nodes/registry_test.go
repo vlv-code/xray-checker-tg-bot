@@ -282,3 +282,34 @@ func TestRegistry_RegisterAndRemoveNode(t *testing.T) {
 		t.Errorf("dyn-1 must not exist after RemoveNode")
 	}
 }
+
+func TestRegistry_NodeSnapshot(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	if snap := reg.NodeSnapshot("n1"); snap != nil {
+		t.Fatalf("expected nil snapshot before any report, got %v", snap)
+	}
+	if snap := reg.NodeSnapshot("nonexistent"); snap != nil {
+		t.Fatalf("expected nil snapshot for nonexistent node, got %v", snap)
+	}
+
+	h := reg.HandleReport()
+	postReport(t, h, "t1", ReportPayload{
+		Version: "1.0", CheckIntervalSec: 60, HostIP: "1.2.3.4",
+		Proxies: []ReportProxy{{StableID: "p1", Name: "Proxy1", Address: "1.1.1.1:443", Protocol: "vless", Online: true, LatencyMs: 50}},
+	})
+
+	snap := reg.NodeSnapshot("n1")
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 metric in node snapshot, got %d", len(snap))
+	}
+	if snap[0].Name != "Proxy1" || snap[0].NodeName != "n1" || !snap[0].Online {
+		t.Errorf("unexpected metric in snapshot: %+v", snap[0])
+	}
+
+	// Verify mutating returned slice does not mutate internal snapshot
+	snap[0].Name = "Mutated"
+	snap2 := reg.NodeSnapshot("n1")
+	if snap2[0].Name != "Proxy1" {
+		t.Errorf("NodeSnapshot did not return an isolated copy")
+	}
+}

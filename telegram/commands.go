@@ -341,8 +341,9 @@ func (b *Bot) replyDiagnostics(t ChatTarget, arg string) {
 		msgID = sent.GetMessageID()
 	}
 
+	tabs := b.getNodeTabs("local")
 	deepLinks := getDeepLinks(reports, 3)
-	markup := RichReportMarkup(deepLinks...)
+	markup := RichReportMarkupWithTabs("local", tabs, deepLinks...)
 
 	if b.isRichMode() || strings.ToLower(strings.TrimSpace(arg)) == "rich" {
 		rich := b.buildDiagnosticsRichMessage(reports)
