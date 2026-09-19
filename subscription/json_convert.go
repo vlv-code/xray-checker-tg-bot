@@ -298,6 +298,7 @@ func (p *Parser) convertOutbound(raw json.RawMessage, index int, originalData ma
 			pc.UUID = flatSettings.ID
 			pc.AlterId = flatSettings.AlterId
 			pc.Security = flatSettings.Security
+			pc.VMessSecurity = flatSettings.Security
 			pc.Level = flatSettings.Level
 		case "trojan":
 			pc.Password = flatSettings.Password
@@ -331,6 +332,7 @@ func (p *Parser) convertOutbound(raw json.RawMessage, index int, originalData ma
 			pc.Level = user.Level
 			if baseOutbound.Protocol == "vmess" {
 				pc.Security = user.Security
+				pc.VMessSecurity = user.Security
 			}
 		case "trojan", "shadowsocks":
 			if len(stdSettings.Servers) == 0 {

@@ -269,7 +269,7 @@ func (cm *ConfigManager) saveLocked() error {
 	}
 
 	tmp := cm.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, cm.path)

@@ -338,9 +338,13 @@ func main() {
 					if tm := proxyChecker.GetTargetManager(); tm != nil && len(tm.GetTargets()) > 0 {
 						targets = tm.GetTargets()
 					}
+					checkRunnerMu.RLock()
 					diagReports := proxyChecker.RunDiagnostics(targets)
+					metricsSnap := proxyChecker.MetricsSnapshot()
+					checkRunnerMu.RUnlock()
+
 					payload := nodes.BuildReportFromDiagWithMetrics(
-						diagReports, proxyChecker.MetricsSnapshot(), version, interval,
+						diagReports, metricsSnap, version, interval,
 						config.CLIConfig.Proxy.CheckMethod, hostIP,
 					)
 					desired, err := reporter.Send(payload)

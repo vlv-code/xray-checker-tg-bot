@@ -15,6 +15,7 @@ type ProxyConfig struct {
 	Port                 int
 	Name                 string
 	Security             string
+	VMessSecurity        string
 	Type                 string
 	UUID                 string
 	Flow                 string
@@ -198,10 +199,10 @@ func AssignStableIDs(proxies []*ProxyConfig) {
 	groups := make(map[string][]*ProxyConfig)
 	order := make([]string, 0)
 	for _, p := range proxies {
-		if p.StableID != "" {
+		base := p.GenerateStableID()
+		if p.StableID != "" && p.StableID != base {
 			continue
 		}
-		base := p.GenerateStableID()
 		if _, seen := groups[base]; !seen {
 			order = append(order, base)
 		}
@@ -256,10 +257,15 @@ func (pc *ProxyConfig) GetAlterId() int {
 }
 
 func (pc *ProxyConfig) GetVMessSecurity() string {
-	if pc.Security == "" {
+	if pc.VMessSecurity != "" {
+		return pc.VMessSecurity
+	}
+	switch pc.Security {
+	case "auto", "aes-128-gcm", "chacha20-poly1305", "none", "zero":
+		return pc.Security
+	default:
 		return "auto"
 	}
-	return pc.Security
 }
 
 func (pc *ProxyConfig) GetUserLevel() int {

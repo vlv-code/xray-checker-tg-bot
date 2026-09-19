@@ -438,3 +438,28 @@ func TestCheckByIP_TransparentAndValidation(t *testing.T) {
 		t.Errorf("expected httpStatus 502, got %d", outcome.httpStatus)
 	}
 }
+
+func TestGetCurrentIP_TTLExpirationRefetches(t *testing.T) {
+	currentServerIP := "198.51.100.2"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(currentServerIP))
+	}))
+	defer server.Close()
+
+	pc := &ProxyChecker{
+		currentIP:     "198.51.100.1",
+		ipInitialized: true,
+		ipCheckedAt:   time.Now().Add(-2 * hostIPCacheTTL), // expired
+		ipCheck:       server.URL,
+		httpClient:    server.Client(),
+	}
+
+	ip, err := pc.GetCurrentIP()
+	if err != nil {
+		t.Fatalf("unexpected error from GetCurrentIP: %v", err)
+	}
+
+	if ip != "198.51.100.2" {
+		t.Errorf("expected GetCurrentIP to refetch expired IP and get 198.51.100.2, got %q", ip)
+	}
+}

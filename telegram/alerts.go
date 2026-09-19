@@ -148,6 +148,29 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 			}
 
 			if isQuiet {
+				for _, t := range b.targets {
+					alert, hadAlert := b.tracker.Resolve(t.ChatID, t.ThreadID, pm.StableID)
+					if hadAlert && alert != nil {
+						if !alert.DownAt.IsZero() {
+							downtime = now.Sub(alert.DownAt)
+						}
+						if cfg.AlertMode == AlertModeClean && b.api != nil {
+							_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+								ChatID:    tu.ID(t.ChatID),
+								MessageID: alert.MessageID,
+							})
+						} else if cfg.AlertMode == AlertModeLive && b.api != nil {
+							liveText := fmt.Sprintf("✅ <b>%s</b> восстановлен — %.0f ms (простой: %s)%s",
+								escapeHTML(pm.Name), pm.LatencyMs, FormatDowntime(downtime), nodeLineFor(pm))
+							_, _ = b.api.EditMessageText(b.ctx, &telego.EditMessageTextParams{
+								ChatID:    tu.ID(t.ChatID),
+								MessageID: alert.MessageID,
+								Text:      liveText,
+								ParseMode: telego.ModeHTML,
+							})
+						}
+					}
+				}
 				b.eventBuffer.Add(BufferedEvent{
 					Timestamp: now,
 					Type:      "up",

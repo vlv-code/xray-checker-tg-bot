@@ -104,6 +104,10 @@ func (b *Bot) handleNodeAddSub(msg *telego.Message) {
 		b.replyCommand(msg, "Ноды не настроены.")
 		return
 	}
+	if !isAllowedSubURL(args[1]) {
+		b.replyCommand(msg, "❌ Разрешены только URL подписок со схемой http:// или https://")
+		return
+	}
 	if err := b.nodeMgr.AddSub(args[0], args[1]); err != nil {
 		b.replyCommand(msg, "❌ "+escapeHTML(err.Error()))
 		return
@@ -244,6 +248,10 @@ func (b *Bot) handleNodeAddSubURL(msg *telego.Message, node string, rawURL strin
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		b.replyCommand(msg, "❌ Пустой URL подписки.")
+		return
+	}
+	if !isAllowedSubURL(rawURL) {
+		b.replyCommand(msg, "❌ Разрешены только URL подписок со схемой http:// или https://")
 		return
 	}
 	if b.nodeMgr == nil {

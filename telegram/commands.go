@@ -213,7 +213,7 @@ func (b *Bot) handleToggleNodeCommand(msg *telego.Message) {
 						names = append(names, fmt.Sprintf("...и ещё %d", len(matches)-5))
 						break
 					}
-					names = append(names, fmt.Sprintf("«%s»", m.Name))
+					names = append(names, fmt.Sprintf("«%s»", escapeHTML(m.Name)))
 				}
 				b.replyCommand(msg, fmt.Sprintf("⚠️ Найдено несколько прокси-хостов с фрагментом «%s»:\n%s\nУточните полное имя или ID.", escapeHTML(arg), strings.Join(names, ", ")))
 				return

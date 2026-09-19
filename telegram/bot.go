@@ -227,19 +227,28 @@ func (b *Bot) SetASNLookup(lookup func(ip string) string) {
 // getMasterASN retrieves and caches the master host's autonomous system name.
 func (b *Bot) getMasterASN() string {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.masterASN != "" {
-		return b.masterASN
+		res := b.masterASN
+		b.mu.Unlock()
+		return res
 	}
-	if b.asnLookup == nil || b.diagSource == nil {
+	lookup := b.asnLookup
+	ds := b.diagSource
+	b.mu.Unlock()
+
+	if lookup == nil || ds == nil {
 		return ""
 	}
-	ip, err := b.diagSource.GetCurrentIP()
+	ip, err := ds.GetCurrentIP()
 	if err != nil || ip == "" {
 		return ""
 	}
-	b.masterASN = b.asnLookup(ip)
-	return b.masterASN
+	asn := lookup(ip)
+
+	b.mu.Lock()
+	b.masterASN = asn
+	b.mu.Unlock()
+	return asn
 }
 
 func (b *Bot) isRichMode() bool {
@@ -528,6 +537,8 @@ func (b *Bot) nextMsgSeq(chatID int64, msgID int) int64 {
 	defer b.msgSeqMu.Unlock()
 	if b.msgSeq == nil {
 		b.msgSeq = make(map[string]int64)
+	} else if len(b.msgSeq) > 1000 {
+		b.msgSeq = make(map[string]int64)
 	}
 	key := fmt.Sprintf("%d:%d", chatID, msgID)
 	b.msgSeq[key]++
@@ -554,14 +565,14 @@ func (b *Bot) invalidateMsgSeq(chatID int64, msgID int) {
 }
 
 func (b *Bot) sendOrUpdateMenu(t ChatTarget, text string, markup *telego.InlineKeyboardMarkup) {
-	b.lastMenuMu.Lock()
-	defer b.lastMenuMu.Unlock()
+	key := t.targetKey()
 
+	b.lastMenuMu.Lock()
 	if b.lastMenuMsg == nil {
 		b.lastMenuMsg = make(map[string]int)
 	}
-	key := t.targetKey()
 	oldMsgID, hasOld := b.lastMenuMsg[key]
+	b.lastMenuMu.Unlock()
 
 	if hasOld && oldMsgID > 0 && b.api != nil {
 		_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
@@ -572,7 +583,9 @@ func (b *Bot) sendOrUpdateMenu(t ChatTarget, text string, markup *telego.InlineK
 
 	sent, _ := b.sendWithMarkup(t, text, markup)
 	if sent != nil && sent.GetMessageID() > 0 {
+		b.lastMenuMu.Lock()
 		b.lastMenuMsg[key] = sent.GetMessageID()
+		b.lastMenuMu.Unlock()
 	}
 }
 

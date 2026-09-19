@@ -235,7 +235,7 @@ func (s *URLStore) persistLocked() error {
 	}
 
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("writing subscription store: %w", err)
 	}
 	if err := os.Rename(tmp, s.path); err != nil {

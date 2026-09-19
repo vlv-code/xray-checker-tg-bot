@@ -2,11 +2,22 @@ package telegram
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/mymmrac/telego"
 )
+
+// isAllowedSubURL checks that a subscription URL uses http or https scheme.
+// Non-HTTP schemes like file://, folder://, base64:// are disallowed for security.
+func isAllowedSubURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return u.Scheme == "http" || u.Scheme == "https"
+}
 
 // SubFreshness holds update metadata for a subscription URL.
 type SubFreshness struct {
@@ -43,6 +54,10 @@ func (b *Bot) handleAddSub(msg *telego.Message) {
 	url := commandArg(msg.Text)
 	if url == "" {
 		b.replyCommand(msg, "Использование: /addsub &lt;URL подписки&gt;")
+		return
+	}
+	if !isAllowedSubURL(url) {
+		b.replyCommand(msg, "❌ Разрешены только URL подписок со схемой http:// или https://")
 		return
 	}
 	if b.subs == nil {

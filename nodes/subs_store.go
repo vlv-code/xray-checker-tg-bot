@@ -105,7 +105,7 @@ func (s *NodeSubsStore) persistLocked() error {
 		return fmt.Errorf("encoding node subscriptions store: %w", err)
 	}
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("writing node subscriptions store: %w", err)
 	}
 	if err := os.Rename(tmp, s.path); err != nil {

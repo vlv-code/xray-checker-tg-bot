@@ -336,3 +336,59 @@ func TestBot_TopProblematic_MTBF_MTTR(t *testing.T) {
 		t.Errorf("expected top problematic text to contain MTBF and MTTR, got:\n%s", text)
 	}
 }
+
+func TestProcessSnapshot_QuietHours_RecoveryResolvesTracker(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStatsStore(filepath.Join(tmpDir, "stats.json"))
+	if err != nil {
+		t.Fatalf("failed to create stats store: %v", err)
+	}
+	cfgPath := filepath.Join(tmpDir, "cfg.json")
+	cm, err := NewConfigManager(cfgPath, BotConfig{
+		QuietHoursEnabled: true,
+		QuietHoursStart:   "00:00",
+		QuietHoursEnd:     "23:59", // always quiet
+	})
+	if err != nil {
+		t.Fatalf("failed to create config manager: %v", err)
+	}
+
+	testNow := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	tracker := NewAlertTracker()
+	target := ChatTarget{ChatID: 12345}
+
+	b := &Bot{
+		statsStore:  store,
+		configMgr:   cm,
+		seeded:      true,
+		lastSeen:    map[string]bool{"p1": false}, // was offline
+		tracker:     tracker,
+		eventBuffer: NewEventBuffer(),
+		targets:     []ChatTarget{target},
+		nowFunc:     func() time.Time { return testNow },
+	}
+
+	// Simulate active alert already tracked before quiet hours
+	downAt := testNow.Add(-30 * time.Minute)
+	tracker.Track(target.ChatID, target.ThreadID, 999, "p1", "Proxy 1", downAt, "timeout")
+	if !tracker.HasAlert(target.ChatID, target.ThreadID, "p1") {
+		t.Fatalf("setup failed: tracker should have active alert")
+	}
+
+	// Snapshot where p1 is now Online during quiet hours
+	snapshot := []metrics.ProxyMetric{
+		{StableID: "p1", Name: "Proxy 1", Online: true, LatencyMs: 50},
+	}
+	b.ProcessSnapshot(snapshot)
+
+	// In quiet hours, recovery should resolve the tracker so the alert doesn't hang forever!
+	if tracker.HasAlert(target.ChatID, target.ThreadID, "p1") {
+		t.Errorf("expected tracker alert to be resolved upon recovery during quiet hours, but it is still active")
+	}
+
+	// And event should be buffered for morning digest
+	events := b.eventBuffer.Drain()
+	if len(events) != 1 || events[0].Type != "up" {
+		t.Errorf("expected 1 recovery event in event buffer, got %v", events)
+	}
+}

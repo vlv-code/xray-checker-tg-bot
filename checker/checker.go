@@ -159,7 +159,7 @@ func (pc *ProxyChecker) GetCurrentIP() (string, error) {
 	defer pc.ipFetchMu.Unlock()
 
 	pc.mu.RLock()
-	if pc.ipInitialized && pc.currentIP != "" {
+	if pc.ipInitialized && pc.currentIP != "" && time.Since(pc.ipCheckedAt) < hostIPCacheTTL {
 		ip := pc.currentIP
 		pc.mu.RUnlock()
 		return ip, nil

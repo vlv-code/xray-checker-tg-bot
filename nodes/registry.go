@@ -235,7 +235,7 @@ func (r *Registry) HandleReport() http.HandlerFunc {
 
 		logger.Info("Node %s: report accepted (%d proxies, %s)", name, len(payload.Proxies), payload.Version)
 		if cb != nil {
-			cb()
+			go cb()
 		}
 
 		w.Header().Set("Content-Type", "application/json")

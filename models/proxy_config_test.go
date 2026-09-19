@@ -163,3 +163,20 @@ func TestAssignStableIDs_DeterministicAcrossReorder(t *testing.T) {
 		}
 	}
 }
+
+func TestAssignStableIDs_PrepopulatedWithBaseHash_ResolvesCollisions(t *testing.T) {
+	p1 := mk("A", "/p1", "chrome")
+	p2 := mk("Dup", "/p1", "chrome")
+	p1.Index = 0
+	p2.Index = 1
+	// Simulate subscription parsing where convertOutbound pre-populates StableID with GenerateStableID()
+	p1.StableID = p1.GenerateStableID()
+	p2.StableID = p2.GenerateStableID()
+
+	proxies := []*ProxyConfig{p1, p2}
+	AssignStableIDs(proxies)
+
+	if p1.StableID == p2.StableID {
+		t.Errorf("expected duplicate proxies to have distinct StableIDs after AssignStableIDs, but both got %q", p1.StableID)
+	}
+}

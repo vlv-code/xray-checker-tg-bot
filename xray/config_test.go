@@ -292,3 +292,51 @@ func TestEmptyProxiesConfigBuilds(t *testing.T) {
 	buildsWithXrayCore(t, nil)
 	buildsWithXrayCore(t, []*models.ProxyConfig{})
 }
+
+func TestVMessWithTLS_BuildsAndHasCorrectUserSecurity(t *testing.T) {
+	vmess := &models.ProxyConfig{
+		Protocol: "vmess",
+		Server:   "1.2.3.4",
+		Port:     443,
+		UUID:     "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+		Security: "tls", // transport TLS
+		Type:     "tcp",
+		Name:     "vmess-tls",
+		Index:    0,
+	}
+	configBytes := buildsWithXrayCore(t, []*models.ProxyConfig{vmess})
+	var parsed struct {
+		Outbounds []struct {
+			Protocol string `json:"protocol"`
+			Settings struct {
+				Vnext []struct {
+					Users []struct {
+						Security string `json:"security"`
+					} `json:"users"`
+				} `json:"vnext"`
+			} `json:"settings"`
+			StreamSettings struct {
+				Security string `json:"security"`
+			} `json:"streamSettings"`
+		} `json:"outbounds"`
+	}
+	if err := json.Unmarshal(configBytes, &parsed); err != nil {
+		t.Fatalf("parse generated config: %v", err)
+	}
+	var found bool
+	for _, ob := range parsed.Outbounds {
+		if ob.Protocol == "vmess" {
+			found = true
+			if ob.StreamSettings.Security != "tls" {
+				t.Errorf("expected streamSettings.security to be tls, got %q", ob.StreamSettings.Security)
+			}
+			userSec := ob.Settings.Vnext[0].Users[0].Security
+			if userSec == "tls" {
+				t.Errorf("user security cipher must not be 'tls', must be 'auto' or valid cipher, got %q", userSec)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected a vmess outbound")
+	}
+}

@@ -202,12 +202,18 @@ func TestSubCounts(t *testing.T) {
 
 func TestOnUpdateFires(t *testing.T) {
 	reg, _ := newTestRegistry(nil)
-	var mu sync.Mutex
-	calls := 0
-	reg.SetOnUpdate(func() { mu.Lock(); calls++; mu.Unlock() })
+	fired := make(chan struct{}, 1)
+	reg.SetOnUpdate(func() {
+		select {
+		case fired <- struct{}{}:
+		default:
+		}
+	})
 	postReport(t, reg.HandleReport(), "t1", ReportPayload{Version: "1", CheckIntervalSec: 60})
-	if calls != 1 {
-		t.Errorf("onUpdate calls = %d", calls)
+	select {
+	case <-fired:
+	case <-time.After(500 * time.Millisecond):
+		t.Error("onUpdate did not fire")
 	}
 }
 
@@ -365,4 +371,36 @@ func TestRegistry_NodeDiagReports(t *testing.T) {
 	if reports2[0].ProxyName != "Proxy1" {
 		t.Errorf("NodeDiagReports did not return an isolated copy")
 	}
+}
+
+func TestHandleReport_AsyncOnUpdate(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	updateStarted := make(chan struct{})
+	finishUpdate := make(chan struct{})
+
+	reg.SetOnUpdate(func() {
+		close(updateStarted)
+		<-finishUpdate
+	})
+
+	h := reg.HandleReport()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- postReport(t, h, "t1", ReportPayload{
+			Version:          "1.0",
+			CheckIntervalSec: 60,
+		})
+	}()
+
+	select {
+	case rec := <-done:
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected 200 OK, got %d", rec.Code)
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("HandleReport blocked on synchronous onUpdate callback")
+	}
+
+	<-updateStarted
+	close(finishUpdate)
 }
