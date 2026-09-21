@@ -436,7 +436,7 @@ func DetermineVerdict(proto string, health NodeHealth, targets []TargetDiagResul
 
 	if !IsUDPProto(proto) && health.TCPErr != "" {
 		if strings.Contains(health.TCPErr, "Timeout") {
-			return "offline", "Нода не отвечает на TCP (таймаут: хост недоступен с сервера чекера)"
+			return "offline", "Нода не отвечает на TCP (таймаут: хост недоступен с узла проверки)"
 		}
 		if strings.Contains(strings.ToLower(health.TCPErr), "refused") {
 			return "offline", "TCP-соединение сброшено (порт закрыт / сервис на ноде остановлен)"
@@ -477,11 +477,46 @@ func EnrichVerdictWithCheckHost(verdict string, ch *CheckHostSummary, dnsErr ...
 		return fmt.Sprintf("%s | Check-Host: хост недоступен как из РФ, так и из других стран", verdict)
 	case ch.RUAvailable && ch.WorldAvailable:
 		if hasDNSErr {
-			return fmt.Sprintf("%s | Check-Host: внешние узлы смогли отрезолвить домен (возможен локальный сбой DNS у чекера)", verdict)
+			return fmt.Sprintf("%s | Check-Host: внешние узлы смогли отрезолвить домен (возможен локальный сбой DNS на узле проверки)", verdict)
 		}
-		return fmt.Sprintf("%s | Check-Host: хост отвечает из РФ и других стран", verdict)
+		return fmt.Sprintf("%s | Check-Host: хост отвечает из РФ и других стран (вероятна фильтрация/DPI на узле проверки)", verdict)
 	default:
 		return fmt.Sprintf("%s | Check-Host: хост доступен из РФ, но недоступен из части внешних сетей", verdict)
+	}
+}
+
+// alignTargetErrorsWithNodeHealth adjusts target error messages when the proxy tunnel
+// could not be established at all (all targets failed due to low-level node DNS/TCP/UDP failure).
+// If at least one target succeeded, the tunnel IS up and functioning, so target errors are preserved!
+func alignTargetErrorsWithNodeHealth(health NodeHealth, proto string, targets []TargetDiagResult) {
+	successCount := 0
+	for _, t := range targets {
+		if t.Success {
+			successCount++
+		}
+	}
+	if successCount > 0 {
+		return // Tunnel is up and working, preserve real target-level error messages
+	}
+
+	if health.DNSErr != "" {
+		for tIdx := range targets {
+			if !targets[tIdx].Success {
+				targets[tIdx].Error = fmt.Sprintf("Туннель не поднят (сбой DNS ноды: %s)", health.DNSErr)
+			}
+		}
+	} else if health.TCPErr != "" {
+		for tIdx := range targets {
+			if !targets[tIdx].Success {
+				targets[tIdx].Error = fmt.Sprintf("Туннель не поднят (сбой TCP ноды: %s)", health.TCPErr)
+			}
+		}
+	} else if IsUDPProto(proto) && health.UDPErr != "" {
+		for tIdx := range targets {
+			if !targets[tIdx].Success {
+				targets[tIdx].Error = fmt.Sprintf("Туннель не поднят (сбой UDP ноды: %s)", health.UDPErr)
+			}
+		}
 	}
 }
 
@@ -589,29 +624,9 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 			innerWg.Wait()
 			nodeWg.Wait()
 
-			// If the proxy node itself is down at the DNS or transport level,
-			// target probes that received EOF or connection resets did so because
-			// the local SOCKS client closed the connection when the outbound dial failed.
-			// Align the target errors so they don't misleadingly blame Cloudflare/Google!
-			if health.DNSErr != "" {
-				for tIdx := range targetResults {
-					if !targetResults[tIdx].Success {
-						targetResults[tIdx].Error = fmt.Sprintf("Туннель не поднят (сбой DNS ноды: %s)", health.DNSErr)
-					}
-				}
-			} else if health.TCPErr != "" {
-				for tIdx := range targetResults {
-					if !targetResults[tIdx].Success {
-						targetResults[tIdx].Error = fmt.Sprintf("Туннель не поднят (сбой TCP ноды: %s)", health.TCPErr)
-					}
-				}
-			} else if IsUDPProto(proxy.Protocol) && health.UDPErr != "" {
-				for tIdx := range targetResults {
-					if !targetResults[tIdx].Success {
-						targetResults[tIdx].Error = fmt.Sprintf("Туннель не поднят (сбой UDP ноды: %s)", health.UDPErr)
-					}
-				}
-			}
+			// Align target errors with low-level node health only if ALL targets failed
+			// (if at least one target succeeded, the tunnel is functioning and target errors are preserved)
+			alignTargetErrorsWithNodeHealth(health, proxy.Protocol, targetResults)
 
 			status, verdict := DetermineVerdict(proxy.Protocol, health, targetResults)
 

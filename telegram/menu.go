@@ -18,6 +18,10 @@ func btn(text, data string) telego.InlineKeyboardButton {
 	return tu.InlineKeyboardButton(text).WithCallbackData(data)
 }
 
+func btnURL(text, urlStr string) telego.InlineKeyboardButton {
+	return tu.InlineKeyboardButton(text).WithURL(urlStr)
+}
+
 // truncateButtonText truncates text to maxRunes, adding an ellipsis if exceeded.
 func truncateButtonText(text string, maxRunes int) string {
 	runes := []rune(text)
@@ -215,6 +219,9 @@ func SettingsMenuMarkup(showSubs ...bool) *telego.InlineKeyboardMarkup {
 		tu.InlineKeyboardRow(
 			btn("📈 Статистика инцидентов", "menu:stats"),
 			btn("🕒 Часовой пояс", "menu:timezone"),
+		),
+		tu.InlineKeyboardRow(
+			btn("🚀 Проверить обновления", "menu:checkupdate"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🔙 Главное меню", "menu:main"),

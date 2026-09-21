@@ -360,11 +360,23 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 	// 2. Transport Protocol / TCP Ping
 	if checker.IsUDPProto(rep.Protocol) {
 		if rep.Port > 0 {
-			fmt.Fprintf(sb, "  • Порт (%d): ⚡ UDP / QUIC\n", rep.Port)
+			if rep.NodeHealth.UDPErr != "" {
+				if rep.Status == "online" || rep.Status == "degraded" {
+					fmt.Fprintf(sb, "  • Порт (%d): ⚡ UDP / QUIC ⚠️ %s (туннель активен)\n", rep.Port, escapeHTML(rep.NodeHealth.UDPErr))
+				} else {
+					fmt.Fprintf(sb, "  • Порт (%d): ⚡ UDP / QUIC ❌ %s\n", rep.Port, escapeHTML(rep.NodeHealth.UDPErr))
+				}
+			} else {
+				fmt.Fprintf(sb, "  • Порт (%d): ⚡ UDP / QUIC\n", rep.Port)
+			}
 		}
 	} else if rep.Port > 0 {
 		if rep.NodeHealth.TCPErr != "" {
-			fmt.Fprintf(sb, "  • TCP (%d): ❌ %s\n", rep.Port, escapeHTML(rep.NodeHealth.TCPErr))
+			if rep.Status == "online" || rep.Status == "degraded" {
+				fmt.Fprintf(sb, "  • TCP (%d): ⚠️ %s (фильтрация провайдером или защита от сканирования / anti-probe на сервере, но туннель активен)\n", rep.Port, escapeHTML(rep.NodeHealth.TCPErr))
+			} else {
+				fmt.Fprintf(sb, "  • TCP (%d): ❌ %s\n", rep.Port, escapeHTML(rep.NodeHealth.TCPErr))
+			}
 		} else if rep.NodeHealth.TCPPing > 0 {
 			fmt.Fprintf(sb, "  • TCP (%d): ✅ %.0f ms\n", rep.Port, float64(rep.NodeHealth.TCPPing.Milliseconds()))
 		}
@@ -383,7 +395,11 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 		if tr.Success {
 			fmt.Fprintf(sb, "  • %s: ✅ %.0f ms\n", siteName, float64(tr.Latency.Milliseconds()))
 		} else {
-			fmt.Fprintf(sb, "  • %s: ❌ %s\n", siteName, escapeHTML(tr.Error))
+			errText := tr.Error
+			if (rep.Status == "online" || rep.Status == "degraded") && !strings.Contains(errText, "Туннель не поднят") {
+				errText = formatTargetErrorInsideTunnel(errText, tr.StatusCode)
+			}
+			fmt.Fprintf(sb, "  • %s: ❌ %s\n", siteName, escapeHTML(errText))
 		}
 	}
 
@@ -635,7 +651,11 @@ func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeH
 	// 2. TCP / UDP рукопожатие
 	if checker.IsUDPProto(pm.Protocol) {
 		if health.UDPErr != "" {
-			fmt.Fprintf(&sb, "  2. UDP-датаграмма ...... —      ❌  %s\n", escapeHTML(health.UDPErr))
+			if pm.Online || pm.CanConnect {
+				fmt.Fprintf(&sb, "  2. UDP-датаграмма ...... —      ⚠️  %s (туннель активен)\n", escapeHTML(health.UDPErr))
+			} else {
+				fmt.Fprintf(&sb, "  2. UDP-датаграмма ...... —      ❌  %s\n", escapeHTML(health.UDPErr))
+			}
 		} else if health.UDPPing > 0 {
 			fmt.Fprintf(&sb, "  2. UDP-датаграмма ...... %.0f мс  ✅\n", float64(health.UDPPing.Milliseconds()))
 		} else {
@@ -643,7 +663,11 @@ func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeH
 		}
 	} else {
 		if health.TCPErr != "" {
-			fmt.Fprintf(&sb, "  2. TCP-рукопожатие ...... —      ❌  %s\n", escapeHTML(health.TCPErr))
+			if pm.Online || pm.CanConnect {
+				fmt.Fprintf(&sb, "  2. TCP-рукопожатие ...... —      ⚠️  %s (фильтрация провайдером или скрытый порт / anti-probe, туннель активен)\n", escapeHTML(health.TCPErr))
+			} else {
+				fmt.Fprintf(&sb, "  2. TCP-рукопожатие ...... —      ❌  %s\n", escapeHTML(health.TCPErr))
+			}
 		} else if health.TCPPing > 0 {
 			fmt.Fprintf(&sb, "  2. TCP-рукопожатие ...... %.0f мс  ✅  (к %s)\n", float64(health.TCPPing.Milliseconds()), escapeHTML(pm.Address))
 		} else {
@@ -1050,11 +1074,23 @@ func (b *Bot) buildDiagnosticsDetailsRichMessageWithTarget(reports []checker.Pro
 		// 2. Transport / TCP
 		if checker.IsUDPProto(rep.Protocol) {
 			if rep.Port > 0 {
-				detailLines = append(detailLines, fmt.Sprintf("Порт (%d): ⚡ UDP / QUIC", rep.Port))
+				if rep.NodeHealth.UDPErr != "" {
+					if rep.Status == "online" || rep.Status == "degraded" {
+						detailLines = append(detailLines, fmt.Sprintf("Порт (%d): ⚡ UDP / QUIC ⚠️ %s (туннель активен)", rep.Port, rep.NodeHealth.UDPErr))
+					} else {
+						detailLines = append(detailLines, fmt.Sprintf("Порт (%d): ⚡ UDP / QUIC ❌ %s", rep.Port, rep.NodeHealth.UDPErr))
+					}
+				} else {
+					detailLines = append(detailLines, fmt.Sprintf("Порт (%d): ⚡ UDP / QUIC", rep.Port))
+				}
 			}
 		} else if rep.Port > 0 {
 			if rep.NodeHealth.TCPErr != "" {
-				detailLines = append(detailLines, fmt.Sprintf("TCP (%d): ❌ %s", rep.Port, rep.NodeHealth.TCPErr))
+				if rep.Status == "online" || rep.Status == "degraded" {
+					detailLines = append(detailLines, fmt.Sprintf("TCP (%d): ⚠️ %s (фильтрация провайдером или защита от сканирования, туннель активен)", rep.Port, rep.NodeHealth.TCPErr))
+				} else {
+					detailLines = append(detailLines, fmt.Sprintf("TCP (%d): ❌ %s", rep.Port, rep.NodeHealth.TCPErr))
+				}
 			} else if rep.NodeHealth.TCPPing > 0 {
 				detailLines = append(detailLines, fmt.Sprintf("TCP (%d): ✅ %.0f ms", rep.Port, float64(rep.NodeHealth.TCPPing.Milliseconds())))
 			}
@@ -1073,7 +1109,11 @@ func (b *Bot) buildDiagnosticsDetailsRichMessageWithTarget(reports []checker.Pro
 			if tr.Success {
 				detailLines = append(detailLines, fmt.Sprintf("%s: ✅ %.0f ms", siteName, float64(tr.Latency.Milliseconds())))
 			} else {
-				detailLines = append(detailLines, fmt.Sprintf("%s: ❌ %s", siteName, tr.Error))
+				errText := tr.Error
+				if (rep.Status == "online" || rep.Status == "degraded") && !strings.Contains(errText, "Туннель не поднят") {
+					errText = formatTargetErrorInsideTunnel(errText, tr.StatusCode)
+				}
+				detailLines = append(detailLines, fmt.Sprintf("%s: ❌ %s", siteName, errText))
 			}
 		}
 

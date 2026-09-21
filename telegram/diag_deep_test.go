@@ -265,3 +265,61 @@ func TestGetDeepLinks(t *testing.T) {
 		t.Fatalf("expected 2 capped proxies, got %d", len(linksCapped))
 	}
 }
+
+func TestFormatSingleProxyDiagWithStats_AntiProbeAndTargetInsideTunnel(t *testing.T) {
+	b := &Bot{}
+	var sb strings.Builder
+
+	// Test 1: Proxy is Online, but raw TCP probe timed out (anti-probe on server or ISP filtering raw port)
+	// It should render warning with anti-probe hint and NOT a red cross ❌
+	repOnlineAntiProbe := checker.ProxyDiagReport{
+		ProxyName: "Fin-stealth",
+		Protocol:  "vless",
+		Port:      443,
+		Status:    "online",
+		NodeHealth: checker.NodeHealth{
+			ResolvedIP: "194.48.143.243",
+			TCPErr:     "Timeout",
+		},
+		Targets: []checker.TargetDiagResult{
+			{URL: "https://cp.cloudflare.com/generate_204", Success: true, Latency: 403 * time.Millisecond},
+		},
+	}
+	b.formatSingleProxyDiagWithStats(&sb, repOnlineAntiProbe)
+	out1 := sb.String()
+
+	if strings.Contains(out1, "TCP (443): ❌") {
+		t.Errorf("expected no red cross for TCP when proxy is online, got:\n%s", out1)
+	}
+	if !strings.Contains(out1, "TCP (443): ⚠️") || !strings.Contains(out1, "туннель активен") {
+		t.Errorf("expected anti-probe / firewall warning when proxy is online, got:\n%s", out1)
+	}
+
+	// Test 2: Proxy is Degraded (Cloudflare ok, Google timed out inside tunnel)
+	// Error for Google should NOT say 'Туннель не поднят', but explain the timeout through proxy
+	sb.Reset()
+	repDegraded := checker.ProxyDiagReport{
+		ProxyName: "FIN-main",
+		Protocol:  "vless",
+		Port:      443,
+		Status:    "degraded",
+		NodeHealth: checker.NodeHealth{
+			ResolvedIP: "194.48.143.243",
+			TCPErr:     "Timeout",
+		},
+		Targets: []checker.TargetDiagResult{
+			{URL: "https://cp.cloudflare.com/generate_204", Success: true, Latency: 403 * time.Millisecond},
+			{URL: "https://www.gstatic.com/generate_204", Success: false, Error: "Timeout"},
+		},
+	}
+	b.formatSingleProxyDiagWithStats(&sb, repDegraded)
+	out2 := sb.String()
+
+	if strings.Contains(out2, "Туннель не поднят") {
+		t.Errorf("expected no 'Туннель не поднят' when tunnel succeeded for Cloudflare, got:\n%s", out2)
+	}
+	if !strings.Contains(out2, "Google 204: ❌ Timeout (таймаут ответа через прокси") {
+		t.Errorf("expected detailed timeout explanation inside tunnel, got:\n%s", out2)
+	}
+}
+

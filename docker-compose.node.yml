@@ -1,0 +1,54 @@
+﻿# docker-compose.node.yml — Deployment template for xray-checker remote node
+# Designed for restricted/enterprise networks (corporate proxies, firewalls, NAT).
+#
+# Usage:
+#   docker compose -f docker-compose.node.yml up -d
+#
+# Network Traffic Separation:
+#   1. Node Reports (REPORT_URL): Directly to master. NO_PROXY automatically excludes
+#      the master host/IP, localhost, and RFC1918 private subnets (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16).
+#   2. Direct Probes: Direct TCP/UDP reachability checks to proxy servers always go directly.
+#   3. Target Probes: HTTP 204 target tests are routed through the proxy under test via local SOCKS5.
+#   4. Subscriptions & Geo bases: If GitHub or subscription panel is blocked in your network,
+#      set BOOTSTRAP_PROXY below.
+
+services:
+  xray-node:
+    image: ghcr.io/vlv-code/xray-checker-tg-bot:latest
+    container_name: xray-node
+    restart: unless-stopped
+
+    # If building locally behind a corporate proxy:
+    # build:
+    #   context: .
+    #   args:
+    #     HTTP_PROXY: "http://192.168.27.121:10809"
+    #     HTTPS_PROXY: "http://192.168.27.121:10809"
+
+    environment:
+      # Remote master ingest URL and bearer token (required for node mode)
+      REPORT_URL: "http://89.125.214.220:2112/api/v1/nodes/report"
+      REPORT_TOKEN: "CHANGE_ME_TO_YOUR_NODE_BEARER_TOKEN"
+
+      # Optional custom node name (defaults to container hostname if empty)
+      NODE_NAME: "node-enterprise-01"
+
+      # Proxy for downloading subscriptions and geo databases if direct internet
+      # is restricted on this host (does NOT affect master reports or proxy checks):
+      # BOOTSTRAP_PROXY: "http://192.168.27.121:10809"
+
+      # Custom NO_PROXY if you need additional intranet exclusions
+      # (defaults to localhost, RFC1918 private networks, and REPORT_URL host):
+      # NO_PROXY: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+      # Logging level: info (default), debug, warn, error
+      LOG_LEVEL: "info"
+
+    volumes:
+      # Persistent storage for node data and geo databases
+      - node-data:/app/data
+      - node-geo:/app/geo
+
+volumes:
+  node-data:
+  node-geo:

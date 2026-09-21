@@ -38,8 +38,11 @@ type BotConfig struct {
 	NodeSyncEnabled        bool     `json:"node_sync_enabled"`
 	NodeAlertsEnabled      bool     `json:"node_alerts_enabled"`
 	NodeProxyAlertsChat    bool     `json:"node_proxy_alerts_chat"`
-	NodeStaleTimeoutSec    int      `json:"node_stale_timeout_sec,omitempty"`
-	MasterPublicURL        string   `json:"master_public_url,omitempty"`
+	NodeStaleTimeoutSec       int      `json:"node_stale_timeout_sec,omitempty"`
+	MasterPublicURL           string   `json:"master_public_url,omitempty"`
+	ReleaseAlertsEnabled      bool     `json:"release_alerts_enabled"`
+	ReleaseCheckIntervalHours int      `json:"release_check_interval_hours,omitempty"`
+	LastNotifiedReleaseTag    string   `json:"last_notified_release_tag,omitempty"`
 }
 
 // locCache memoizes parsed time zones: Location() is called on every message
@@ -163,6 +166,12 @@ func (cm *ConfigManager) load() error {
 	}
 	if !strings.Contains(string(data), `"node_proxy_alerts_chat"`) {
 		loaded.NodeProxyAlertsChat = true
+	}
+	if loaded.ReleaseCheckIntervalHours <= 0 {
+		loaded.ReleaseCheckIntervalHours = 6
+	}
+	if !strings.Contains(string(data), `"release_alerts_enabled"`) {
+		loaded.ReleaseAlertsEnabled = true
 	}
 
 	cm.cfg = loaded

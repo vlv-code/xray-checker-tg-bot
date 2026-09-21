@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"xray-checker/config"
 	"xray-checker/logger"
 )
 
@@ -80,7 +81,8 @@ func (gfm *GeoFileManager) ensureFile(filename, url string) error {
 
 func (gfm *GeoFileManager) downloadFile(url, filePath string) error {
 	client := &http.Client{
-		Timeout: 60 * time.Second,
+		Timeout:   90 * time.Second,
+		Transport: config.GetBootstrapTransport(),
 	}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -118,4 +120,24 @@ func (gfm *GeoFileManager) downloadFile(url, filePath string) error {
 	}
 
 	return nil
+}
+
+// UpdateGeoFiles attempts to update geosite.dat and geoip.dat in the background.
+// If an update fails, it logs a warning and keeps the existing files intact.
+func (gfm *GeoFileManager) UpdateGeoFiles() {
+	targets := []struct {
+		filename string
+		url      string
+	}{
+		{geoSiteFile, geoSiteURL},
+		{geoIPFile, geoIPURL},
+	}
+	for _, t := range targets {
+		filePath := filepath.Join(gfm.baseDir, t.filename)
+		if err := gfm.downloadFile(t.url, filePath); err != nil {
+			logger.Warn("Background update of %s failed (keeping current version): %v", t.filename, err)
+		} else {
+			logger.Info("Successfully updated %s", t.filename)
+		}
+	}
 }

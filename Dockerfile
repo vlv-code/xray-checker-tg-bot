@@ -41,6 +41,8 @@ LABEL org.opencontainers.image.source=https://github.com/${USERNAME}/${REPOSITOR
 RUN apk add --no-cache ca-certificates curl tzdata su-exec && \
     adduser -D -u 1000 appuser && \
     mkdir -p /app/geo /app/data && \
+    curl -sSL -f -o /app/geo/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat && \
+    curl -sSL -f -o /app/geo/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat && \
     chown -R appuser:appuser /app
 
 WORKDIR /app

@@ -1,0 +1,37 @@
+﻿[Unit]
+Description=Xray Checker Remote Node
+Documentation=https://github.com/vlv-code/xray-checker-tg-bot
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xray-checker
+Group=xray-checker
+WorkingDirectory=/opt/xray-checker
+
+# Remote Master configuration (mandatory)
+Environment="REPORT_URL=http://89.125.214.220:2112/api/v1/nodes/report"
+Environment="REPORT_TOKEN=CHANGE_ME_TO_YOUR_NODE_BEARER_TOKEN"
+# Environment="NODE_NAME=sr-zabbix-01"
+
+# Corporate proxy for bootstrap/subscriptions/geo if direct access is blocked
+# (Does NOT affect node reports or proxy checks)
+# Environment="BOOTSTRAP_PROXY=http://192.168.27.121:10809"
+
+# NO_PROXY exclusions (localhost, RFC1918 private subnets, and master IP are excluded automatically)
+# Environment="NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+ExecStart=/usr/local/bin/xray-checker
+Restart=always
+RestartSec=5s
+
+# Security sandboxing
+LimitNOFILE=65535
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

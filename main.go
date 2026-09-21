@@ -35,6 +35,7 @@ var (
 
 func main() {
 	config.Parse(version)
+	config.SetupNetworkEnvironment(config.CLIConfig.Report.URL)
 
 	logLevel := logger.ParseLevel(config.CLIConfig.LogLevel)
 	logger.SetLevel(logLevel)
@@ -204,6 +205,7 @@ func main() {
 	var reconcileDesired func(desired []string) error
 
 	var runCheckIteration func()
+	var checkIterationRunning atomic.Bool
 
 	rescheduleChecks := func(seconds int) {
 		checkSchedulerMu.Lock()
@@ -281,6 +283,12 @@ func main() {
 	}
 
 	runCheckIteration = func() {
+		if !checkIterationRunning.CompareAndSwap(false, true) {
+			logger.Debug("Check iteration already running, skipping")
+			return
+		}
+		defer checkIterationRunning.Store(false)
+
 		checkRunnerMu.RLock()
 		defer checkRunnerMu.RUnlock()
 
@@ -323,7 +331,12 @@ func main() {
 		if reporter != nil {
 			if reporterRunning.CompareAndSwap(false, true) {
 				go func() {
-					defer reporterRunning.Store(false)
+					released := false
+					defer func() {
+						if !released {
+							reporterRunning.Store(false)
+						}
+					}()
 					hostIP, err := proxyChecker.GetCurrentIP()
 					if err != nil {
 						hostIP = ""
@@ -348,6 +361,8 @@ func main() {
 						config.CLIConfig.Proxy.CheckMethod, hostIP,
 					)
 					desired, err := reporter.Send(payload)
+					reporterRunning.Store(false)
+					released = true
 					if err != nil {
 						logger.Warn("Report to master failed (next cycle will retry): %v", err)
 						return
@@ -459,7 +474,11 @@ func main() {
 	}
 
 	reconcileDesired = func(desired []string) error {
-		return subscription.ReconcileManaged(subURLStore, desired, reloadSubscriptions, subscription.DefaultSubscriptionValidator)
+		changed, err := subscription.ReconcileManaged(subURLStore, desired, reloadSubscriptions, subscription.DefaultSubscriptionValidator)
+		if err == nil && changed {
+			logger.Info("Subscriptions updated via master reconciliation, check iteration completed")
+		}
+		return err
 	}
 
 	// The Telegram bot is only started for a long-running instance: --run-once
@@ -493,8 +512,10 @@ func main() {
 				NodeSyncEnabled:        true,
 				NodeAlertsEnabled:      true,
 				NodeProxyAlertsChat:    true,
-				NodeStaleTimeoutSec:    90,
-				MasterPublicURL:        config.CLIConfig.Nodes.MasterPublicURL,
+				NodeStaleTimeoutSec:       90,
+				MasterPublicURL:           config.CLIConfig.Nodes.MasterPublicURL,
+				ReleaseAlertsEnabled:      config.CLIConfig.Telegram.ReleaseAlertsEnabled,
+				ReleaseCheckIntervalHours: config.CLIConfig.Telegram.ReleaseCheckIntervalHours,
 			}
 
 			botCfgMgr, err := telegram.NewConfigManager(config.CLIConfig.Telegram.BotConfigStorePath, defaultBotCfg)
@@ -563,6 +584,7 @@ func main() {
 				bot.SetASNLookup(asnLookup)
 				bot.SetDiagnosticsSource(proxyChecker)
 				bot.SetIntervalHandler(rescheduleChecks)
+				bot.SetVersion(version)
 				if config.CLIConfig.Telegram.RichMode {
 					bot.SetRichMode(true)
 				} else if botCfgMgr == nil {
@@ -600,6 +622,9 @@ func main() {
 	checkScheduler.StartAsync()
 	checkSchedulerMu.Unlock()
 
+	// Initial check on startup: runs immediately without waiting for the first scheduled interval.
+	go runCheckIteration()
+
 	if config.CLIConfig.Subscription.Update {
 		updateScheduler := gocron.NewScheduler(time.UTC)
 		updateScheduler.Every(config.CLIConfig.Subscription.UpdateInterval).Seconds().WaitForSchedule().Do(func() {
@@ -614,6 +639,13 @@ func main() {
 			}
 		})
 		updateScheduler.StartAsync()
+
+		geoScheduler := gocron.NewScheduler(time.UTC)
+		geoScheduler.Every(24).Hours().Do(func() {
+			logger.Info("Checking geo databases for updates...")
+			geoManager.UpdateGeoFiles()
+		})
+		geoScheduler.StartAsync()
 	}
 
 	if nodeRegistry != nil {

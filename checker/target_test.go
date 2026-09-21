@@ -279,3 +279,45 @@ func TestTargetManager_SSRF_Protection(t *testing.T) {
 		}
 	}
 }
+
+func TestAlignTargetErrorsWithNodeHealth(t *testing.T) {
+	// Scenario 1: Tunnel is UP (Cloudflare 204 succeeded, Google 204 timed out)
+	// Even though raw TCP probe failed (e.g. anti-probe or ISP dropped raw SYN),
+	// Google's error must NOT be overwritten with "Туннель не поднят"!
+	targetsUp := []TargetDiagResult{
+		{URL: "https://cp.cloudflare.com/generate_204", Success: true},
+		{URL: "https://www.gstatic.com/generate_204", Success: false, Error: "Timeout"},
+	}
+	healthWithTCPErr := NodeHealth{TCPErr: "Timeout"}
+	alignTargetErrorsWithNodeHealth(healthWithTCPErr, "vless", targetsUp)
+
+	if targetsUp[1].Error != "Timeout" {
+		t.Errorf("expected target error to remain 'Timeout' when tunnel is up, got: %s", targetsUp[1].Error)
+	}
+
+	// Scenario 2: Tunnel is DOWN (all targets failed)
+	// Now errors SHOULD be aligned with node transport failure so targets aren't blamed.
+	targetsDown := []TargetDiagResult{
+		{URL: "https://cp.cloudflare.com/generate_204", Success: false, Error: "EOF"},
+		{URL: "https://www.gstatic.com/generate_204", Success: false, Error: "EOF"},
+	}
+	alignTargetErrorsWithNodeHealth(healthWithTCPErr, "vless", targetsDown)
+
+	for i, tr := range targetsDown {
+		if !strings.Contains(tr.Error, "Туннель не поднят (сбой TCP ноды: Timeout)") {
+			t.Errorf("target %d: expected error to be aligned with tunnel failure, got: %s", i, tr.Error)
+		}
+	}
+
+	// Scenario 3: Tunnel is DOWN with UDP error (Hysteria)
+	targetsUDPDown := []TargetDiagResult{
+		{URL: "https://cp.cloudflare.com/generate_204", Success: false, Error: "EOF"},
+	}
+	healthUDP := NodeHealth{UDPErr: "connection refused"}
+	alignTargetErrorsWithNodeHealth(healthUDP, "hysteria2", targetsUDPDown)
+
+	if !strings.Contains(targetsUDPDown[0].Error, "сбой UDP ноды: connection refused") {
+		t.Errorf("expected UDP aligned error, got: %s", targetsUDPDown[0].Error)
+	}
+}
+

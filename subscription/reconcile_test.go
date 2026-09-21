@@ -32,8 +32,8 @@ func TestReconcileManaged(t *testing.T) {
 	reload := func() (bool, int, error) { reloadCalls++; return true, 1, nil }
 
 	// Empty desired on an empty store: no-op, no reload.
-	if err := ReconcileManaged(store, nil, reload, fakeValidator); err != nil {
-		t.Fatal(err)
+	if changed, err := ReconcileManaged(store, nil, reload, fakeValidator); err != nil || changed {
+		t.Fatalf("expected not changed and no error, got changed=%v, err=%v", changed, err)
 	}
 	if reloadCalls != 0 {
 		t.Fatalf("no-op must not reload, got %d calls", reloadCalls)
@@ -41,8 +41,8 @@ func TestReconcileManaged(t *testing.T) {
 
 	// Desired adds two valid, one invalid and one malformed — both skipped
 	// with no error.
-	if err := ReconcileManaged(store, []string{good1, good2, bad, malformed}, reload, fakeValidator); err != nil {
-		t.Fatal(err)
+	if changed, err := ReconcileManaged(store, []string{good1, good2, bad, malformed}, reload, fakeValidator); err != nil || !changed {
+		t.Fatalf("expected changed=true, got changed=%v, err=%v", changed, err)
 	}
 	if got := store.Managed(); len(got) != 2 {
 		t.Fatalf("want 2 managed, got %v", got)
@@ -52,17 +52,17 @@ func TestReconcileManaged(t *testing.T) {
 	}
 
 	// Shrink desired to one — the other is removed.
-	if err := ReconcileManaged(store, []string{good1}, reload, fakeValidator); err != nil {
-		t.Fatal(err)
+	if changed, err := ReconcileManaged(store, []string{good1}, reload, fakeValidator); err != nil || !changed {
+		t.Fatalf("after shrink: expected changed=true, got changed=%v, err=%v", changed, err)
 	}
 	if got := store.Managed(); len(got) != 1 || got[0] != good1 {
 		t.Fatalf("after shrink: %v", got)
 	}
 
-	// Same desired again: no reload.
+	// Same desired again: no reload, changed=false.
 	before := reloadCalls
-	if err := ReconcileManaged(store, []string{good1}, reload, fakeValidator); err != nil {
-		t.Fatal(err)
+	if changed, err := ReconcileManaged(store, []string{good1}, reload, fakeValidator); err != nil || changed {
+		t.Fatalf("steady state must not change, got changed=%v, err=%v", changed, err)
 	}
 	if reloadCalls != before {
 		t.Error("steady state must not reload")
@@ -74,7 +74,7 @@ func TestReconcileManagedReloadFailureReverts(t *testing.T) {
 	store, _ := NewURLStore(nil, "")
 	fail := func() (bool, int, error) { return false, 0, errors.New("boom") }
 
-	if err := ReconcileManaged(store, []string{good}, fail, fakeValidator); err == nil {
+	if _, err := ReconcileManaged(store, []string{good}, fail, fakeValidator); err == nil {
 		t.Fatal("reload error must propagate")
 	}
 	if got := store.Managed(); len(got) != 0 {
@@ -94,8 +94,8 @@ func TestReconcileManagedLeavesUnmanagedDynamicAlone(t *testing.T) {
 	// The URL is already dynamic (bot-added) and satisfies the master's
 	// desired state functionally; reconciliation must NOT adopt or remove
 	// it (spec §6: bot-added subscriptions stay out of the master's reach).
-	if err := ReconcileManaged(store, []string{good}, reload, fakeValidator); err != nil {
-		t.Fatal(err)
+	if changed, err := ReconcileManaged(store, []string{good}, reload, fakeValidator); err != nil || changed {
+		t.Fatalf("expected changed=false and err=nil, got changed=%v, err=%v", changed, err)
 	}
 	if got := store.Managed(); len(got) != 0 {
 		t.Fatalf("bot-added entry must stay unmanaged, got %v", got)

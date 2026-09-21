@@ -122,6 +122,8 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		go b.handleDelSub(msg)
 	case "id":
 		b.replyID(msg)
+	case "checkupdate", "check_update", "update":
+		go b.handleCheckUpdate(msg)
 	case "help":
 		b.replyHelp(t)
 	}
@@ -479,7 +481,52 @@ func (b *Bot) replyHelp(t ChatTarget) {
 			"/nodeaddsub &lt;имя&gt; &lt;URL&gt; — назначить подписку ноде\n" +
 			"/nodedelsub &lt;имя&gt; &lt;URL&gt; — снять подписку с ноды\n"
 	}
-	text += "/help — эта справка\n\n" +
+	text += "/checkupdate — проверить наличие новой версии чекера\n" +
+		"/help — эта справка\n\n" +
 		"🔔 Уведомления о сбоях отправляются автоматически."
 	b.sendOrUpdateMenu(t, text, MainMenuMarkup())
+}
+
+func (b *Bot) handleCheckUpdate(msg *telego.Message) {
+	if msg == nil || b.api == nil {
+		return
+	}
+	t := ChatTarget{ChatID: msg.Chat.ID}
+	if msg.MessageThreadID > 0 {
+		t.ThreadID = msg.MessageThreadID
+	}
+
+	rel, isNewer, err := b.CheckAndNotifyRelease(true)
+	if err != nil {
+		b.replyCommand(msg, fmt.Sprintf("❌ Ошибка при проверке обновлений: %s", escapeHTML(err.Error())))
+		return
+	}
+
+	if isNewer {
+		text := formatReleaseNotification(b.version, rel)
+		markup := tu.InlineKeyboard(
+			tu.InlineKeyboardRow(
+				btnURL("🔗 Открыть релиз на GitHub", rel.HTMLURL),
+			),
+		)
+		_, _ = b.sendWithMarkup(t, text, markup)
+		return
+	}
+
+	currentDisplay := b.version
+	if currentDisplay == "" || currentDisplay == "unknown" {
+		currentDisplay = "unknown (локальная сборка)"
+	}
+	text := fmt.Sprintf("✅ <b>Установлена актуальная версия!</b>\n\n"+
+		"• Текущая версия: <code>%s</code>\n"+
+		"• Последний релиз: <a href=\"%s\">%s</a>\n\n"+
+		"Обновлений не требуется.",
+		escapeHTML(currentDisplay), rel.HTMLURL, escapeHTML(rel.TagName))
+
+	markup := tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btnURL("🔗 Все релизы на GitHub", "https://github.com/vlv-code/xray-checker-tg-bot/releases"),
+		),
+	)
+	_, _ = b.sendWithMarkup(t, text, markup)
 }

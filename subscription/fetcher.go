@@ -220,7 +220,13 @@ func mustCIDR(cidr string) *net.IPNet {
 }
 
 func isEnvironmentProxy(host, port string) bool {
-	for _, envKey := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
+	for _, envKey := range []string{
+		"HTTP_PROXY", "http_proxy",
+		"HTTPS_PROXY", "https_proxy",
+		"ALL_PROXY", "all_proxy",
+		"BOOTSTRAP_PROXY", "bootstrap_proxy",
+		"GEO_PROXY", "geo_proxy",
+	} {
 		val := os.Getenv(envKey)
 		if val != "" {
 			if u, err := url.Parse(val); err == nil {
@@ -286,8 +292,14 @@ func newSafeTransport() *http.Transport {
 		Timeout:   15 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
+	proxyFunc := http.ProxyFromEnvironment
+	if bp := config.GetBootstrapProxy(); bp != "" {
+		if u, err := url.Parse(bp); err == nil {
+			proxyFunc = http.ProxyURL(u)
+		}
+	}
 	return &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: proxyFunc,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {

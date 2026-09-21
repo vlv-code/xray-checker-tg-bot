@@ -90,6 +90,11 @@ type Bot struct {
 	waitingNodeAdd   map[int64]bool
 	waitingNodeSub   map[int64]string
 
+	version            string
+	releaseCheckMu     sync.Mutex
+	releaseCheckRunner bool
+	lastReleaseCheck   time.Time
+
 	nowFunc func() time.Time
 }
 
@@ -195,6 +200,78 @@ func (b *Bot) SetAlertTracker(tracker *AlertTracker) {
 	if tracker != nil {
 		b.tracker = tracker
 	}
+}
+
+// SetVersion sets the current running application version.
+func (b *Bot) SetVersion(v string) {
+	b.version = v
+}
+
+// Version returns the current running application version.
+func (b *Bot) Version() string {
+	return b.version
+}
+
+// CheckAndNotifyRelease checks GitHub for a newer release and notifies all chats if appropriate.
+func (b *Bot) CheckAndNotifyRelease(force bool) (*ReleaseInfo, bool, error) {
+	b.releaseCheckMu.Lock()
+	if b.releaseCheckRunner {
+		b.releaseCheckMu.Unlock()
+		return nil, false, fmt.Errorf("release check already in progress")
+	}
+	b.releaseCheckRunner = true
+	b.releaseCheckMu.Unlock()
+
+	defer func() {
+		b.releaseCheckMu.Lock()
+		b.releaseCheckRunner = false
+		b.releaseCheckMu.Unlock()
+	}()
+
+	rel, err := FetchLatestRelease()
+	if err != nil {
+		return nil, false, err
+	}
+
+	cfg := b.GetConfig()
+	if !force && !cfg.ReleaseAlertsEnabled {
+		return rel, false, nil
+	}
+
+	isNewer := isNewerVersion(b.version, rel.TagName)
+	shouldAlert := shouldAlertNewRelease(b.version, rel.TagName, cfg.LastNotifiedReleaseTag)
+
+	if shouldAlert {
+		text := formatReleaseNotification(b.version, rel)
+		markup := tu.InlineKeyboard(
+			tu.InlineKeyboardRow(
+				btnURL("🔗 Открыть релиз на GitHub", rel.HTMLURL),
+			),
+		)
+
+		quiet := IsQuietTime(b.now(), cfg)
+		for _, t := range b.targets {
+			params := tu.Message(tu.ID(t.ChatID), text).
+				WithParseMode(telego.ModeHTML).
+				WithReplyMarkup(markup)
+			if t.ThreadID > 0 {
+				params = params.WithMessageThreadID(t.ThreadID)
+			}
+			if quiet {
+				params = params.WithDisableNotification()
+			}
+			if _, err := b.api.SendMessage(b.ctx, params); err != nil {
+				logger.Error("Telegram: failed to send release notification to %s: %v", t.targetKey(), err)
+			}
+		}
+
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.LastNotifiedReleaseTag = rel.TagName
+		})
+		logger.Info("Telegram: new release notification sent for %s", rel.TagName)
+	}
+
+	return rel, isNewer, nil
 }
 
 func (b *Bot) updateConfig(fn func(*BotConfig)) error {
@@ -432,6 +509,26 @@ func (b *Bot) checkSchedules(now time.Time) {
 		} else if now.Sub(b.lastCheckHostAudit) >= interval {
 			b.lastCheckHostAudit = now
 			go b.RunCheckHostAudit()
+		}
+	}
+
+	// Periodic release update check
+	if cfg.ReleaseAlertsEnabled {
+		interval := time.Duration(cfg.ReleaseCheckIntervalHours) * time.Hour
+		if interval <= 0 {
+			interval = 6 * time.Hour
+		}
+		if b.lastReleaseCheck.IsZero() {
+			// Schedule first release check 1 minute after startup
+			b.lastReleaseCheck = now.Add(-interval + 1*time.Minute)
+		} else if now.Sub(b.lastReleaseCheck) >= interval {
+			b.lastReleaseCheck = now
+			go func() {
+				_, _, err := b.CheckAndNotifyRelease(false)
+				if err != nil {
+					logger.Warn("Telegram: periodic release check failed: %v", err)
+				}
+			}()
 		}
 	}
 

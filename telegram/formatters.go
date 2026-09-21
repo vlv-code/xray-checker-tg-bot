@@ -92,6 +92,19 @@ func simplifyTargetName(targetURL string) string {
 	}
 }
 
+func formatTargetErrorInsideTunnel(errStr string, statusCode int) string {
+	if statusCode == 403 || statusCode == 429 {
+		return fmt.Sprintf("HTTP %d (доступ ограничен целевым сервисом с IP прокси / капча)", statusCode)
+	}
+	if strings.Contains(errStr, "Timeout") {
+		return "Timeout (таймаут ответа через прокси: проблема маршрута/IPv6 на сервере прокси или сбой сервиса)"
+	}
+	if strings.Contains(errStr, "EOF") || strings.Contains(errStr, "Connection reset") {
+		return "EOF (соединение сброшено целевым сервисом через прокси)"
+	}
+	return errStr
+}
+
 func splitMessage(text string, limit int) []string {
 	if len(text) <= limit {
 		return []string{text}

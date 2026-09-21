@@ -183,6 +183,46 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:checkhost:run":
 		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🚀 Запуск фоновой проверки Check-Host..."))
 		go b.RunCheckHostAudit()
+	case "menu:checkupdate":
+		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🔍 Проверяю релизы на GitHub..."))
+		go func() {
+			rel, isNewer, err := b.CheckAndNotifyRelease(true)
+			if err != nil {
+				b.editWithMarkup(chatID, msgID, fmt.Sprintf("❌ Ошибка при проверке обновлений: %s", escapeHTML(err.Error())), BackToSettingsMarkup())
+				return
+			}
+			if isNewer {
+				text := formatReleaseNotification(b.version, rel)
+				markup := tu.InlineKeyboard(
+					tu.InlineKeyboardRow(
+						btnURL("🔗 Открыть релиз на GitHub", rel.HTMLURL),
+					),
+					tu.InlineKeyboardRow(
+						btn("🔙 К настройкам", "menu:settings"),
+					),
+				)
+				b.editWithMarkup(chatID, msgID, text, markup)
+				return
+			}
+			currentDisplay := b.version
+			if currentDisplay == "" || currentDisplay == "unknown" {
+				currentDisplay = "unknown (локальная сборка)"
+			}
+			text := fmt.Sprintf("✅ <b>Установлена актуальная версия!</b>\n\n"+
+				"• Текущая версия: <code>%s</code>\n"+
+				"• Последний релиз: <a href=\"%s\">%s</a>\n\n"+
+				"Обновлений не требуется.",
+				escapeHTML(currentDisplay), rel.HTMLURL, escapeHTML(rel.TagName))
+			markup := tu.InlineKeyboard(
+				tu.InlineKeyboardRow(
+					btnURL("🔗 Все релизы на GitHub", "https://github.com/vlv-code/xray-checker-tg-bot/releases"),
+				),
+				tu.InlineKeyboardRow(
+					btn("🔙 К настройкам", "menu:settings"),
+				),
+			)
+			b.editWithMarkup(chatID, msgID, text, markup)
+		}()
 	case "menu:nodes", "menu:nodes:refresh":
 		b.editWithMarkup(chatID, msgID, b.getNodesMainView(), NodesMainMenuMarkup())
 	case "menu:nodes:add":
