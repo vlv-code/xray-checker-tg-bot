@@ -335,7 +335,7 @@ func newSafeTransport() *http.Transport {
 			targetAddr := net.JoinHostPort(ips[0].String(), port)
 			return dialer.DialContext(ctx, network, targetAddr)
 		},
-		TLSHandshakeTimeout:   10 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 15 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		IdleConnTimeout:       90 * time.Second,

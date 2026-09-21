@@ -41,6 +41,9 @@ func main() {
 	logLevel := logger.ParseLevel(config.CLIConfig.LogLevel)
 	logger.SetLevel(logLevel)
 
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+
 	logger.Startup("Xray Checker %s", version)
 	if logLevel == logger.LevelNone {
 		logger.Startup("Log level: none (silent mode)")
@@ -126,9 +129,16 @@ func main() {
 	}
 
 	configFile := "xray_config.json"
-	proxyConfigs, err := subscription.InitializeConfiguration(configFile, version, subURLStore.All())
+	cachePath := config.CLIConfig.Subscription.CachePath
+
+	proxyConfigs, isDegraded, err := resolveInitialConfigs(configFile, cachePath, func() (*[]*models.ProxyConfig, error) {
+		return subscription.InitializeConfiguration(configFile, version, subURLStore.All())
+	})
 	if err != nil {
 		logger.Fatal("Error initializing configuration: %v", err)
+	}
+	if isDegraded && config.CLIConfig.RunOnce && len(subURLStore.All()) > 0 {
+		logger.Fatal("Error initializing configuration in --run-once mode: initial fetch failed")
 	}
 
 	if len(*proxyConfigs) == 0 {
@@ -479,6 +489,12 @@ func main() {
 			return false, len(*proxyConfigs), updateErr
 		}
 
+		if len(newConfigs) > 0 {
+			if err := subscription.SaveProxyCache(cachePath, newConfigs, subscription.GetSubscriptionName()); err != nil {
+				logger.Debug("Could not update proxy cache: %v", err)
+			}
+		}
+
 		// Immediately re-check the new proxy set so /metrics is repopulated
 		// right away instead of staying empty until the next scheduled check
 		// (up to PROXY_CHECK_INTERVAL), then drop series for removed proxies.
@@ -663,6 +679,28 @@ func main() {
 		geoScheduler.StartAsync()
 	}
 
+	if isDegraded && len(subURLStore.All()) > 0 && !config.CLIConfig.RunOnce {
+		go func() {
+			logger.Info("Background subscription retry active: retrying every 20s until reachable...")
+			ticker := time.NewTicker(20 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-rootCtx.Done():
+					return
+				case <-ticker.C:
+					logger.Debug("Retrying initial subscription fetch in background...")
+					changed, count, err := reloadSubscriptions()
+					if err == nil {
+						logger.Info("Initial subscriptions recovered in background: loaded %d proxies (changed: %v)", count, changed)
+						return
+					}
+					logger.Warn("Background subscription retry failed: %v. Next attempt in 20s...", err)
+				}
+			}
+		}()
+	}
+
 	if nodeRegistry != nil {
 		sweepScheduler := gocron.NewScheduler(time.UTC)
 		sweepScheduler.Every(30).Seconds().SingletonMode().Do(func() {
@@ -763,6 +801,7 @@ func main() {
 		if config.CLIConfig.Metrics.Port == "" || config.CLIConfig.Metrics.Port == "0" {
 			logger.Info("HTTP server disabled. Running headless (Telegram bot / scheduler only)")
 			sig := <-sigChan
+			rootCancel()
 			logger.Info("Received signal %v, shutting down...", sig)
 		} else {
 			addr := config.CLIConfig.Metrics.Host + ":" + config.CLIConfig.Metrics.Port
@@ -783,6 +822,7 @@ func main() {
 
 			select {
 			case sig := <-sigChan:
+				rootCancel()
 				logger.Info("Received signal %v, shutting down gracefully...", sig)
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
@@ -856,4 +896,55 @@ func startWithRetry(start func() error, backoffs []time.Duration) error {
 func startXrayWithRetry(runner interface{ Start() error }) error {
 	return startWithRetry(runner.Start, defaultXrayStartBackoffs)
 }
+
+func resolveInitialConfigs(configFile, cachePath string, initFetcher func() (*[]*models.ProxyConfig, error)) (*[]*models.ProxyConfig, bool, error) {
+	var proxyConfigs *[]*models.ProxyConfig
+	var initErr error
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		proxyConfigs, initErr = initFetcher()
+		if initErr == nil {
+			break
+		}
+		if attempt < 2 {
+			logger.Warn("Failed to fetch initial subscriptions (attempt %d/2): %v. Retrying in 2s...", attempt, initErr)
+			time.Sleep(2 * time.Second)
+		}
+	}
+
+	if initErr == nil {
+		if proxyConfigs != nil && len(*proxyConfigs) > 0 {
+			if err := subscription.SaveProxyCache(cachePath, *proxyConfigs, subscription.GetSubscriptionName()); err != nil {
+				logger.Debug("Could not save proxy cache: %v", err)
+			}
+		}
+		return proxyConfigs, false, nil
+	}
+
+	logger.Warn("Failed to fetch initial subscriptions: %v", initErr)
+
+	// Try loading from persistent cache if available
+	cachedProxies, cachedSubName, cacheErr := subscription.LoadProxyCache(cachePath)
+	if cacheErr == nil && len(cachedProxies) > 0 {
+		logger.Warn("Restored %d proxy configuration(s) from cache (%s)", len(cachedProxies), cachePath)
+		if cachedSubName != "" {
+			subscription.SetSubscriptionName(cachedSubName)
+		}
+		builtConfigs, buildErr := subscription.BuildValidatedConfiguration(configFile, cachedProxies)
+		if buildErr != nil {
+			logger.Error("Failed to build configuration from cached proxies: %v", buildErr)
+		} else {
+			return builtConfigs, true, nil
+		}
+	}
+
+	// If no cache or cache build failed, start in degraded mode with 0 proxies
+	logger.Warn("Starting in degraded mode with 0 proxies. Web server, Telegram bot, and remote nodes will remain active while subscriptions retry in background.")
+	builtConfigs, buildErr := subscription.BuildValidatedConfiguration(configFile, []*models.ProxyConfig{})
+	if buildErr != nil {
+		return nil, true, fmt.Errorf("generating fallback configuration: %w", buildErr)
+	}
+	return builtConfigs, true, nil
+}
+
 

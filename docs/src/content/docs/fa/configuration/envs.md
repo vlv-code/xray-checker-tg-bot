@@ -69,6 +69,22 @@ description: متغیرهای محیطی برای Xray Checker
 - **CLI**: فلگ `--subscription-header` را برای هر هدر تکرار کنید
 - **متغیر محیطی**: جفت‌ها را با کاما جدا کنید: `SUBSCRIPTION_HEADERS="X-Token: abc, X-Region: eu"`
 
+### SUBSCRIPTION_STORE_PATH
+
+- CLI: `--subscription-store-path`
+- الزامی: خیر
+- پیش‌فرض: `subscriptions.json`
+
+مسیر فایل JSON که اشتراک‌های اضافه شده از طریق ربات تلگرام را ذخیره می‌کند.
+
+### SUBSCRIPTION_CACHE_PATH
+
+- CLI: `--subscription-cache-path`
+- الزامی: خیر
+- پیش‌فرض: `proxy_cache.json`
+
+مسیر فایل JSON برای کش کردن پروکسی‌ها برای راه‌اندازی در حالت آفلاین.
+
 ## پروکسی
 
 ### PROXY_CHECK_INTERVAL

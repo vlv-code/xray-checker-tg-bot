@@ -77,6 +77,14 @@ Extra HTTP headers sent with every subscription request, each as a `Key: Value` 
 
 Path to JSON file where subscriptions added dynamically via the Telegram bot (`/addsub`) are stored to persist across restarts. An empty string disables persistence.
 
+### SUBSCRIPTION_CACHE_PATH
+
+- CLI: `--subscription-cache-path`
+- Required: No
+- Default: `proxy_cache.json`
+
+Path to JSON file where fetched proxy configurations are cached. Allows the checker to start up with cached proxies even if the subscription upstream or panel is temporarily unreachable on startup, preventing crash-loops and maintaining bot availability.
+
 ## Proxy
 
 

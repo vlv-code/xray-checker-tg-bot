@@ -172,6 +172,8 @@ func (b *Bot) getMenuText() string {
 		}
 	} else if totalActive > 0 {
 		sb.WriteString("\n🟢 <i>Все активные прокси-хосты доступны и работают стабильно.</i>\n")
+	} else {
+		sb.WriteString("\nℹ️ <i>Прокси не загружены (ожидание получения подписки или добавьте через /addsub).</i>\n")
 	}
 
 	return sb.String()

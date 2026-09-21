@@ -37,6 +37,7 @@ type CLI struct {
 		UserAgent      string   `name:"subscription-user-agent" help:"Custom User-Agent for subscription requests (overrides the default and the --subscription-json-format preset)" default:"" env:"SUBSCRIPTION_USER_AGENT"`
 		Headers        []string `name:"subscription-header" help:"Extra HTTP header for subscription requests in 'Key: Value' form (repeatable; env: comma-separated)" env:"SUBSCRIPTION_HEADERS"`
 		StorePath      string   `name:"subscription-store-path" help:"File to persist subscriptions added via the Telegram bot's /addsub (empty disables persistence, added subscriptions won't survive a restart)" default:"subscriptions.json" env:"SUBSCRIPTION_STORE_PATH"`
+		CachePath      string   `name:"subscription-cache-path" help:"File to cache fetched proxy configurations for offline/degraded startup" default:"proxy_cache.json" env:"SUBSCRIPTION_CACHE_PATH"`
 	} `embed:"" prefix:""`
 
 	Proxy struct {

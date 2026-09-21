@@ -40,8 +40,13 @@ func InitializeConfiguration(configFile string, version string, urls []string) (
 	if err != nil {
 		return nil, err
 	}
+	return BuildValidatedConfiguration(configFile, configs)
+}
 
+// BuildValidatedConfiguration prepares, validates, and generates xray configuration for the given proxy list.
+func BuildValidatedConfiguration(configFile string, configs []*models.ProxyConfig) (*[]*models.ProxyConfig, error) {
 	proxyConfigs := configs
+	var err error
 
 	if config.CLIConfig.Proxy.ResolveDomains {
 		proxyConfigs, err = ResolveDomainsForConfigs(configs)
