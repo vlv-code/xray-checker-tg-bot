@@ -161,10 +161,10 @@ func TestStartTelegramBotWithRetry_BackgroundRetrySuccess(t *testing.T) {
 		false,
 	)
 
-	// Wait up to 1 second for background retry to succeed
-	deadline := time.Now().Add(1 * time.Second)
+	// Wait up to 2 seconds for background retry to succeed and onSuccess callback to be executed
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if tgBot.Load() != nil {
+		if tgBot.Load() != nil && onSuccessCalled.Load() {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
