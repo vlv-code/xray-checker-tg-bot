@@ -205,7 +205,7 @@ func main() {
 	// before the Telegram bot is created below, since the bot's /addsub and
 	// /delsub handlers (wired in via telegramSubscriptionManager) need
 	// reloadSubscriptions, which itself calls runCheckIteration.
-	var tgBot *telegram.Bot
+	var tgBot atomic.Pointer[telegram.Bot]
 	var checkScheduler *gocron.Scheduler
 	var checkSchedulerMu sync.Mutex
 
@@ -249,26 +249,27 @@ func main() {
 	// reporting node. ProcessSnapshot drops state for absent IDs, so local and
 	// remote snapshots must never be fed separately.
 	emitSnapshot := func() {
-		if tgBot == nil {
+		b := tgBot.Load()
+		if b == nil {
 			return
 		}
 		snap := proxyChecker.MetricsSnapshot()
 		if nodeRegistry != nil {
 			snap = nodeRegistry.MergedSnapshot(snap)
 		}
-		tgBot.ProcessSnapshot(snap)
+		b.ProcessSnapshot(snap)
 	}
 
 	if nodeRegistry != nil {
 		nodeRegistry.SetOnUpdate(func() {
 			emitSnapshot()
-			if tgBot != nil {
-				tgBot.ProcessNodesHealth(toNodeInfos(nodeRegistry.HealthSnapshot()))
+			if b := tgBot.Load(); b != nil {
+				b.ProcessNodesHealth(toNodeInfos(nodeRegistry.HealthSnapshot()))
 			}
 		})
 		nodeRegistry.SetConfigSource(func(nodeName string) *nodes.NodeConfigSync {
-			if tgBot != nil {
-				cfg := tgBot.GetConfig()
+			if b := tgBot.Load(); b != nil {
+				cfg := b.GetConfig()
 				prefix := nodeName + "/"
 				disabledForNode := make([]string, 0, len(cfg.DisabledProxies))
 				for _, id := range cfg.DisabledProxies {
@@ -459,10 +460,10 @@ func main() {
 		for u, cnt := range subCounts {
 			subURLStore.RecordUpdate(u, cnt, now)
 		}
-		if tgBot != nil {
+		if b := tgBot.Load(); b != nil {
 			for _, u := range subURLStore.All() {
 				if meta, ok := subURLStore.GetMeta(u); ok {
-					tgBot.SetSubFreshness(u, meta.Count, meta.PrevCount, meta.Added, meta.Removed, meta.LastUpdate)
+					b.SetSubFreshness(u, meta.Count, meta.PrevCount, meta.Added, meta.Removed, meta.LastUpdate)
 				}
 			}
 		}
@@ -589,16 +590,18 @@ func main() {
 				botMetricsSource = &mergedMetricsSource{local: proxyChecker, reg: nodeRegistry}
 			}
 
-			if bot, err := telegram.New(
-				config.CLIConfig.Telegram.BotToken,
-				chatTargets,
-				botMetricsSource,
-				config.CLIConfig.Telegram.NotifyOnRecovery,
-				config.CLIConfig.Telegram.Commands,
-				subManager,
-			); err != nil {
-				logger.Error("Telegram bot disabled: %v", err)
-			} else {
+			initTelegramBot := func() (*telegram.Bot, error) {
+				bot, err := telegram.New(
+					config.CLIConfig.Telegram.BotToken,
+					chatTargets,
+					botMetricsSource,
+					config.CLIConfig.Telegram.NotifyOnRecovery,
+					config.CLIConfig.Telegram.Commands,
+					subManager,
+				)
+				if err != nil {
+					return nil, err
+				}
 				if botCfgMgr != nil {
 					bot.SetConfigManager(botCfgMgr)
 				}
@@ -622,15 +625,33 @@ func main() {
 					bot.SetRichMode(false)
 				}
 
-				tgBot = bot
 				for _, u := range subURLStore.All() {
 					if meta, ok := subURLStore.GetMeta(u); ok {
-						tgBot.SetSubFreshness(u, meta.Count, meta.PrevCount, meta.Added, meta.Removed, meta.LastUpdate)
+						bot.SetSubFreshness(u, meta.Count, meta.PrevCount, meta.Added, meta.Removed, meta.LastUpdate)
 					}
 				}
-				tgBot.StartCommands()
-				defer tgBot.Stop()
+				bot.StartCommands()
+				return bot, nil
 			}
+
+			startTelegramBotWithRetry(
+				rootCtx,
+				initTelegramBot,
+				&tgBot,
+				func(b *telegram.Bot) {
+					emitSnapshot()
+					if nodeRegistry != nil {
+						b.ProcessNodesHealth(toNodeInfos(nodeRegistry.HealthSnapshot()))
+					}
+				},
+				20*time.Second,
+				config.CLIConfig.RunOnce,
+			)
+			defer func() {
+				if b := tgBot.Load(); b != nil {
+					b.Stop()
+				}
+			}()
 		}
 	}
 
@@ -710,8 +731,8 @@ func main() {
 			}
 			if len(names) > 0 {
 				emitSnapshot()
-				if tgBot != nil {
-					tgBot.ProcessNodesHealth(toNodeInfos(nodeRegistry.HealthSnapshot()))
+				if b := tgBot.Load(); b != nil {
+					b.ProcessNodesHealth(toNodeInfos(nodeRegistry.HealthSnapshot()))
 				}
 			}
 		})
@@ -946,5 +967,57 @@ func resolveInitialConfigs(configFile, cachePath string, initFetcher func() (*[]
 	}
 	return builtConfigs, true, nil
 }
+
+// startTelegramBotWithRetry attempts to initialize the Telegram bot.
+// If initialization fails and runOnce is false, it launches a background
+// retry goroutine that periodically attempts to reconnect until successful
+// or until ctx is cancelled.
+func startTelegramBotWithRetry(
+	ctx context.Context,
+	initBot func() (*telegram.Bot, error),
+	tgBot *atomic.Pointer[telegram.Bot],
+	onSuccess func(b *telegram.Bot),
+	retryInterval time.Duration,
+	runOnce bool,
+) {
+	bot, err := initBot()
+	if err == nil {
+		tgBot.Store(bot)
+		if onSuccess != nil {
+			onSuccess(bot)
+		}
+		return
+	}
+
+	if runOnce {
+		logger.Error("Telegram bot disabled: %v", err)
+		return
+	}
+
+	logger.Warn("Failed to initialize Telegram bot: %v. Retrying in background every %v...", err, retryInterval)
+	go func() {
+		ticker := time.NewTicker(retryInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				logger.Debug("Retrying Telegram bot initialization in background...")
+				b, err := initBot()
+				if err == nil {
+					tgBot.Store(b)
+					logger.Info("Telegram bot successfully connected and initialized in background")
+					if onSuccess != nil {
+						onSuccess(b)
+					}
+					return
+				}
+				logger.Warn("Background Telegram bot retry failed: %v. Next attempt in %v...", err, retryInterval)
+			}
+		}
+	}()
+}
+
 
 

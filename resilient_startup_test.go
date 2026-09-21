@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"xray-checker/models"
 	"xray-checker/subscription"
+	"xray-checker/telegram"
 )
 
 func TestResolveInitialConfigs_Success(t *testing.T) {
@@ -103,3 +107,138 @@ func TestResolveInitialConfigs_DegradedZeroProxiesWhenNoCache(t *testing.T) {
 		t.Fatalf("expected fallback xray config file to be generated at %s", configFile)
 	}
 }
+
+func TestStartTelegramBotWithRetry_ImmediateSuccess(t *testing.T) {
+	var tgBot atomic.Pointer[telegram.Bot]
+	dummyBot := &telegram.Bot{}
+	onSuccessCalled := false
+
+	initFunc := func() (*telegram.Bot, error) {
+		return dummyBot, nil
+	}
+
+	startTelegramBotWithRetry(
+		context.Background(),
+		initFunc,
+		&tgBot,
+		func(b *telegram.Bot) {
+			onSuccessCalled = true
+		},
+		10*time.Millisecond,
+		false,
+	)
+
+	if tgBot.Load() != dummyBot {
+		t.Errorf("expected tgBot to be set to dummyBot, got %v", tgBot.Load())
+	}
+	if !onSuccessCalled {
+		t.Errorf("expected onSuccess to be called")
+	}
+}
+
+func TestStartTelegramBotWithRetry_BackgroundRetrySuccess(t *testing.T) {
+	var tgBot atomic.Pointer[telegram.Bot]
+	dummyBot := &telegram.Bot{}
+	onSuccessCalled := false
+
+	attempts := 0
+	initFunc := func() (*telegram.Bot, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, errors.New("connection reset by peer")
+		}
+		return dummyBot, nil
+	}
+
+	startTelegramBotWithRetry(
+		context.Background(),
+		initFunc,
+		&tgBot,
+		func(b *telegram.Bot) {
+			onSuccessCalled = true
+		},
+		10*time.Millisecond,
+		false,
+	)
+
+	// Wait up to 1 second for background retry to succeed
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if tgBot.Load() != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if tgBot.Load() != dummyBot {
+		t.Fatalf("expected tgBot to be set after background retry, got %v (attempts: %d)", tgBot.Load(), attempts)
+	}
+	if !onSuccessCalled {
+		t.Errorf("expected onSuccess to be called upon recovery")
+	}
+	if attempts < 3 {
+		t.Errorf("expected at least 3 attempts, got %d", attempts)
+	}
+}
+
+func TestStartTelegramBotWithRetry_ContextCancelled(t *testing.T) {
+	var tgBot atomic.Pointer[telegram.Bot]
+	ctx, cancel := context.WithCancel(context.Background())
+
+	attempts := 0
+	initFunc := func() (*telegram.Bot, error) {
+		attempts++
+		return nil, errors.New("temporary error")
+	}
+
+	startTelegramBotWithRetry(
+		ctx,
+		initFunc,
+		&tgBot,
+		nil,
+		10*time.Millisecond,
+		false,
+	)
+
+	// Cancel context quickly
+	time.Sleep(25 * time.Millisecond)
+	cancel()
+
+	time.Sleep(40 * time.Millisecond)
+	capturedAttempts := attempts
+
+	time.Sleep(40 * time.Millisecond)
+	if attempts > capturedAttempts+1 {
+		t.Errorf("expected goroutine to stop after context cancellation, but attempts increased from %d to %d", capturedAttempts, attempts)
+	}
+	if tgBot.Load() != nil {
+		t.Errorf("expected tgBot to remain nil, got %v", tgBot.Load())
+	}
+}
+
+func TestStartTelegramBotWithRetry_RunOnceDoesNotRetry(t *testing.T) {
+	var tgBot atomic.Pointer[telegram.Bot]
+	attempts := 0
+	initFunc := func() (*telegram.Bot, error) {
+		attempts++
+		return nil, errors.New("telegram error")
+	}
+
+	startTelegramBotWithRetry(
+		context.Background(),
+		initFunc,
+		&tgBot,
+		nil,
+		10*time.Millisecond,
+		true, // RunOnce = true
+	)
+
+	time.Sleep(40 * time.Millisecond)
+	if attempts != 1 {
+		t.Errorf("expected exactly 1 attempt with RunOnce, got %d", attempts)
+	}
+	if tgBot.Load() != nil {
+		t.Errorf("expected tgBot to remain nil, got %v", tgBot.Load())
+	}
+}
+
