@@ -45,10 +45,13 @@ All features are accessible via the interactive **`/menu`** or direct chat comma
 | `/status` | Real-time status summary of all configured proxies (online/offline, latency) |
 | `/diag` | Detailed multi-stage diagnostics (DNS, TCP RTT, TLS, Targets + Check-Host) |
 | `/settings` | Bot settings, interval, alert mode, and node disabling |
-| `/togglenode <name\|ID>` | Enable or disable checking for a specific proxy node |
+| `/togglenode <name|ID>` | Enable or disable checking for a specific proxy node |
+| `/togglehost <host>` | Enable or disable checking for all proxies sharing a specific host |
 | `/checkhost <host[:port]>` | Global reachability audit of any host/IP across worldwide Check-Host nodes |
-| `/checkhost_bg [on\|off\|1h\|run]` | Manage background Check-Host auditing and RU reachability alerts |
+| `/checkhost_bg [on|off|1h|run]` | Manage background Check-Host auditing and RU reachability alerts |
 | `/interval [seconds]` | View or change proxy check interval dynamically (e.g. `/interval 60`) |
+| `/tz [timezone]` | View or set bot timezone for quiet hours and digests (e.g. `/tz Europe/Moscow`) |
+| `/checkupdate` | Check for new GitHub releases of Xray Checker and view changelog |
 | `/stats` | Uptime statistics (%), top problematic proxies, and recent outage history |
 | `/quiet` | Configure quiet hours schedule and snooze intervals (1h, 4h, morning) |
 | `/targets` | View and manage fallback target check URLs |
@@ -110,6 +113,11 @@ Run additional lightweight checker node instances anywhere in the world (VPS, ho
   - Master alerts on every node's proxy failures (`🖥 [Нода] <name>` identity).
   - Automatically notifies when a node goes down or recovers.
   - Displays the node's ISP / Hosting Provider ASN (via local `db-ip asn-lite` database).
+- **Restricted & Enterprise Networks Support**:
+  - Remote nodes run smoothly behind enterprise firewalls, NAT, and corporate proxies.
+  - Smart traffic separation: master reports bypass proxies automatically (`NO_PROXY` builder), port checks stay direct, and external asset downloads can use a dedicated `BOOTSTRAP_PROXY`.
+  - Ready-made [docker-compose.node.yml](docker-compose.node.yml) and systemd service [scripts/xray-checker-node.service](scripts/xray-checker-node.service).
+  - Complete guide: [docs/restricted-networks.md](docs/restricted-networks.md).
 
 ---
 
@@ -163,6 +171,16 @@ Command `/checkhost <host[:port]>` or the `[ 🌐 Check-Host ]` button in `/menu
 💡 Conclusion: Host is unreachable from RU nodes, but responds from foreign networks
 🔗 Permanent report link
 ```
+
+---
+
+## 🔔 Release Update Notifications
+
+Stay up to date with new features, bug fixes, and security improvements:
+- **Automated Alerts**: The bot periodically queries GitHub releases (`TELEGRAM_RELEASE_ALERTS=true`, checking every 6 hours by default via `TELEGRAM_RELEASE_CHECK_INTERVAL_HOURS`).
+- **Interactive Upgrade Info**: When a new release is available, the bot sends an alert with formatted changelog notes and container update commands.
+- **On-Demand Check**: Run `/checkupdate` at any time or click **`[ 🔄 Проверить обновления ]`** inside **`[ ⚙️ Настройки ]`**.
+- **Admin Control**: Restrict update and configuration commands using `TELEGRAM_ADMIN_USER_IDS`.
 
 ---
 

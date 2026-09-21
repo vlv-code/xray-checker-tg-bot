@@ -4,7 +4,7 @@ import starlight from "@astrojs/starlight";
 
 // https://astro.build/config
 export default defineConfig({
-  site: "https://xray-checker.kutovoy.dev",
+  site: "https://vlv-code.github.io/xray-checker-tg-bot",
   integrations: [
     starlight({
       title: "Xray Checker",
@@ -230,6 +230,15 @@ export default defineConfig({
               },
               slug: "configuration/web-customization",
               badge: { text: "NEW", variant: "success" },
+            },
+            {
+              label: "Restricted Networks",
+              translations: {
+                ru: "Изолированные сети",
+                fa: "شبکه‌های محدود شده",
+              },
+              slug: "configuration/restricted-networks",
+              badge: { text: "NEW", variant: "note" },
             },
           ],
         },

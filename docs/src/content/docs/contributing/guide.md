@@ -7,15 +7,15 @@ description: Development guide
 
 1. Requirements:
 
-   - Go 1.20 or later
+   - Go 1.26 or later
    - Git
    - Make (optional, for using Makefile)
 
 2. Clone the repository:
 
 ```bash
-git clone https://github.com/kutovoys/xray-checker.git
-cd xray-checker
+git clone https://github.com/vlv-code/xray-checker-tg-bot.git
+cd xray-checker-tg-bot
 ```
 
 3. Install dependencies:
@@ -36,13 +36,16 @@ go build -o xray-checker
 
 ```
 .
-├── checker/       # Proxy checking logic
-├── config/        # Configuration handling
+├── asn/           # MaxMind ASN database and lookup logic
+├── checker/       # Proxy checking logic and multi-stage diagnostics
+├── config/        # Configuration handling and environment variables
 ├── geo/           # Geo files (geoip.dat, geosite.dat)
 ├── logger/        # Structured logging
 ├── metrics/       # Prometheus metrics
 ├── models/        # Data models
+├── nodes/         # Distributed nodes registry, auth, and reporting
 ├── subscription/  # Subscription parsing and management
+├── telegram/      # Telegram bot, commands, callbacks, and alerts
 ├── web/           # Web interface, API, and assets
 ├── xray/          # Xray integration and runner
 ├── go.mod         # Go modules file

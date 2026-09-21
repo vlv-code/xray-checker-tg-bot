@@ -7,15 +7,15 @@ description: راهنمای توسعه
 
 1. پیش‌نیازها:
 
-   - Go ۱.۲۰ یا بالاتر
+   - Go ۱.۲۶ یا بالاتر
    - Git
    - Make (اختیاری، برای استفاده از Makefile)
 
 2. کلون کردن مخزن:
 
 ```bash
-git clone https://github.com/kutovoys/xray-checker.git
-cd xray-checker
+git clone https://github.com/vlv-code/xray-checker-tg-bot.git
+cd xray-checker-tg-bot
 ```
 
 3. نصب وابستگی‌ها:
@@ -36,13 +36,16 @@ go build -o xray-checker
 
 ```
 .
-├── checker/       # منطق بررسی پروکسی
-├── config/        # مدیریت پیکربندی
+├── asn/           # پایگاه‌داده MaxMind ASN و منطق جستجو
+├── checker/       # منطق بررسی پروکسی و تشخیص چندمرحله‌ای
+├── config/        # مدیریت پیکربندی و متغیرهای محیطی
 ├── geo/           # فایل‌های Geo (geoip.dat, geosite.dat)
 ├── logger/        # لاگ ساختاریافته
 ├── metrics/       # متریک‌های Prometheus
 ├── models/        # مدل‌های داده
+├── nodes/         # ثبت نودهای توزیع‌شده، احراز هویت و گزارش‌دهی
 ├── subscription/  # تجزیه و مدیریت اشتراک
+├── telegram/      # ربات تلگرام، دستورات، کال‌بک‌ها و هشدارها
 ├── web/           # رابط وب، API و فایل‌های استاتیک
 ├── xray/          # یکپارچه‌سازی و اجراکننده Xray
 ├── go.mod         # فایل ماژول‌های Go

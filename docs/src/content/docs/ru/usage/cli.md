@@ -13,19 +13,19 @@ CLI интерфейс предоставляет полный контроль 
 
 ```bash
 # Для Linux amd64
-curl -sL -o - $(curl -s https://api.github.com/repos/kutovoys/xray-checker/releases/latest | grep "browser_download_url.*linux-amd64.tar.gz" | cut -d'"' -f4) | tar -xz
+curl -sL -o - $(curl -s https://api.github.com/repos/vlv-code/xray-checker-tg-bot/releases/latest | grep "browser_download_url.*linux-amd64.tar.gz" | cut -d'"' -f4) | tar -xz
 chmod +x xray-checker
 
 # Для Linux arm64
-curl -sL -o - $(curl -s https://api.github.com/repos/kutovoys/xray-checker/releases/latest | grep "browser_download_url.*linux-arm64.tar.gz" | cut -d'"' -f4) | tar -xz
+curl -sL -o - $(curl -s https://api.github.com/repos/vlv-code/xray-checker-tg-bot/releases/latest | grep "browser_download_url.*linux-arm64.tar.gz" | cut -d'"' -f4) | tar -xz
 chmod +x xray-checker
 
 # Для macOS (Intel)
-curl -sL -o - $(curl -s https://api.github.com/repos/kutovoys/xray-checker/releases/latest | grep "browser_download_url.*darwin-amd64.tar.gz" | cut -d'"' -f4) | tar -xz
+curl -sL -o - $(curl -s https://api.github.com/repos/vlv-code/xray-checker-tg-bot/releases/latest | grep "browser_download_url.*darwin-amd64.tar.gz" | cut -d'"' -f4) | tar -xz
 chmod +x xray-checker
 
 # Для macOS (Apple Silicon)
-curl -sL -o - $(curl -s https://api.github.com/repos/kutovoys/xray-checker/releases/latest | grep "browser_download_url.*darwin-arm64.tar.gz" | cut -d'"' -f4) | tar -xz
+curl -sL -o - $(curl -s https://api.github.com/repos/vlv-code/xray-checker-tg-bot/releases/latest | grep "browser_download_url.*darwin-arm64.tar.gz" | cut -d'"' -f4) | tar -xz
 chmod +x xray-checker
 ```
 

@@ -206,7 +206,7 @@ Run: `git push origin main`
 - [ ] **Step 2: Deploy to server `bedolaga`**
 Run:
 ```bash
-ssh root@89.125.214.220 "cd /opt/remnawave-bedolaga-telegram-bot && docker compose build --no-cache xray-checker && docker compose up -d xray-checker"
+ssh root@<YOUR_MASTER_IP> "cd /opt/xray-checker && docker compose build --no-cache xray-checker && docker compose up -d xray-checker"
 ```
 
 - [ ] **Step 3: Verify container logs on `bedolaga`**

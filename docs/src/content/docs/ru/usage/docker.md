@@ -8,7 +8,7 @@ description: Запуск Xray Checker с помощью Docker и Docker Compos
 Загрузка последнего образа:
 
 ```bash
-docker pull kutovoys/xray-checker
+docker pull ghcr.io/vlv-code/xray-checker-tg-bot:latest
 ```
 
 Запуск с минимальной конфигурацией:
@@ -17,7 +17,7 @@ docker pull kutovoys/xray-checker
 docker run -d \
   -e SUBSCRIPTION_URL=https://your-subscription-url/sub \
   -p 2112:2112 \
-  kutovoys/xray-checker
+  ghcr.io/vlv-code/xray-checker-tg-bot:latest
 ```
 
 ### Несколько подписок
@@ -29,7 +29,7 @@ docker run -d \
   -e SUBSCRIPTION_URL=https://provider1.com/sub,https://provider2.com/sub,file:///config/local.json \
   -v /path/to/configs:/config \
   -p 2112:2112 \
-  kutovoys/xray-checker
+  ghcr.io/vlv-code/xray-checker-tg-bot:latest
 ```
 
 Или используйте аргументы CLI для более чистой настройки нескольких подписок:
@@ -37,7 +37,7 @@ docker run -d \
 ```bash
 docker run -d \
   -p 2112:2112 \
-  kutovoys/xray-checker \
+  ghcr.io/vlv-code/xray-checker-tg-bot:latest \
   --subscription-url=https://provider1.com/sub \
   --subscription-url=https://provider2.com/sub
 ```
@@ -75,7 +75,7 @@ docker run -d \
   -e LOG_LEVEL=info \
   -e RUN_ONCE=false \
   -p 2112:2112 \
-  kutovoys/xray-checker
+  ghcr.io/vlv-code/xray-checker-tg-bot:latest
 ```
 
 ### Docker Compose
@@ -85,7 +85,7 @@ docker run -d \
 ```yaml
 services:
   xray-checker:
-    image: kutovoys/xray-checker
+    image: ghcr.io/vlv-code/xray-checker-tg-bot:latest
     environment:
       - SUBSCRIPTION_URL=https://your-subscription-url/sub
     ports:
@@ -97,7 +97,7 @@ services:
 ```yaml
 services:
   xray-checker:
-    image: kutovoys/xray-checker
+    image: ghcr.io/vlv-code/xray-checker-tg-bot:latest
     environment:
       - SUBSCRIPTION_URL=https://your-subscription-url/sub
       - SUBSCRIPTION_UPDATE=true
@@ -176,7 +176,7 @@ docker run -d \
   -e PROXY_DOWNLOAD_TIMEOUT=60 \
   -e PROXY_DOWNLOAD_MIN_SIZE=51200 \
   -p 2112:2112 \
-  kutovoys/xray-checker
+  ghcr.io/vlv-code/xray-checker-tg-bot:latest
 ```
 
 Эта конфигурация будет:
@@ -198,7 +198,7 @@ docker run -d \
   -e METRICS_PASSWORD=secret \
   -e WEB_PUBLIC=true \
   -p 2112:2112 \
-  kutovoys/xray-checker
+  ghcr.io/vlv-code/xray-checker-tg-bot:latest
 ```
 
 Эта конфигурация будет:

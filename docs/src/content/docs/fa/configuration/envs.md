@@ -174,6 +174,14 @@ description: متغیرهای محیطی برای Xray Checker
 
 تأخیر اندازه‌گیری شده (TTFB - زمان تا اولین بایت) را به پاسخ‌های نقطه پایانی اضافه می‌کند، برای سیستم‌های نظارتی که می‌توانند تأخیر پاسخ را تفسیر کنند مفید است.
 
+### PROXY_TARGET_URLS
+
+- CLI: `--proxy-target-url`
+- الزامی: خیر
+- پیش‌فرض: `https://cp.cloudflare.com/generate_204,https://www.gstatic.com/generate_204`
+
+فهرستی از آدرس‌های URL هدف (جدا شده با کاما) برای بررسی در دسترس بودن پروکسی و انجام عیب‌یابی چندمرحله‌ای (`/diag`). درخواست‌های HTTP GET با انتظار کد 204 یا 2xx ارسال می‌شوند.
+
 ## رابط وب
 
 ### WEB_SHOW_DETAILS
@@ -313,6 +321,121 @@ description: متغیرهای محیطی برای Xray Checker
 - پیش‌فرض: ""
 
 مسیر URL برای متریک‌ها و نظارت میزبان. فرمت: `/vpn/metrics`. صفحه نظارت در `http://localhost:port/metrics-base-path` در دسترس خواهد بود.
+
+## تلگرام (Telegram)
+
+### TELEGRAM_BOT_TOKEN
+
+- CLI: `--telegram-bot-token`
+- الزامی: خیر
+- پیش‌فرض: ندارد
+
+توکن ربات تلگرام دریافت شده از [@BotFather](https://t.me/BotFather). تنظیم این متغیر ربات تلگرام را فعال می‌کند.
+
+### TELEGRAM_CHAT_IDS
+
+- CLI: `--telegram-chat-id`
+- الزامی: بله (اگر `TELEGRAM_BOT_TOKEN` تنظیم شده باشد)
+- پیش‌فرض: ندارد
+
+شناسه‌های چت برای دریافت هشدارها و گزارش‌ها: `<chat_id>` یا `<chat_id>:<topic_id>` (برای تاپیک در گروه‌های انجمنی). مقادیر با کاما جدا می‌شوند.
+
+### TELEGRAM_ADMIN_USER_IDS
+
+- CLI: `--telegram-admin-user-id`
+- الزامی: خیر
+- پیش‌فرض: ندارد
+
+فهرستی از شناسه‌های کاربری عددی تلگرام برای دسترسی به دستورات مدیریتی (`/interval`، `/addsub`، `/delsub`، `/nodeadd`، `/togglehost`، `/checkupdate` و غیره). اگر خالی باشد، همه کاربران در چت‌های مجاز می‌توانند دستورات را اجرا کنند.
+
+### TELEGRAM_NOTIFY_ON_RECOVERY
+
+- CLI: `--telegram-notify-on-recovery`
+- الزامی: خیر
+- پیش‌فرض: `true`
+
+ارسال پیام هنگام بازگشت پروکسی به حالت آنلاین همراه با پینگ اندازه‌گیری شده.
+
+### TELEGRAM_COMMANDS_ENABLED
+
+- CLI: `--telegram-commands`
+- الزامی: خیر
+- پیش‌فرض: `true`
+
+فعال‌سازی دستورات تعاملی ربات (`/status`، `/help`، `/start`).
+
+### TELEGRAM_RELEASE_ALERTS
+
+- CLI: `--telegram-release-alerts`
+- الزامی: خیر
+- پیش‌فرض: `true`
+
+فعال‌سازی بررسی دوره‌ای و اعلان‌های انتشار نسخه‌های جدید در گیت‌هاب.
+
+### TELEGRAM_RELEASE_CHECK_INTERVAL_HOURS
+
+- CLI: `--telegram-release-interval`
+- الزامی: خیر
+- پیش‌فرض: `6`
+
+فاصله زمانی به ساعت برای بررسی نسخه‌های جدید گیت‌هاب.
+
+## نودهای راه دور (Remote Nodes)
+
+### NODES
+
+- CLI: `--node`
+- الزامی: خیر (برای سرور اصلی)
+- پیش‌فرض: ""
+
+فهرست نودهای مورد اعتماد به فرمت `name|token`.
+
+### MASTER_STALE_TIMEOUT_SEC
+
+- CLI: `--master-stale-timeout-sec`
+- الزامی: خیر
+- پیش‌فرض: `0` (محاسبه پویا: `2 * node.IntervalSec + 30s`)
+
+حداکثر زمان به ثانیه برای علامت‌گذاری نود به عنوان غیرفعال/آفلاین در صورت عدم ارسال گزارش.
+
+### REPORT_URL
+
+- CLI: `--report-url`
+- الزامی: خیر (برای نود الزامی است)
+- پیش‌فرض: ""
+
+آدرس دریافت گزارش در سرور اصلی (مثلاً `https://master.example.com:2112/api/v1/nodes/report`).
+
+### REPORT_TOKEN
+
+- CLI: `--report-token`
+- الزامی: بله (اگر `REPORT_URL` تنظیم شده باشد)
+- پیش‌فرض: ""
+
+توکن احراز هویت Bearer برای اتصال نود به سرور اصلی.
+
+## پروکسی خروجی (Outbound Proxy)
+
+### HTTP_PROXY / HTTPS_PROXY / ALL_PROXY
+
+- الزامی: خیر
+- پیش‌فرض: ""
+
+تنظیمات پروکسی خروجی HTTP/SOCKS5 برای اتصال به API تلگرام یا بررسی‌های خارجی.
+
+### NO_PROXY
+
+- الزامی: خیر
+- پیش‌فرض: `localhost,127.0.0.1`
+
+فهرست آدرس‌ها و رنج‌های IP معاف از پروکسی.
+
+### BOOTSTRAP_PROXY / GEO_PROXY
+
+- الزامی: خیر
+- پیش‌فرض: ""
+
+پروکسی اختصاصی برای دانلود اشتراک‌ها و پایگاه‌داده‌های GeoIP/GeoSite از گیت‌هاب در شبکه‌های محدود شده.
 
 ## سایر
 

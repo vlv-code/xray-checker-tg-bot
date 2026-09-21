@@ -18,7 +18,7 @@ Get Xray Checker up and running in minutes with these simple steps.
 1. Pull the image:
 
 ```bash
-docker pull kutovoys/xray-checker
+docker pull ghcr.io/vlv-code/xray-checker-tg-bot:latest
 ```
 
 2. Run with basic configuration:
@@ -27,7 +27,7 @@ docker pull kutovoys/xray-checker
 docker run -d \
   -e SUBSCRIPTION_URL=https://your-subscription-url/sub \
   -p 2112:2112 \
-  kutovoys/xray-checker
+  ghcr.io/vlv-code/xray-checker-tg-bot:latest
 ```
 
 3. Check the status:
@@ -42,11 +42,11 @@ curl http://localhost:2112/health
 
 ```bash
 # Linux amd64
-curl -sL -o - $(curl -s https://api.github.com/repos/kutovoys/xray-checker/releases/latest | grep "browser_download_url.*linux-amd64.tar.gz" | cut -d'"' -f4) | tar -xz
+curl -sL -o - $(curl -s https://api.github.com/repos/vlv-code/xray-checker-tg-bot/releases/latest | grep "browser_download_url.*linux-amd64.tar.gz" | cut -d'"' -f4) | tar -xz
 chmod +x xray-checker
 
 # Linux arm64
-curl -sL -o - $(curl -s https://api.github.com/repos/kutovoys/xray-checker/releases/latest | grep "browser_download_url.*linux-arm64.tar.gz" | cut -d'"' -f4) | tar -xz
+curl -sL -o - $(curl -s https://api.github.com/repos/vlv-code/xray-checker-tg-bot/releases/latest | grep "browser_download_url.*linux-arm64.tar.gz" | cut -d'"' -f4) | tar -xz
 chmod +x xray-checker
 ```
 

@@ -217,7 +217,7 @@ Custom templates may break after updates if the data structure changes. Use at y
 ```yaml
 services:
   xray-checker:
-    image: kutovoys/xray-checker:latest
+    image: ghcr.io/vlv-code/xray-checker-tg-bot:latest
     volumes:
       - ./custom:/app/custom:ro
     environment:

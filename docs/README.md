@@ -1,54 +1,56 @@
-# Starlight Starter Kit: Basics
+# Xray Checker Documentation
 
-[![Built with Starlight](https://astro.badg.es/v2/built-with-starlight/tiny.svg)](https://starlight.astro.build)
+Official multi-language documentation for **Xray Checker with Telegram Bot**, built with [Astro Starlight](https://starlight.astro.build).
 
-```
-npm create astro@latest -- --template starlight
-```
+## 🌐 Supported Languages
 
-[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/withastro/starlight/tree/main/examples/basics)
-[![Open with CodeSandbox](https://assets.codesandbox.io/github/button-edit-lime.svg)](https://codesandbox.io/p/sandbox/github/withastro/starlight/tree/main/examples/basics)
-[![Deploy to Netlify](https://www.netlify.com/img/deploy/button.svg)](https://app.netlify.com/start/deploy?repository=https://github.com/withastro/starlight&create_from_path=examples/basics)
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fwithastro%2Fstarlight%2Ftree%2Fmain%2Fexamples%2Fbasics&project-name=my-starlight-docs&repository-name=my-starlight-docs)
+The documentation is organized by locale under `src/content/docs/`:
+- **English (Default)**: `src/content/docs/`
+- **Русский (Russian)**: `src/content/docs/ru/`
+- **فارسی (Persian / Farsi)**: `src/content/docs/fa/`
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
-
-## 🚀 Project Structure
-
-Inside of your Astro + Starlight project, you'll see the following folders and files:
+## 📁 Directory Structure
 
 ```
-.
-├── public/
+docs/
+├── public/                # Static assets (favicons, manifests)
 ├── src/
-│   ├── assets/
-│   ├── content/
-│   │   ├── docs/
-│   └── content.config.ts
-├── astro.config.mjs
-├── package.json
-└── tsconfig.json
+│   ├── assets/            # Theme logos and diagrams
+│   ├── content/docs/      # Markdown documentation pages
+│   │   ├── intro/         # Getting started & quick start
+│   │   ├── usage/         # CLI, Docker, API reference, GitHub Actions
+│   │   ├── configuration/ # Envs, check methods, subscriptions, status page
+│   │   ├── contributing/  # Development guide
+│   │   ├── ru/            # Russian translation tree
+│   │   └── fa/            # Persian / Farsi translation tree
+│   └── styles/custom.css  # Custom CSS styles
+├── astro.config.mjs       # Starlight configuration, sidebar, and locales
+├── package.json           # Node.js dependencies and scripts
+└── tsconfig.json          # TypeScript configuration
 ```
 
-Starlight looks for `.md` or `.mdx` files in the `src/content/docs/` directory. Each file is exposed as a route based on its file name.
+## 🚀 Local Development
 
-Images can be added to `src/assets/` and embedded in Markdown with a relative link.
+To run the documentation site locally:
 
-Static assets, like favicons, can be placed in the `public/` directory.
+```bash
+# Navigate to docs directory
+cd docs
 
-## 🧞 Commands
+# Install dependencies
+npm install
 
-All commands are run from the root of the project, from a terminal:
+# Start local dev server (default: http://localhost:4321)
+npm run dev
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
+# Build production bundle to dist/
+npm run build
 
-## 👀 Want to learn more?
+# Preview production build locally
+npm run preview
+```
 
-Check out [Starlight’s docs](https://starlight.astro.build/), read [the Astro documentation](https://docs.astro.build), or jump into the [Astro Discord server](https://astro.build/chat).
+## 📝 Editing Guidelines
+
+- When adding or updating configuration options, environment variables, or CLI arguments, update all three locale trees (`en`, `ru`, `fa`) synchronously.
+- Use Starlight callouts (`:::note`, `:::tip`, `:::caution`) where appropriate.

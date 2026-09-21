@@ -110,7 +110,7 @@ docker run -d \
   -e METRICS_PROTECTED=true \
   -e METRICS_USERNAME=custom_user \
   -e METRICS_PASSWORD=custom_pass \
-  kutovoys/xray-checker
+  ghcr.io/vlv-code/xray-checker-tg-bot:latest
 ```
 
 فایل پیکربندی nginx را باز کنید (`sudo nano /etc/nginx/your-domain.com`)، بخش اصلی را پیدا کنید:

@@ -39,6 +39,6 @@ services:
   #   environment:
   #     - REPORT_URL=http://<MASTER_IP_OR_DOMAIN>:2112/api/v1/nodes/report
   #     - REPORT_TOKEN=<TOKEN_GENERATED_BY_BOT_OR_CONFIGURED_ON_MASTER>
-  #     - CHECK_INTERVAL=300s
+  #     - PROXY_CHECK_INTERVAL=300
   #     - TZ=Europe/Moscow
 

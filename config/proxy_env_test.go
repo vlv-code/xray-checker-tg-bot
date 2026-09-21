@@ -1,4 +1,4 @@
-﻿package config
+package config
 
 import (
 	"os"
@@ -22,8 +22,8 @@ func TestSanitizeNoProxy(t *testing.T) {
 		{
 			name:      "with reportURL ip and port",
 			existing:  "",
-			reportURL: "http://89.125.214.220:2112/api/v1/nodes/report",
-			mustHave:  []string{"localhost", "127.0.0.1", "89.125.214.220"},
+			reportURL: "http://198.51.100.42:2112/api/v1/nodes/report",
+			mustHave:  []string{"localhost", "127.0.0.1", "198.51.100.42"},
 		},
 		{
 			name:      "with reportURL hostname",
@@ -83,11 +83,11 @@ func TestSetupNetworkEnvironment(t *testing.T) {
 	}()
 
 	os.Setenv("NO_PROXY", "test.local")
-	SetupNetworkEnvironment("http://89.125.214.220:2112")
+	SetupNetworkEnvironment("http://198.51.100.42:2112")
 
 	newNP := os.Getenv("NO_PROXY")
 	newNp := os.Getenv("no_proxy")
-	if !strings.Contains(newNP, "89.125.214.220") || !strings.Contains(newNP, "test.local") {
+	if !strings.Contains(newNP, "198.51.100.42") || !strings.Contains(newNP, "test.local") {
 		t.Errorf("NO_PROXY not properly set: %s", newNP)
 	}
 	if newNP != newNp {

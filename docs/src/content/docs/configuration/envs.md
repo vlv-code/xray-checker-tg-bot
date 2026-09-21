@@ -185,6 +185,14 @@ This allows Xray Checker to monitor each resolved endpoint individually.
 
 Adds measured latency (TTFB - Time To First Byte) to endpoint responses, useful for monitoring systems that can interpret response delays.
 
+### PROXY_TARGET_URLS
+
+- CLI: `--proxy-target-url`
+- Required: No
+- Default: `https://cp.cloudflare.com/generate_204,https://www.gstatic.com/generate_204`
+
+Comma-separated list of fallback target URLs for checking proxy availability and running multi-stage diagnostics (`/diag`). Probes send HTTP GET requests expecting 204 or 2xx responses. Can be configured dynamically per-chat via the bot's `/targets` menu.
+
 ## Web UI
 
 ### WEB_ENABLED
@@ -351,6 +359,14 @@ Telegram bot token obtained from [@BotFather](https://t.me/BotFather). Setting t
 
 Delivery targets for alerts, digests and interactive commands: `<chat_id>` for a whole chat (the General topic in forum groups) or `<chat_id>:<topic_id>` for a single forum topic (e.g. `-100987654321:42`). Can be specified multiple times via CLI or as comma-separated values in the environment variable. Run `/id` inside a chat or topic to get a ready-made entry. Every target receives its own copy of alerts and digests; commands reply in the chat or topic where they were invoked.
 
+### TELEGRAM_ADMIN_USER_IDS
+
+- CLI: `--telegram-admin-user-id`
+- Required: No
+- Default: None
+
+Comma-separated list of Telegram numeric User IDs allowed to perform mutating commands (`/interval`, `/addsub`, `/delsub`, `/nodeadd`, `/nodedel`, `/nodesubs`, `/nodeaddsub`, `/nodedelsub`, `/togglehost`, `/quiet`, `/checkupdate`, etc.). If empty, all participants within authorized `TELEGRAM_CHAT_IDS` are permitted to execute mutating commands.
+
 ### TELEGRAM_NOTIFY_ON_RECOVERY
 
 - CLI: `--telegram-notify-on-recovery`
@@ -456,6 +472,22 @@ Enables periodic daytime status summaries.
 
 Interval in hours between daytime status summaries.
 
+### TELEGRAM_RELEASE_ALERTS
+
+- CLI: `--telegram-release-alerts`
+- Required: No
+- Default: `true`
+
+Enables periodic checking and Telegram notifications for new GitHub releases of Xray Checker.
+
+### TELEGRAM_RELEASE_CHECK_INTERVAL_HOURS
+
+- CLI: `--telegram-release-interval`
+- Required: No
+- Default: `6`
+
+Interval in hours between automatic checks for new GitHub releases.
+
 ## Check-Host
 
 ### CHECKHOST_BG_ENABLED
@@ -509,6 +541,14 @@ JSON file for storing desired managed subscriptions assigned to remote nodes via
 
 Public URL of the master report endpoint displayed in Telegram bot `/nodeadd` setup instructions and generated Docker commands. If empty, the master automatically detects its public/host IP address.
 
+### MASTER_STALE_TIMEOUT_SEC
+
+- CLI: `--master-stale-timeout-sec`
+- Required: No
+- Default: `0` (dynamic: `2 * node.IntervalSec + 30s`)
+
+Maximum timeout in seconds before a silent remote node is considered `stale` (offline). When 0, the timeout is dynamically calculated based on the node's check interval.
+
 ### REPORT_URL
 
 - CLI: `--report-url`
@@ -547,7 +587,14 @@ Outbound HTTP/SOCKS5 proxy settings (e.g. `socks5://127.0.0.1:1080` or `http://p
 - Required: No
 - Default: `localhost,127.0.0.1`
 
-Comma-separated list of hosts and IP ranges bypassing the outbound proxy.
+Comma-separated list of hosts and IP ranges bypassing the outbound proxy. On nodes, master IP/host and RFC1918 private subnets are automatically added to `NO_PROXY`.
+
+### BOOTSTRAP_PROXY / GEO_PROXY
+
+- Required: No
+- Default: ""
+
+Dedicated proxy (e.g. `http://proxy:8080` or `socks5://127.0.0.1:1080`) used exclusively for bootstrap operations (downloading remote subscriptions and GeoIP/GeoSite databases from GitHub) on hosts with restricted internet access. Unlike `HTTP_PROXY`, it does not affect master reports or direct proxy checks.
 
 ## Other
 

@@ -217,7 +217,7 @@ custom/
 ```yaml
 services:
   xray-checker:
-    image: kutovoys/xray-checker:latest
+    image: ghcr.io/vlv-code/xray-checker-tg-bot:latest
     volumes:
       - ./custom:/app/custom:ro
     environment:

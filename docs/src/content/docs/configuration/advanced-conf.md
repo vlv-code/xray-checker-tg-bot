@@ -110,7 +110,7 @@ docker run -d \
   -e METRICS_PROTECTED=true \
   -e METRICS_USERNAME=custom_user \
   -e METRICS_PASSWORD=custom_pass \
-  kutovoys/xray-checker
+  ghcr.io/vlv-code/xray-checker-tg-bot:latest
 ```
 
 Open nginx configuration file (`sudo nano /etc/nginx/your-domain.com`), find main section:

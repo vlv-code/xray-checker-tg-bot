@@ -9,7 +9,7 @@ Xray Checker provides both public and protected HTTP endpoints. Protected endpoi
 
 ## Public Endpoints
 
-These endpoints are always accessible without authentication.
+Public endpoints do not require authentication or are conditionally opened for status pages.
 
 ### Health Check
 
@@ -17,7 +17,7 @@ These endpoints are always accessible without authentication.
 GET /health
 ```
 
-Simple health check endpoint.
+Simple health check endpoint. Always accessible without authentication (for load balancers and orchestrator probes).
 
 **Response:** `200 OK` with body `OK`
 
@@ -28,6 +28,10 @@ GET /api/v1/public/proxies
 ```
 
 Returns proxy status without sensitive data (no server IPs/ports). Used by the web UI for auto-refresh.
+
+:::note[Authentication Behavior]
+This endpoint is unauthenticated when `METRICS_PROTECTED=false` OR when `WEB_PUBLIC=true`. If `METRICS_PROTECTED=true` and `WEB_PUBLIC=false`, accessing this endpoint requires HTTP Basic Authentication.
+:::
 
 **Response:**
 ```json
@@ -274,7 +278,7 @@ POST /api/v1/nodes/report
 
 Master ingest endpoint for receiving check report snapshots from remote headless checker nodes.
 
-**Authentication:** `Authorization: Bearer <REPORT_TOKEN>` (matching this node's token in master's `NODES`).
+**Authentication:** `Authorization: Bearer <REPORT_TOKEN>`. This endpoint is dedicated to remote node push reports; it completely bypasses Basic Authentication and validates solely the Bearer token against the registered nodes on the master.
 
 **Request Body (JSON):**
 ```json
@@ -324,7 +328,10 @@ When enabled (`METRICS_PROTECTED=true`), protected endpoints require Basic Authe
 curl -u username:password http://localhost:2112/metrics
 ```
 
-**Note:** Public endpoints (`/health`, `/api/v1/public/proxies`) never require authentication.
+**Notes on exceptions:**
+- `/health` is always accessible without authentication (for load balancer and orchestrator health checks).
+- `/api/v1/public/proxies` is open without authentication when `WEB_PUBLIC=true` (or when `METRICS_PROTECTED=false`).
+- `/api/v1/nodes/report` authenticates exclusively via `Authorization: Bearer <token>` and bypasses Basic Authentication.
 
 ## Integration Examples
 

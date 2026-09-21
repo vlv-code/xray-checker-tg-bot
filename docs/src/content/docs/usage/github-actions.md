@@ -55,7 +55,7 @@ jobs:
 
     steps:
       - name: Run Xray Checker
-        uses: docker://kutovoys/xray-checker
+        uses: docker://ghcr.io/vlv-code/xray-checker-tg-bot:latest
         env:
           SUBSCRIPTION_URL: ${{ secrets.SUBSCRIPTION_URL }}
           METRICS_PUSH_URL: ${{ secrets.PUSH_URL }}
@@ -71,7 +71,7 @@ Add Slack or Email notifications for failed checks:
 steps:
   - name: Run Xray Checker
     id: checker
-    uses: docker://kutovoys/xray-checker
+    uses: docker://ghcr.io/vlv-code/xray-checker-tg-bot:latest
     env:
       SUBSCRIPTION_URL: ${{ secrets.SUBSCRIPTION_URL }}
       METRICS_PUSH_URL: ${{ secrets.PUSH_URL }}
@@ -118,7 +118,7 @@ jobs:
 
     steps:
       - name: Run Xray Checker
-        uses: docker://kutovoys/xray-checker
+        uses: docker://ghcr.io/vlv-code/xray-checker-tg-bot:latest
         env:
           SUBSCRIPTION_URL: ${{ secrets.SUBSCRIPTION_URL }}
           METRICS_PUSH_URL: ${{ secrets.PUSH_URL }}

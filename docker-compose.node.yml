@@ -1,4 +1,4 @@
-﻿# docker-compose.node.yml — Deployment template for xray-checker remote node
+# docker-compose.node.yml — Deployment template for xray-checker remote node
 # Designed for restricted/enterprise networks (corporate proxies, firewalls, NAT).
 #
 # Usage:
@@ -27,11 +27,10 @@ services:
 
     environment:
       # Remote master ingest URL and bearer token (required for node mode)
-      REPORT_URL: "http://89.125.214.220:2112/api/v1/nodes/report"
+      # NOTE: Node name is assigned exclusively on the master when creating token via /nodeadd <name>.
+      # Nodes are authenticated strictly by REPORT_TOKEN.
+      REPORT_URL: "http://<YOUR_MASTER_IP>:2112/api/v1/nodes/report"
       REPORT_TOKEN: "CHANGE_ME_TO_YOUR_NODE_BEARER_TOKEN"
-
-      # Optional custom node name (defaults to container hostname if empty)
-      NODE_NAME: "node-enterprise-01"
 
       # Proxy for downloading subscriptions and geo databases if direct internet
       # is restricted on this host (does NOT affect master reports or proxy checks):

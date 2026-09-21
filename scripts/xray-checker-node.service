@@ -1,4 +1,4 @@
-﻿[Unit]
+[Unit]
 Description=Xray Checker Remote Node
 Documentation=https://github.com/vlv-code/xray-checker-tg-bot
 After=network.target network-online.target
@@ -11,9 +11,10 @@ Group=xray-checker
 WorkingDirectory=/opt/xray-checker
 
 # Remote Master configuration (mandatory)
-Environment="REPORT_URL=http://89.125.214.220:2112/api/v1/nodes/report"
+# NOTE: Node name is assigned exclusively on the master when creating token via /nodeadd <name>.
+# Nodes are authenticated strictly by REPORT_TOKEN.
+Environment="REPORT_URL=http://<YOUR_MASTER_IP>:2112/api/v1/nodes/report"
 Environment="REPORT_TOKEN=CHANGE_ME_TO_YOUR_NODE_BEARER_TOKEN"
-# Environment="NODE_NAME=sr-zabbix-01"
 
 # Corporate proxy for bootstrap/subscriptions/geo if direct access is blocked
 # (Does NOT affect node reports or proxy checks)

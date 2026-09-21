@@ -1,5 +1,7 @@
 # Code Review Fixes Implementation Plan
 
+> **Status:** Fully implemented and verified in commit `fd294e8` (all tests passing across all 12 packages).
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fix confirmed logic bugs, security risks, and concurrency flaws identified during code review while maintaining full test suite integrity.
@@ -16,10 +18,10 @@
 - Modify: `telegram/alerts.go:150-174`
 - Test: `telegram/alerts_test.go`
 
-- [ ] **Step 1: Write failing test in `telegram/alerts_test.go`**
-- [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement minimal fix in `telegram/alerts.go`**
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 1: Write failing test in `telegram/alerts_test.go`**
+- [x] **Step 2: Run test to verify it fails**
+- [x] **Step 3: Implement minimal fix in `telegram/alerts.go`**
+- [x] **Step 4: Run test to verify it passes**
 
 ---
 
@@ -29,10 +31,10 @@
 - Modify: `checker/checker.go:161-166`
 - Test: `checker/checker_test.go`
 
-- [ ] **Step 1: Write failing test in `checker/checker_test.go`**
-- [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement fix in `checker/checker.go`**
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 1: Write failing test in `checker/checker_test.go`**
+- [x] **Step 2: Run test to verify it fails**
+- [x] **Step 3: Implement fix in `checker/checker.go`**
+- [x] **Step 4: Run test to verify it passes**
 
 ---
 
@@ -42,10 +44,10 @@
 - Modify: `models/proxy_config.go:197-210`
 - Test: `models/proxy_config_test.go`
 
-- [ ] **Step 1: Write failing test in `models/proxy_config_test.go`**
-- [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement fix in `models/proxy_config.go`**
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 1: Write failing test in `models/proxy_config_test.go`**
+- [x] **Step 2: Run test to verify it fails**
+- [x] **Step 3: Implement fix in `models/proxy_config.go`**
+- [x] **Step 4: Run test to verify it passes**
 
 ---
 
@@ -55,10 +57,10 @@
 - Modify: `models/proxy_config.go`, `subscription/json_convert.go`, `xray/config.go`
 - Test: `subscription/json_convert_test.go`, `xray/config_test.go`
 
-- [ ] **Step 1: Write failing test in `subscription/json_convert_test.go`**
-- [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement fix in `models/proxy_config.go`, `subscription/json_convert.go`, `xray/config.go`**
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 1: Write failing test in `subscription/json_convert_test.go`**
+- [x] **Step 2: Run test to verify it fails**
+- [x] **Step 3: Implement fix in `models/proxy_config.go`, `subscription/json_convert.go`, `xray/config.go`**
+- [x] **Step 4: Run test to verify it passes**
 
 ---
 
@@ -68,10 +70,10 @@
 - Modify: `telegram/commands.go:216`
 - Test: `telegram/commands_test.go`
 
-- [ ] **Step 1: Write failing test in `telegram/commands_test.go`**
-- [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement fix in `telegram/commands.go`**
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 1: Write failing test in `telegram/commands_test.go`**
+- [x] **Step 2: Run test to verify it fails**
+- [x] **Step 3: Implement fix in `telegram/commands.go`**
+- [x] **Step 4: Run test to verify it passes**
 
 ---
 
@@ -81,10 +83,10 @@
 - Modify: `telegram/subscriptions.go`, `telegram/nodes_commands.go`
 - Test: `telegram/subscriptions_test.go`
 
-- [ ] **Step 1: Write failing test in `telegram/subscriptions_test.go`**
-- [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement fix**
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 1: Write failing test in `telegram/subscriptions_test.go`**
+- [x] **Step 2: Run test to verify it fails**
+- [x] **Step 3: Implement fix**
+- [x] **Step 4: Run test to verify it passes**
 
 ---
 
@@ -94,8 +96,8 @@
 - Modify: `nodes/nodes_store.go:83`, `telegram/config.go:272`
 - Test: `nodes/nodes_store_test.go`
 
-- [ ] **Step 1: Implement fix in `nodes/nodes_store.go` and `telegram/config.go`**
-- [ ] **Step 2: Verify tests**
+- [x] **Step 1: Implement fix in `nodes/nodes_store.go` and `telegram/config.go`**
+- [x] **Step 2: Verify tests**
 
 ---
 
@@ -105,10 +107,10 @@
 - Modify: `nodes/registry.go:238`
 - Test: `nodes/registry_test.go`
 
-- [ ] **Step 1: Write failing test in `nodes/registry_test.go`**
-- [ ] **Step 2: Run test to verify it fails**
-- [ ] **Step 3: Implement fix in `nodes/registry.go`**
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 1: Write failing test in `nodes/registry_test.go`**
+- [x] **Step 2: Run test to verify it fails**
+- [x] **Step 3: Implement fix in `nodes/registry.go`**
+- [x] **Step 4: Run test to verify it passes**
 
 ---
 
@@ -118,8 +120,8 @@
 - Modify: `telegram/bot.go`
 - Test: `telegram/bot_test.go`
 
-- [ ] **Step 1: Refactor `sendOrUpdateMenu` and `getMasterASN`**
-- [ ] **Step 2: Run telegram tests to verify no regressions**
+- [x] **Step 1: Refactor `sendOrUpdateMenu` and `getMasterASN`**
+- [x] **Step 2: Run telegram tests to verify no regressions**
 
 ---
 
@@ -128,5 +130,5 @@
 **Files:**
 - Modify: `main.go:341`
 
-- [ ] **Step 1: Wrap `proxyChecker.RunDiagnostics(targets)` with `checkRunnerMu` in `main.go`**
-- [ ] **Step 2: Run full test suite and verify build**
+- [x] **Step 1: Wrap `proxyChecker.RunDiagnostics(targets)` with `checkRunnerMu` in `main.go`**
+- [x] **Step 2: Run full test suite and verify build**
