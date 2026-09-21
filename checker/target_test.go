@@ -1,12 +1,17 @@
 package checker
 
 import (
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"xray-checker/models"
 )
 
 func TestTargetManager_AddRemove(t *testing.T) {
@@ -342,6 +347,82 @@ func TestDetermineVerdict_ForbiddenOverEOF(t *testing.T) {
 	_, mixedVerdict := DetermineVerdict("vless", health, mixedTargets)
 	if !strings.Contains(mixedVerdict, "403") {
 		t.Errorf("expected mixed verdict to prioritize HTTP 403 over reset, got: %s", mixedVerdict)
+	}
+}
+
+func TestRunDiagnostics_CheckHostDeduplication(t *testing.T) {
+	var checkCalls atomic.Int32
+	var reqNodes []string
+	var reqMu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/check-tcp") {
+			checkCalls.Add(1)
+			reqMu.Lock()
+			reqNodes = append([]string(nil), r.URL.Query()["node"]...)
+			reqMu.Unlock()
+			nodesMeta := make(map[string]interface{})
+			for _, n := range r.URL.Query()["node"] {
+				nodesMeta[n] = []interface{}{"de", "Germany", "Nuremberg", "1.2.3.4", "AS1"}
+			}
+			resp := map[string]interface{}{
+				"ok":             1,
+				"request_id":     "req123",
+				"permanent_link": "https://check-host.net/check-report/req123",
+				"nodes":          nodesMeta,
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/check-result/req123") {
+			reqMu.Lock()
+			curr := append([]string(nil), reqNodes...)
+			reqMu.Unlock()
+			resp := make(map[string]interface{})
+			for _, n := range curr {
+				resp[n] = []interface{}{
+					map[string]interface{}{"time": 0.020, "address": "1.2.3.4"},
+				}
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	chClient := NewCheckHostClient(server.URL, 10*time.Millisecond)
+
+	pc := &ProxyChecker{
+		checkHostClient: chClient,
+		ipCheckTimeout:  1,
+		startPort:       10800,
+	}
+
+	// Two offline proxies pointing to the same server and port
+	proxies := []*models.ProxyConfig{
+		{Name: "Proxy1", Protocol: "vless", Server: "192.0.2.1", Port: 443, StableID: "p1", Index: 0},
+		{Name: "Proxy2", Protocol: "vless", Server: "192.0.2.1", Port: 443, StableID: "p2", Index: 1},
+	}
+	pc.UpdateProxies(proxies)
+
+	reports := pc.RunDiagnostics([]string{"http://127.0.0.1:1/nonexistent"})
+	if len(reports) != 2 {
+		t.Fatalf("expected 2 reports, got %d", len(reports))
+	}
+
+	// Verify both reports got CheckHost results
+	for i, r := range reports {
+		if r.CheckHost == nil {
+			t.Errorf("report %d: expected CheckHost to be populated, got nil", i)
+		} else if r.CheckHost.PermanentLink != "https://check-host.net/check-report/req123" {
+			t.Errorf("report %d: expected permanent link, got %s", i, r.CheckHost.PermanentLink)
+		}
+	}
+
+	// Verify Check-Host API was only called once due to deduplication
+	if checkCalls.Load() != 1 {
+		t.Errorf("expected exactly 1 call to check-host API due to deduplication, got %d", checkCalls.Load())
 	}
 }
 

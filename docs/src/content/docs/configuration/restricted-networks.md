@@ -85,12 +85,13 @@ If your host configures global Docker daemon proxies (`"proxies": { "default": {
 
 ---
 
-## 3. Option B: Deployment via Systemd (Without Docker)
+## 3. Fallback: Deployment via Systemd (Without Docker)
 
-For servers where Docker is unavailable or cannot pull from external registries:
+For servers where Docker is unavailable, blocked, or isolated from external registries:
 
-1. Copy the compiled `xray-checker` binary to `/usr/local/bin/xray-checker` and make it executable:
+1. Download the compiled `xray-checker-tg-bot-*-linux-amd64.tar.gz` from [GitHub Releases](https://github.com/vlv-code/xray-checker-tg-bot/releases) on any machine with internet access and copy it to the node:
    ```bash
+   scp xray-checker root@node-server:/usr/local/bin/xray-checker
    chmod +x /usr/local/bin/xray-checker
    ```
 
@@ -112,46 +113,19 @@ For servers where Docker is unavailable or cannot pull from external registries:
    ```bash
    systemctl daemon-reload
    systemctl enable --now xray-checker-node
-   ```
-
-6. Check service logs:
-   ```bash
    journalctl -u xray-checker-node -f
    ```
 
 ---
 
-## 4. Diagnostics Interpretation in Telegram Bot
+## 4. Understanding Status Differences in Diagnostics
 
-### Direct Port Timed Out (`⚠️`), but Tunnel Operational
-- **Display:** `• TCP (443): ⚠️ Timeout (provider filtering or server anti-probe protection, but tunnel is active)`
-- **Explanation:** Modern censorship-resistant protocols (Reality, Trojan, ShadowTLS) intentionally drop or ignore unauthenticated TCP SYN probes on port 443 ("stealth mode"). Alternatively, the local firewall may filter bare TCP 443 while allowing established flows.
-- **Key Takeaway:** If HTTP 204 succeeds through the tunnel, the proxy is fully functional and healthy.
+### Protocol-Specific Differences
+- **TCP Protocols (VLESS, Trojan, Shadowsocks)**: probe raw TCP port `443`.
+- **UDP Protocols (Hysteria, TUIC)**: operate solely over UDP/QUIC and perform UDP reachability checks instead of TCP pings.
 
-### Single Target Failure Inside Tunnel (e.g. Google Timeout while Cloudflare Passes)
-- **Display:** `• gstatic: ❌ Timeout (proxy response timeout: routing/IPv6 issue on proxy server or service disruption)`
-- **Explanation:** Traffic to Google travels inside the encrypted proxy tunnel. The node's local network does not cause this. It typically indicates lack of IPv6 connectivity on the proxy VPS or temporary rate limiting by Google on the proxy IP.
+### Direct TCP 443 Timed Out (`⚠️` or `❌`), but Tunnel Works
+- **Reason:** Reality or stealth anti-probing on the server drops unauthenticated TCP probes, or the local ISP throttles bare TCP 443. Once connected via Xray with authentic keys/SNI, the tunnel passes traffic normally.
 
----
-
-## 5. Troubleshooting & Network Caveats
-
-### Docker Bridge Stale Network State (`i/o timeout`, `context deadline exceeded`)
-- **Symptom:** The container logs timeout errors when connecting to subscriptions or remote servers, even though the host network can reach them.
-- **Cause:** Docker daemon may maintain stale conntrack entries or bridge socket state across fast restarts.
-- **Solution:** Fully tear down and recreate the container network stack:
-  ```bash
-  docker compose down
-  docker compose up -d
-  ```
-
-### YAML Parse Error (`invalid trailing UTF-8 octet`)
-- **Symptom:** `yaml: offset ...: invalid trailing UTF-8 octet` during `docker compose pull` or `up`.
-- **Cause:** Copy-pasting non-ASCII characters (e.g. Cyrillic comments) through terminal sessions that alter multi-byte UTF-8 sequences.
-- **Solution:** Use clean ASCII configurations without non-ASCII comments or create files via `cat << 'EOF' > docker-compose.yml`.
-
-### Use Pre-built GHCR Images Instead of `build:`
-- Do not use `build: https://github.com/...` on remote nodes. Building from source in restricted networks frequently fails on Go module proxies and GitHub release downloads. Always use the pre-built multi-arch image:
-  ```yaml
-  image: ghcr.io/vlv-code/xray-checker-tg-bot:v2.4.0
-  ```
+### Check-Host Deduplication
+- To prevent API rate limits when multiple proxies fail simultaneously on the same host, Check-Host audits are automatically deduplicated per host.

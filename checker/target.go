@@ -546,6 +546,13 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 		sem = make(chan struct{}, pc.checkConcurrency)
 	}
 
+	type chCacheEntry struct {
+		summary *CheckHostSummary
+		err     error
+	}
+	var chCache sync.Map
+	var chMu sync.Map
+
 	for i, p := range proxies {
 		wg.Add(1)
 		go func(idx int, proxy *models.ProxyConfig) {
@@ -631,28 +638,49 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 			status, verdict := DetermineVerdict(proxy.Protocol, health, targetResults)
 
 			var checkHostSummary *CheckHostSummary
-			// Run Check-Host if the node has connectivity issues
+			// Run Check-Host if the node has connectivity issues.
+			// Deduplicate checks across proxies sharing the same host/port to avoid rate-limiting and timeouts.
 			if status == "offline" && proxy.Server != "" {
-				chClient := pc.GetCheckHostClient()
-				if chClient == nil {
-					chClient = NewCheckHostClient("", 1500*time.Millisecond)
+				checkKey := fmt.Sprintf("tcp:%s:%d", proxy.Server, proxy.Port)
+				if IsUDPProto(proxy.Protocol) {
+					checkKey = fmt.Sprintf("ping:%s", proxy.Server)
 				}
-				chCtx, chCancel := context.WithTimeout(context.Background(), 7*time.Second)
-				// Explicit copy: appending to the package-level defaults would
-				// share (and on growth, corrupt) their backing array across
-				// concurrent goroutines.
-				fastNodes := make([]string, 0, len(DefaultFastRUNodes)+len(DefaultFastWorldNodes))
-				fastNodes = append(fastNodes, DefaultFastRUNodes...)
-				fastNodes = append(fastNodes, DefaultFastWorldNodes...)
+
 				var chSummary *CheckHostSummary
 				var chErr error
-				if IsUDPProto(proxy.Protocol) {
-					chSummary, chErr = chClient.CheckPing(chCtx, proxy.Server, fastNodes)
-				} else if proxy.Port > 0 {
-					targetHost := fmt.Sprintf("%s:%d", proxy.Server, proxy.Port)
-					chSummary, chErr = chClient.CheckTCP(chCtx, targetHost, fastNodes)
+
+				if cached, ok := chCache.Load(checkKey); ok {
+					entry := cached.(*chCacheEntry)
+					chSummary, chErr = entry.summary, entry.err
+				} else {
+					muAny, _ := chMu.LoadOrStore(checkKey, &sync.Mutex{})
+					keyMu := muAny.(*sync.Mutex)
+					keyMu.Lock()
+					if cached, ok := chCache.Load(checkKey); ok {
+						entry := cached.(*chCacheEntry)
+						chSummary, chErr = entry.summary, entry.err
+					} else {
+						chClient := pc.GetCheckHostClient()
+						if chClient == nil {
+							chClient = NewCheckHostClient("", 1500*time.Millisecond)
+						}
+						chCtx, chCancel := context.WithTimeout(context.Background(), 12*time.Second)
+						fastNodes := make([]string, 0, len(DefaultFastRUNodes)+len(DefaultFastWorldNodes))
+						fastNodes = append(fastNodes, DefaultFastRUNodes...)
+						fastNodes = append(fastNodes, DefaultFastWorldNodes...)
+
+						if IsUDPProto(proxy.Protocol) {
+							chSummary, chErr = chClient.CheckPing(chCtx, proxy.Server, fastNodes)
+						} else if proxy.Port > 0 {
+							targetHost := fmt.Sprintf("%s:%d", proxy.Server, proxy.Port)
+							chSummary, chErr = chClient.CheckTCP(chCtx, targetHost, fastNodes)
+						}
+						chCancel()
+						chCache.Store(checkKey, &chCacheEntry{summary: chSummary, err: chErr})
+					}
+					keyMu.Unlock()
 				}
-				chCancel()
+
 				if chErr == nil && chSummary != nil {
 					checkHostSummary = chSummary
 					verdict = EnrichVerdictWithCheckHost(verdict, chSummary, health.DNSErr)
