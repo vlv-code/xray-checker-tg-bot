@@ -219,6 +219,19 @@ The web dashboard and Prometheus metrics will be available at: `http://<server_i
 > mkdir -p data geo && sudo chown -R 1000:1000 data geo
 > ```
 
+### 4. Deploying a Remote Node
+To run a monitoring node on a separate server, different region, or restricted network:
+1. Register the node on the master via Telegram bot: `/nodeadd <node_name>` (receives auth token).
+2. Use the template [docker-compose.node.yml](docker-compose.node.yml) or run directly:
+   ```bash
+   docker run -d --name xray-node-1 \
+     --restart unless-stopped \
+     -e REPORT_URL=http://<MASTER_IP>:2112/api/v1/nodes/report \
+     -e REPORT_TOKEN=<TOKEN_FROM_BOT> \
+     ghcr.io/vlv-code/xray-checker-tg-bot:v2.4.0
+   ```
+3. Full deployment guide, systemd setup, and network troubleshooting: **[docs/restricted-networks.md](docs/restricted-networks.md)**.
+
 ---
 
 ## 🔄 Updating on Server

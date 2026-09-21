@@ -221,6 +221,19 @@ docker compose up -d --build
 > mkdir -p data geo && sudo chown -R 1000:1000 data geo
 > ```
 
+### 4. Развёртывание удалённой ноды проверки (Remote Node)
+Для запуска агента проверки на отдельном сервере, в другом регионе или в изолированной сети:
+1. Добавьте ноду на мастере через Telegram-бот: `/nodeadd <имя_ноды>` (бот выдаст токен).
+2. Используйте готовый шаблон [docker-compose.node.yml](docker-compose.node.yml) или команду:
+   ```bash
+   docker run -d --name xray-node-1 \
+     --restart unless-stopped \
+     -e REPORT_URL=http://<IP_МАСТЕРА>:2112/api/v1/nodes/report \
+     -e REPORT_TOKEN=<ТОКЕН_ИЗ_БОТА> \
+     ghcr.io/vlv-code/xray-checker-tg-bot:v2.4.0
+   ```
+3. Подробное руководство по развёртыванию в изолированных/корпоративных сетях и устранению проблем: **[docs/restricted-networks.md](docs/restricted-networks.md)** (включая запуск через systemd без Docker и решение проблем с сетью).
+
 ---
 
 ## 🔄 Обновление на сервере
