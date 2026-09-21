@@ -581,3 +581,24 @@ func TestBot_Stop_SavesStatsStore(t *testing.T) {
 		t.Errorf("expected 1 check persisted on Stop, got %+v", ps)
 	}
 }
+
+func TestBot_AdminUserIDs(t *testing.T) {
+	b := &Bot{}
+	// Empty admin IDs -> everyone authorized
+	if !b.isAuthorizedMutating(12345) {
+		t.Errorf("expected user 12345 to be authorized when adminUserIDs is empty")
+	}
+
+	// Configured admin IDs
+	b.SetAdminUserIDs([]int64{1001, 1002})
+	if !b.isAuthorizedMutating(1001) {
+		t.Errorf("expected admin user 1001 to be authorized")
+	}
+	if !b.isAuthorizedMutating(1002) {
+		t.Errorf("expected admin user 1002 to be authorized")
+	}
+	if b.isAuthorizedMutating(9999) {
+		t.Errorf("expected non-admin user 9999 to be rejected")
+	}
+}
+

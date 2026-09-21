@@ -259,3 +259,31 @@ func TestCheckHostClient_WaitsForAllNodes(t *testing.T) {
 		t.Errorf("expected WorldAvailable=true, got false")
 	}
 }
+
+func TestCheckHostClient_RateLimiter(t *testing.T) {
+	limiter := newRateLimiter(5.0, 1) // 5 per sec = 1 token per 200ms, burst 1
+	ctx := context.Background()
+
+	// 1st request should be immediate (burst = 1)
+	start := time.Now()
+	if err := limiter.Wait(ctx); err != nil {
+		t.Fatalf("first wait failed: %v", err)
+	}
+
+	// 2nd request should wait ~200ms
+	if err := limiter.Wait(ctx); err != nil {
+		t.Fatalf("second wait failed: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed < 150*time.Millisecond {
+		t.Errorf("expected at least 150ms elapsed for rate limited call, got %v", elapsed)
+	}
+
+	// Canceled context should fail
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := limiter.Wait(cancelCtx); err == nil {
+		t.Errorf("expected error on canceled context, got nil")
+	}
+}
+

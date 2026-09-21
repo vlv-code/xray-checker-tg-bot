@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"xray-checker/checker"
 	"xray-checker/metrics"
@@ -38,13 +39,41 @@ func (a *nodeManagerAdapter) ManagedSubs(node string) ([]telegram.ManagedSubInfo
 		return nil, fmt.Errorf("неизвестная нода: %s", node)
 	}
 	counts := a.reg.SubCounts(node)
-	// SubCounts is keyed by subscription display name; the bot shows counts
-	// per URL only when the node reported a matching subName, so -1 default.
-	out := make([]telegram.ManagedSubInfo, 0)
-	for _, u := range a.subs.Get(node) {
-		out = append(out, telegram.ManagedSubInfo{URL: u, ProxyCount: -1})
+	urls := a.subs.Get(node)
+	out := make([]telegram.ManagedSubInfo, 0, len(urls))
+
+	totalFromCounts := 0
+	for _, c := range counts {
+		totalFromCounts += c
 	}
-	_ = counts // counts surfaced via /nodes summary; per-URL matching is v2
+
+	everReported := false
+	totalProxies := totalFromCounts
+	for _, h := range a.reg.HealthSnapshot() {
+		if h.Name == node {
+			everReported = h.EverReported
+			if totalProxies == 0 && everReported {
+				totalProxies = h.Total
+			}
+			break
+		}
+	}
+
+	for _, u := range urls {
+		count := -1
+		frag := ""
+		if idx := strings.LastIndex(u, "#"); idx != -1 {
+			frag = u[idx+1:]
+		}
+		if c, ok := counts[u]; ok {
+			count = c
+		} else if frag != "" && counts[frag] > 0 {
+			count = counts[frag]
+		} else if len(urls) == 1 && everReported {
+			count = totalProxies
+		}
+		out = append(out, telegram.ManagedSubInfo{URL: u, ProxyCount: count})
+	}
 	return out, nil
 }
 

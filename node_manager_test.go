@@ -68,6 +68,18 @@ func TestNodeManagerAdapter(t *testing.T) {
 	if diags[0].ProxyName != "NodeProxy" || diags[0].Verdict != "OK" || len(diags[0].Targets) != 1 {
 		t.Fatalf("unexpected diag report: %+v", diags[0])
 	}
+
+	// After report, single managed subscription should reflect the reported proxy count
+	if err := a.AddSub("n1", "https://x/y"); err != nil {
+		t.Fatal(err)
+	}
+	gotAfterReport, err := a.ManagedSubs("n1")
+	if err != nil || len(gotAfterReport) != 1 {
+		t.Fatalf("ManagedSubs after report error: %v, len: %d", err, len(gotAfterReport))
+	}
+	if gotAfterReport[0].ProxyCount != 1 {
+		t.Errorf("expected ProxyCount = 1 after node reported 1 proxy, got %d", gotAfterReport[0].ProxyCount)
+	}
 }
 
 func TestMergedMetricsSource(t *testing.T) {

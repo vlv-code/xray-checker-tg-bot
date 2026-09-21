@@ -82,6 +82,29 @@ func TestReconcileManagedReloadFailureReverts(t *testing.T) {
 	}
 }
 
+func TestReconcileManagedReloadFailurePreservesUnmanagedDynamic(t *testing.T) {
+	userSub := "https://user.example/sub"
+	managedSub := "https://good-managed.example/sub"
+	store, _ := NewURLStore(nil, "")
+	if _, err := store.Add(userSub); err != nil {
+		t.Fatal(err)
+	}
+
+	fail := func() (bool, int, error) { return false, 0, errors.New("reload failed") }
+
+	_, err := ReconcileManaged(store, []string{managedSub}, fail, fakeValidator)
+	if err == nil {
+		t.Fatal("expected reload error")
+	}
+
+	if got := store.Dynamic(); len(got) != 1 || got[0] != userSub {
+		t.Fatalf("expected userSub to survive reload failure, got %v", got)
+	}
+	if got := store.Managed(); len(got) != 0 {
+		t.Fatalf("expected 0 managed subs, got %v", got)
+	}
+}
+
 func TestReconcileManagedLeavesUnmanagedDynamicAlone(t *testing.T) {
 	good := "https://good.example/sub"
 	store, _ := NewURLStore(nil, "")

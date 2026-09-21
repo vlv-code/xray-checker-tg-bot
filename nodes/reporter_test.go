@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestReporterSend(t *testing.T) {
@@ -49,3 +50,47 @@ func TestReporterSendErrors(t *testing.T) {
 		t.Error("connection failure must be an error")
 	}
 }
+
+func TestReporterSendWithRetry_SuccessAfterTransientFailure(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte(`{"managedSubs":["https://sub.example/retry"]}`))
+	}))
+	defer srv.Close()
+
+	rep := NewReporter(srv.URL, "tok")
+	resp, err := rep.SendWithRetry(ReportPayload{}, []time.Duration{10 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("expected success on retry, got err: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+	if len(resp.ManagedSubs) != 1 || resp.ManagedSubs[0] != "https://sub.example/retry" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestReporterSendWithRetry_DoesNotRetry401(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	rep := NewReporter(srv.URL, "tok")
+	_, err := rep.SendWithRetry(ReportPayload{}, []time.Duration{10 * time.Millisecond, 20 * time.Millisecond})
+	if err == nil {
+		t.Fatal("expected error on 401")
+	}
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt (no retries on 401), got %d", attempts)
+	}
+}
+

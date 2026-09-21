@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -106,11 +107,59 @@ var (
 	}
 )
 
+// rateLimiter implements a token bucket rate limiter.
+type rateLimiter struct {
+	mu         sync.Mutex
+	rate       float64 // tokens per second
+	burst      float64
+	tokens     float64
+	lastRefill time.Time
+}
+
+func newRateLimiter(rate float64, burst int) *rateLimiter {
+	return &rateLimiter{
+		rate:       rate,
+		burst:      float64(burst),
+		tokens:     float64(burst),
+		lastRefill: time.Now(),
+	}
+}
+
+func (rl *rateLimiter) Wait(ctx context.Context) error {
+	for {
+		rl.mu.Lock()
+		now := time.Now()
+		elapsed := now.Sub(rl.lastRefill).Seconds()
+		rl.lastRefill = now
+		rl.tokens += elapsed * rl.rate
+		if rl.tokens > rl.burst {
+			rl.tokens = rl.burst
+		}
+
+		if rl.tokens >= 1.0 {
+			rl.tokens -= 1.0
+			rl.mu.Unlock()
+			return nil
+		}
+
+		needed := 1.0 - rl.tokens
+		waitSec := needed / rl.rate
+		rl.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(waitSec * float64(time.Second))):
+		}
+	}
+}
+
 // CheckHostClient handles communication with check-host.net API
 type CheckHostClient struct {
 	BaseURL      string
 	HTTPClient   *http.Client
 	PollInterval time.Duration
+	limiter      *rateLimiter
 }
 
 // NewCheckHostClient creates a new CheckHostClient
@@ -129,6 +178,7 @@ func NewCheckHostClient(baseURL string, pollInterval time.Duration) *CheckHostCl
 			Jar:     jar,
 		},
 		PollInterval: pollInterval,
+		limiter:      newRateLimiter(4.0, 4), // 4 requests/sec, burst 4
 	}
 }
 
@@ -169,6 +219,12 @@ func (c *CheckHostClient) checkInternal(ctx context.Context, checkType, host str
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+	if c.limiter != nil {
+		if err := c.limiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+	}
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -224,6 +280,12 @@ func (c *CheckHostClient) checkInternal(ctx context.Context, checkType, host str
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-ticker.C:
+			if c.limiter != nil {
+				if err := c.limiter.Wait(ctx); err != nil {
+					return nil, err
+				}
+			}
+
 			resReq, err := http.NewRequestWithContext(ctx, http.MethodGet, resultURL, nil)
 			if err != nil {
 				return nil, err

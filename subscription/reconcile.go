@@ -28,7 +28,7 @@ func ReconcileManaged(store *URLStore, desired []string, reload func() (changed 
 	for _, raw := range desired {
 		u, err := normalizeSubscriptionURL(raw)
 		if err != nil {
-			logger.Warn("Reconcile: skipping invalid desired URL %q: %v", raw, err)
+			logger.Warn("Reconcile: skipping invalid desired URL %q: %v", RedactURL(raw), err)
 			continue
 		}
 		desiredSet[u] = true
@@ -53,16 +53,19 @@ func ReconcileManaged(store *URLStore, desired []string, reload func() (changed 
 		}
 	}
 
+	origDynamic, origManaged := store.Snapshot()
+
 	var added, removed []string
 	for _, u := range toAdd {
 		configs, _, err := validate(u)
 		if err != nil || len(configs) == 0 {
-			logger.Warn("Reconcile: desired subscription %s failed validation, skipping: %v", u, err)
+			logger.Warn("Reconcile: desired subscription %s failed validation, skipping: %v", RedactURL(u), err)
 			continue
 		}
 		ok, err := store.AddManaged(u)
 		if err != nil {
-			return false, fmt.Errorf("adding managed subscription %s: %w", u, err)
+			_ = store.Restore(origDynamic, origManaged)
+			return false, fmt.Errorf("adding managed subscription %s: %w", RedactURL(u), err)
 		}
 		if ok {
 			added = append(added, u)
@@ -71,7 +74,8 @@ func ReconcileManaged(store *URLStore, desired []string, reload func() (changed 
 	for _, u := range toRemove {
 		ok, err := store.RemoveManaged(u)
 		if err != nil {
-			return false, fmt.Errorf("removing managed subscription %s: %w", u, err)
+			_ = store.Restore(origDynamic, origManaged)
+			return false, fmt.Errorf("removing managed subscription %s: %w", RedactURL(u), err)
 		}
 		if ok {
 			removed = append(removed, u)
@@ -83,12 +87,7 @@ func ReconcileManaged(store *URLStore, desired []string, reload func() (changed 
 	}
 
 	if _, _, err := reload(); err != nil {
-		for _, u := range added {
-			_, _ = store.RemoveManaged(u)
-		}
-		for _, u := range removed {
-			_, _ = store.AddManaged(u)
-		}
+		_ = store.Restore(origDynamic, origManaged)
 		return false, fmt.Errorf("managed subscriptions changed but reload failed (reverted): %w", err)
 	}
 	logger.Info("Managed subscriptions reconciled: +%d -%d", len(added), len(removed))

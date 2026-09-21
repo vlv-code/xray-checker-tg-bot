@@ -81,6 +81,7 @@ type CLI struct {
 	Telegram struct {
 		BotToken               string   `name:"telegram-bot-token" help:"Telegram bot token (from @BotFather); enables the bot when set" default:"" env:"TELEGRAM_BOT_TOKEN"`
 		ChatTargets            []string `name:"telegram-chat-id" help:"Chat ID(s) allowed to use the bot and receive alerts; append :<topic_id> to target a forum topic (e.g. -100123:42)" env:"TELEGRAM_CHAT_IDS"`
+		AdminUserIDs           []int64  `name:"telegram-admin-user-id" help:"Telegram user IDs allowed to issue mutating commands (/interval, /addsub, /nodeadd, etc.). If empty, all members of allowed chats can use them. env: comma-separated" env:"TELEGRAM_ADMIN_USER_IDS"`
 		NotifyOnRecovery       bool     `name:"telegram-notify-on-recovery" help:"Send a message when a proxy comes back online, not just when it goes down" default:"true" env:"TELEGRAM_NOTIFY_ON_RECOVERY"`
 		Commands               bool     `name:"telegram-commands" help:"Enable interactive bot commands (/status, /help)" default:"true" env:"TELEGRAM_COMMANDS_ENABLED"`
 		ManageSubscriptions    bool     `name:"telegram-manage-subscriptions" help:"Allow /addsub, /delsub and /subs so allowed chats can add or remove subscriptions at runtime" default:"true" env:"TELEGRAM_MANAGE_SUBSCRIPTIONS"`
@@ -106,6 +107,7 @@ type CLI struct {
 		List            []string `name:"node" help:"Remote checker node as 'name|token' (repeatable; env: comma-separated). Empty disables the node feature" env:"NODES"`
 		StorePath       string   `name:"nodes-store-path" help:"File with the desired managed subscriptions per node, edited via the bot" default:"node_subs.json" env:"NODES_STORE_PATH"`
 		MasterPublicURL string   `name:"master-public-url" help:"Public URL or IP of this master for nodes to report to (e.g. http://1.2.3.4:2112/api/v1/nodes/report)" default:"" env:"MASTER_PUBLIC_URL"`
+		StaleTimeoutSec int      `name:"nodes-stale-timeout" help:"Master-side cap on how long a node can go silent before being marked down, in seconds. 0 = use the node's own reported check interval (backward-compatible). Caps a node claiming an unreasonably long interval." default:"0" env:"MASTER_STALE_TIMEOUT_SEC"`
 	} `embed:"" prefix:""`
 
 	Report struct {

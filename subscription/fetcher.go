@@ -341,3 +341,30 @@ func newSafeTransport() *http.Transport {
 		IdleConnTimeout:       90 * time.Second,
 	}
 }
+
+// RedactURL returns a copy of rawURL with sensitive query parameters (e.g. ?token=...)
+// redacted, suitable for logging and error reporting without token leakage.
+func RedactURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		if idx := strings.IndexByte(rawURL, '?'); idx >= 0 {
+			return rawURL[:idx] + "?<redacted>"
+		}
+		return rawURL
+	}
+	if u.RawQuery != "" {
+		u.RawQuery = "<redacted>"
+	}
+	u.Fragment = ""
+	return u.String()
+}
+
+// RedactedList returns a slice with each URL redacted.
+func RedactedList(urls []string) []string {
+	out := make([]string, len(urls))
+	for i, u := range urls {
+		out[i] = RedactURL(u)
+	}
+	return out
+}
+

@@ -59,6 +59,27 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 	b.waitingNodeAddMu.Unlock()
 
 	cmd, arg := parseCommand(msg.Text)
+
+	mutating := map[string]bool{
+		"interval": true, "addsub": true, "delsub": true, "removesub": true,
+		"nodeadd": true, "nodedel": true, "nodeaddsub": true, "nodedelsub": true,
+		"togglenode": true, "disablenode": true, "togglehost": true,
+		"checkhost": true, "checkhost_bg": true, "targets": true, "quiet": true,
+		"tz": true, "timezone": true, "digest": true,
+	}
+
+	if mutating[cmd] && msg.From != nil && !b.isAuthorizedMutating(msg.From.ID) {
+		b.replyCommand(msg, "⛔ Эта команда доступна только администраторам бота.")
+		logger.Warn("Telegram: user %d (%s) denied mutating command %q in chat %d",
+			msg.From.ID, msg.From.Username, cmd, msg.Chat.ID)
+		return
+	}
+
+	if (isWaitingAdd || waitingSubNode != "") && msg.From != nil && !b.isAuthorizedMutating(msg.From.ID) {
+		b.replyCommand(msg, "⛔ Эта операция доступна только администраторам бота.")
+		return
+	}
+
 	if isWaitingAdd && cmd == "" {
 		b.handleNodeAdd(msg, strings.TrimSpace(msg.Text))
 		return

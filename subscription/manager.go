@@ -335,3 +335,28 @@ func (s *URLStore) RemoveManaged(raw string) (bool, error) {
 	}
 	return true, nil
 }
+
+// Snapshot returns a copy of the current dynamic URLs and managed flags.
+func (s *URLStore) Snapshot() (dynamic []string, managed map[string]bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	dyn := append([]string(nil), s.dynamic...)
+	man := make(map[string]bool, len(s.managed))
+	for k, v := range s.managed {
+		man[k] = v
+	}
+	return dyn, man
+}
+
+// Restore restores the store's dynamic URLs and managed flags from a snapshot and persists.
+func (s *URLStore) Restore(dynamic []string, managed map[string]bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dynamic = append([]string(nil), dynamic...)
+	s.managed = make(map[string]bool, len(managed))
+	for k, v := range managed {
+		s.managed[k] = v
+	}
+	return s.persistLocked()
+}
+

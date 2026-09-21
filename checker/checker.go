@@ -35,6 +35,7 @@ type ProxyChecker struct {
 	checkMethod      string
 	checkConcurrency int // max proxies checked in parallel per cycle; 0 = unlimited
 	targetManager    *TargetManager
+	checkHostClient  *CheckHostClient
 	disabledFilter   func(server, stableID string) bool
 	mu               sync.RWMutex
 	// ipFetchMu serializes IP-echo fetches so concurrent cache misses collapse
@@ -136,6 +137,7 @@ func NewProxyChecker(proxies []*models.ProxyConfig, startPort int, ipCheckURL st
 		downloadMinSize:  downloadMinSize,
 		checkMethod:      checkMethod,
 		checkConcurrency: checkConcurrency,
+		checkHostClient:  NewCheckHostClient("", 1500*time.Millisecond),
 	}
 }
 
@@ -857,3 +859,16 @@ func (pc *ProxyChecker) GetProxies() []*models.ProxyConfig {
 	copy(result, pc.proxies)
 	return result
 }
+
+func (pc *ProxyChecker) SetCheckHostClient(c *CheckHostClient) {
+	pc.mu.Lock()
+	pc.checkHostClient = c
+	pc.mu.Unlock()
+}
+
+func (pc *ProxyChecker) GetCheckHostClient() *CheckHostClient {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	return pc.checkHostClient
+}
+

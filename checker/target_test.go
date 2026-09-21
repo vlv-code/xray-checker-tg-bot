@@ -321,3 +321,28 @@ func TestAlignTargetErrorsWithNodeHealth(t *testing.T) {
 	}
 }
 
+func TestDetermineVerdict_ForbiddenOverEOF(t *testing.T) {
+	health := NodeHealth{} // TCP & DNS healthy
+	targets := []TargetDiagResult{
+		{URL: "https://target1.com", Success: false, Error: "HTTP 403 Forbidden"},
+		{URL: "https://target2.com", Success: false, Error: "EOF"},
+	}
+	status, verdict := DetermineVerdict("vless", health, targets)
+	if status != "offline" {
+		t.Errorf("expected offline, got %s", status)
+	}
+	if !strings.Contains(verdict, "403") {
+		t.Errorf("expected verdict to prioritize HTTP 403 / Cloudflare Challenge over EOF, got: %s", verdict)
+	}
+
+	// Mixed error string: "403 Forbidden: connection reset by peer"
+	mixedTargets := []TargetDiagResult{
+		{URL: "https://target1.com", Success: false, Error: "403 Forbidden: connection reset by peer"},
+	}
+	_, mixedVerdict := DetermineVerdict("vless", health, mixedTargets)
+	if !strings.Contains(mixedVerdict, "403") {
+		t.Errorf("expected mixed verdict to prioritize HTTP 403 over reset, got: %s", mixedVerdict)
+	}
+}
+
+

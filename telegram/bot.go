@@ -39,6 +39,7 @@ type Bot struct {
 	cancel         context.CancelFunc
 	targets        []ChatTarget
 	allowedChatIDs map[int64]bool
+	adminUserIDs   map[int64]bool
 	source         metrics.MetricsSource
 	subs           SubscriptionManager
 	nodeMgr        NodeManager
@@ -130,6 +131,7 @@ func New(token string, targets []ChatTarget, source metrics.MetricsSource, notif
 		cancel:           cancel,
 		targets:          targets,
 		allowedChatIDs:   allowed,
+		adminUserIDs:     make(map[int64]bool),
 		source:           source,
 		subs:             subs,
 		notifyOnRecovery: notifyOnRecovery,
@@ -193,6 +195,27 @@ func (b *Bot) SetDiagnosticsSource(ds DiagnosticsSource) {
 // SetIntervalHandler attaches a dynamic check interval rescheduling callback.
 func (b *Bot) SetIntervalHandler(h func(seconds int)) {
 	b.intervalHandler = h
+}
+
+// SetAdminUserIDs configures user IDs authorised to execute mutating commands.
+// If ids is empty, all members of allowed chats are authorised (backward-compatible).
+func (b *Bot) SetAdminUserIDs(ids []int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.adminUserIDs = make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		b.adminUserIDs[id] = true
+	}
+}
+
+// isAuthorizedMutating checks if the given user is authorised for mutating operations.
+func (b *Bot) isAuthorizedMutating(userID int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.adminUserIDs) == 0 {
+		return true
+	}
+	return b.adminUserIDs[userID]
 }
 
 // SetAlertTracker attaches a custom or persistent alert tracker.

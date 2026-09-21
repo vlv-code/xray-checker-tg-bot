@@ -1,7 +1,9 @@
 package nodes
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -49,3 +51,66 @@ func TestNodesStore_SaveAndLoad(t *testing.T) {
 		t.Fatalf("expected 1 node after delete, got %d", len(store2.All()))
 	}
 }
+
+func TestNodesStore_SaveHashesTokenAtRest(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "nodes.json")
+
+	store, err := NewNodesStore(path)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	rawToken := "super-secret-token"
+	if err := store.Save("node-secure", rawToken); err != nil {
+		t.Fatalf("failed to save node: %v", err)
+	}
+
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(bytes)
+	if strings.Contains(content, rawToken) {
+		t.Fatalf("raw token leaked into nodes.json file on disk! content: %s", content)
+	}
+	if !strings.Contains(content, "sha256:") {
+		t.Fatalf("expected sha256: prefix in nodes.json, got %s", content)
+	}
+}
+
+func TestNodesStore_MigrateLegacyPlaintext(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "nodes.json")
+
+	// Write legacy plaintext nodes.json
+	if err := os.WriteFile(path, []byte(`{"legacy-node": "my-plain-token"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewNodesStore(path)
+	if err != nil {
+		t.Fatalf("failed to open legacy store: %v", err)
+	}
+
+	all := store.All()
+	if len(all) != 1 || all[0].Name != "legacy-node" {
+		t.Fatalf("unexpected nodes: %+v", all)
+	}
+
+	expectedHash := HashToken("my-plain-token")
+	if all[0].Token != expectedHash {
+		t.Fatalf("expected hash %q, got %q", expectedHash, all[0].Token)
+	}
+
+	// Verify file was migrated on disk
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(bytes)
+	if strings.Contains(content, "my-plain-token") {
+		t.Fatalf("plaintext token still present on disk after migration: %s", content)
+	}
+}
+

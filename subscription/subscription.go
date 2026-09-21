@@ -128,11 +128,11 @@ func ReadFromMultipleSourcesDetailed(urls []string) ([]*models.ProxyConfig, map[
 	for _, url := range urls {
 		result := resultMap[url]
 		if result.Error != nil {
-			logger.Warn("Failed to fetch subscription %s: %v", result.URL, result.Error)
-			errors = append(errors, fmt.Errorf("%s: %v", result.URL, result.Error))
+			logger.Warn("Failed to fetch subscription %s: %v", RedactURL(result.URL), result.Error)
+			errors = append(errors, fmt.Errorf("%s: %v", RedactURL(result.URL), result.Error))
 			continue
 		}
-		logger.Debug("Fetched %d proxies from %s (name: %s)", len(result.Configs), result.URL, result.Name)
+		logger.Debug("Fetched %d proxies from %s (name: %s)", len(result.Configs), RedactURL(result.URL), result.Name)
 		counts[url] = len(result.Configs)
 		allConfigs = append(allConfigs, result.Configs...)
 		if firstName == "" && result.Name != "" {

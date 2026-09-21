@@ -402,10 +402,10 @@ func DetermineVerdict(proto string, health NodeHealth, targets []TargetDiagResul
 			successCount++
 		} else {
 			errLow := strings.ToLower(t.Error)
-			if strings.Contains(errLow, "eof") || strings.Contains(errLow, "reset") {
-				eofCount++
-			} else if strings.Contains(errLow, "403") {
+			if strings.Contains(errLow, "403") {
 				forbiddenCount++
+			} else if strings.Contains(errLow, "eof") || strings.Contains(errLow, "reset") {
+				eofCount++
 			} else if strings.Contains(errLow, "timeout") {
 				timeoutCount++
 			}
@@ -448,11 +448,11 @@ func DetermineVerdict(proto string, health NodeHealth, targets []TargetDiagResul
 		return "offline", fmt.Sprintf("Сбой TLS рукопожатия (%s)", health.TLSErr)
 	}
 
-	if eofCount > 0 {
-		return "offline", "Сервер сбросил сессию (ошибка авторизации/UUID или закрыто сервером)"
-	}
 	if forbiddenCount > 0 {
 		return "offline", "Ограничение доступа со стороны целевых сервисов (HTTP 403 / Cloudflare Challenge)"
+	}
+	if eofCount > 0 {
+		return "offline", "Сервер сбросил сессию (ошибка авторизации/UUID или закрыто сервером)"
 	}
 	if timeoutCount > 0 {
 		return "offline", "Таймаут проксирования через туннель"
@@ -633,7 +633,10 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 			var checkHostSummary *CheckHostSummary
 			// Run Check-Host if the node has connectivity issues
 			if status == "offline" && proxy.Server != "" {
-				chClient := NewCheckHostClient("", 1500*time.Millisecond)
+				chClient := pc.GetCheckHostClient()
+				if chClient == nil {
+					chClient = NewCheckHostClient("", 1500*time.Millisecond)
+				}
 				chCtx, chCancel := context.WithTimeout(context.Background(), 7*time.Second)
 				// Explicit copy: appending to the package-level defaults would
 				// share (and on growth, corrupt) their backing array across

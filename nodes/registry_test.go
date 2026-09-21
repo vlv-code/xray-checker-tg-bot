@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -404,3 +405,151 @@ func TestHandleReport_AsyncOnUpdate(t *testing.T) {
 	<-updateStarted
 	close(finishUpdate)
 }
+
+func TestHandleReport_ConfigSourceReceivesNodeName(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	var gotNodeName string
+	reg.SetConfigSource(func(name string) *NodeConfigSync {
+		gotNodeName = name
+		return &NodeConfigSync{
+			SyncEnabled:     true,
+			DisabledProxies: []string{"test-proxy"},
+		}
+	})
+
+	h := reg.HandleReport()
+	rec := postReport(t, h, "t1", ReportPayload{
+		Version:          "1.0",
+		CheckIntervalSec: 60,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	if gotNodeName != "n1" {
+		t.Fatalf("want nodeName 'n1', got %q", gotNodeName)
+	}
+
+	var resp IngestResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.ConfigSync == nil || len(resp.ConfigSync.DisabledProxies) != 1 || resp.ConfigSync.DisabledProxies[0] != "test-proxy" {
+		t.Fatalf("unexpected ConfigSync response: %+v", resp.ConfigSync)
+	}
+}
+
+func TestHandleReport_DisabledProxiesStrippedPerNode(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	allDisabled := []string{"n1/proxy-a", "n2/proxy-b", "legacy-proxy"}
+
+	reg.SetConfigSource(func(nodeName string) *NodeConfigSync {
+		prefix := nodeName + "/"
+		var disabled []string
+		for _, id := range allDisabled {
+			if strings.HasPrefix(id, prefix) {
+				disabled = append(disabled, strings.TrimPrefix(id, prefix))
+			} else if !strings.Contains(id, "/") {
+				disabled = append(disabled, id)
+			}
+		}
+		return &NodeConfigSync{
+			SyncEnabled:     true,
+			DisabledProxies: disabled,
+		}
+	})
+
+	h := reg.HandleReport()
+	rec1 := postReport(t, h, "t1", ReportPayload{CheckIntervalSec: 60})
+	var resp1 IngestResponse
+	_ = json.Unmarshal(rec1.Body.Bytes(), &resp1)
+
+	if len(resp1.ConfigSync.DisabledProxies) != 2 ||
+		resp1.ConfigSync.DisabledProxies[0] != "proxy-a" ||
+		resp1.ConfigSync.DisabledProxies[1] != "legacy-proxy" {
+		t.Fatalf("unexpected n1 disabled proxies: %v", resp1.ConfigSync.DisabledProxies)
+	}
+
+	rec2 := postReport(t, h, "t2", ReportPayload{CheckIntervalSec: 60})
+	var resp2 IngestResponse
+	_ = json.Unmarshal(rec2.Body.Bytes(), &resp2)
+
+	if len(resp2.ConfigSync.DisabledProxies) != 2 ||
+		resp2.ConfigSync.DisabledProxies[0] != "proxy-b" ||
+		resp2.ConfigSync.DisabledProxies[1] != "legacy-proxy" {
+		t.Fatalf("unexpected n2 disabled proxies: %v", resp2.ConfigSync.DisabledProxies)
+	}
+}
+
+func TestMergedSnapshotConcurrentWithHandleReport(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	reg.mu.Lock()
+	st := reg.nodes["n1"]
+	st.status = statusDown
+	st.gracePending = true
+	st.snapshot = []metrics.ProxyMetric{{StableID: "n1/p1", Online: false}}
+	reg.mu.Unlock()
+
+	h := reg.HandleReport()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = postReport(t, h, "t1", ReportPayload{
+					Version:          "1.0",
+					CheckIntervalSec: 60,
+					Proxies:          []ReportProxy{{StableID: "p1", Online: true}},
+				})
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			_ = reg.MergedSnapshot(nil)
+		}
+		close(stop)
+	}()
+
+	wg.Wait()
+}
+
+func TestSweepStale_RespectsMasterStaleCap(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	reg.SetStaleCap(60 * time.Second)
+
+	reg.mu.Lock()
+	st := reg.nodes["n1"]
+	st.status = statusUp
+	st.intervalSec = 3600
+	st.lastReport = time.Now().Add(-5 * time.Minute)
+	reg.mu.Unlock()
+
+	transitioned := reg.SweepStale(time.Now())
+	if len(transitioned) != 1 || transitioned[0] != "n1" {
+		t.Fatalf("expected n1 to transition to down with stale cap, got %v", transitioned)
+	}
+
+	snap := reg.HealthSnapshot()
+	var n1Up bool
+	for _, nh := range snap {
+		if nh.Name == "n1" {
+			n1Up = nh.Up
+		}
+	}
+	if n1Up {
+		t.Fatalf("expected n1 to be down in HealthSnapshot")
+	}
+}
+
+
+
+

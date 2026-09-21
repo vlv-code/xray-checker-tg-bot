@@ -72,8 +72,9 @@ type Registry struct {
 	subs       NodeSubsSource
 	asn        LookupFunc
 	onUpdate   func()
-	cfgSource  func() *NodeConfigSync
+	cfgSource  func(nodeName string) *NodeConfigSync
 	nodesStore *NodesStore
+	staleCap   time.Duration // 0 = no cap; use node's reported interval
 }
 
 // NewRegistry builds a registry for the given node configs. subs may be nil
@@ -87,7 +88,7 @@ func NewRegistry(cfgs []NodeConfig, subs NodeSubsSource, asn LookupFunc) *Regist
 	}
 	for _, cfg := range cfgs {
 		r.nodes[cfg.Name] = &nodeState{cfg: cfg, status: statusPending}
-		r.byToken[cfg.Token] = cfg.Name
+		r.byToken[HashToken(cfg.Token)] = cfg.Name
 	}
 	return r
 }
@@ -118,15 +119,16 @@ func (r *Registry) RegisterNode(cfg NodeConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	tokenHash := HashToken(token)
 	if _, exists := r.nodes[name]; exists {
 		return fmt.Errorf("нода с именем %q уже существует", name)
 	}
-	if _, exists := r.byToken[token]; exists {
+	if _, exists := r.byToken[tokenHash]; exists {
 		return fmt.Errorf("нода с таким токеном уже существует")
 	}
 
-	r.nodes[name] = &nodeState{cfg: NodeConfig{Name: name, Token: token}, status: statusPending}
-	r.byToken[token] = name
+	r.nodes[name] = &nodeState{cfg: NodeConfig{Name: name, Token: tokenHash}, status: statusPending}
+	r.byToken[tokenHash] = name
 
 	if r.nodesStore != nil {
 		if err := r.nodesStore.Save(name, token); err != nil {
@@ -175,7 +177,7 @@ func (r *Registry) SetOnUpdate(f func()) {
 }
 
 // SetConfigSource registers a provider for configuration synchronized to nodes.
-func (r *Registry) SetConfigSource(f func() *NodeConfigSync) {
+func (r *Registry) SetConfigSource(f func(nodeName string) *NodeConfigSync) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cfgSource = f
@@ -248,7 +250,7 @@ func (r *Registry) HandleReport() http.HandlerFunc {
 		cf := r.cfgSource
 		r.mu.RUnlock()
 		if cf != nil {
-			cfgSync = cf()
+			cfgSync = cf(name)
 		}
 		json.NewEncoder(w).Encode(IngestResponse{
 			ManagedSubs: managed,
@@ -265,10 +267,11 @@ func (r *Registry) authenticate(header string) (string, bool) {
 		return "", false
 	}
 	token := header[len(prefix):]
+	receivedHash := HashToken(token)
 	name, ok := "", false
 	r.mu.RLock()
-	for t, n := range r.byToken {
-		if subtle.ConstantTimeCompare([]byte(t), []byte(token)) == 1 {
+	for storedHash, n := range r.byToken {
+		if subtle.ConstantTimeCompare([]byte(storedHash), []byte(receivedHash)) == 1 {
 			name, ok = n, true
 		}
 	}
@@ -279,11 +282,13 @@ func (r *Registry) authenticate(header string) (string, bool) {
 // MergedSnapshot returns local plus every up node's snapshot. A node that
 // just went down contributes its last snapshot once with Disabled=true (the
 // alert pipeline then cleans its active alerts), then disappears.
+// Uses a write lock for the entire operation to guarantee atomic reading and
+// clearing of gracePending, preventing race conditions with incoming HandleReport calls.
 func (r *Registry) MergedSnapshot(local []metrics.ProxyMetric) []metrics.ProxyMetric {
-	r.mu.RLock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	out := make([]metrics.ProxyMetric, 0, len(local)+16)
 	out = append(out, local...)
-	var graced []string
 	for _, name := range r.sortedNamesLocked() {
 		st := r.nodes[name]
 		switch st.status {
@@ -295,20 +300,9 @@ func (r *Registry) MergedSnapshot(local []metrics.ProxyMetric) []metrics.ProxyMe
 					pm.Disabled = true
 					out = append(out, pm)
 				}
-				graced = append(graced, name)
-			}
-		}
-	}
-	r.mu.RUnlock()
-
-	if len(graced) > 0 {
-		r.mu.Lock()
-		for _, name := range graced {
-			if st, ok := r.nodes[name]; ok {
 				st.gracePending = false
 			}
 		}
-		r.mu.Unlock()
 	}
 	return out
 }
@@ -378,6 +372,14 @@ func (r *Registry) HealthSnapshot() []NodeHealth {
 	return out
 }
 
+// SetStaleCap sets the master-side maximum silence interval. 0 means
+// "use whatever the node reports in CheckIntervalSec" (backward-compatible).
+func (r *Registry) SetStaleCap(d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.staleCap = d
+}
+
 // SweepStale marks nodes down whose last report is older than
 // StaleMultiplier×interval + StaleGrace. Pending nodes never transition.
 // Returns the names that transitioned (caller logs and re-feeds snapshots).
@@ -389,7 +391,14 @@ func (r *Registry) SweepStale(now time.Time) []string {
 		if st.status != statusUp {
 			continue
 		}
-		deadline := time.Duration(StaleMultiplier*st.intervalSec)*time.Second + StaleGrace
+		interval := st.intervalSec
+		if r.staleCap > 0 {
+			capSec := int(r.staleCap / time.Second)
+			if interval > capSec {
+				interval = capSec
+			}
+		}
+		deadline := time.Duration(StaleMultiplier*interval)*time.Second + StaleGrace
 		if now.Sub(st.lastReport) > deadline {
 			st.status = statusDown
 			st.gracePending = true

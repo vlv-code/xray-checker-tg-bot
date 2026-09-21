@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -109,6 +110,10 @@ func main() {
 			asnLookup = db.Lookup
 		}
 		nodeRegistry = nodes.NewRegistry(nodeCfgs, nodeSubsStore, asnLookup)
+		if config.CLIConfig.Nodes.StaleTimeoutSec > 0 {
+			nodeRegistry.SetStaleCap(time.Duration(config.CLIConfig.Nodes.StaleTimeoutSec) * time.Second)
+			logger.Info("Master node stale timeout cap: %ds", config.CLIConfig.Nodes.StaleTimeoutSec)
+		}
 		if nodesStore != nil {
 			nodeRegistry.SetNodesStore(nodesStore)
 		}
@@ -154,7 +159,7 @@ func main() {
 	}
 
 	xrayRunner := xray.NewRunner(configFile)
-	if err := xrayRunner.Start(); err != nil {
+	if err := startXrayWithRetry(xrayRunner); err != nil {
 		logger.Fatal("Error starting Xray: %v", err)
 	}
 
@@ -251,12 +256,21 @@ func main() {
 				tgBot.ProcessNodesHealth(toNodeInfos(nodeRegistry.HealthSnapshot()))
 			}
 		})
-		nodeRegistry.SetConfigSource(func() *nodes.NodeConfigSync {
+		nodeRegistry.SetConfigSource(func(nodeName string) *nodes.NodeConfigSync {
 			if tgBot != nil {
 				cfg := tgBot.GetConfig()
+				prefix := nodeName + "/"
+				disabledForNode := make([]string, 0, len(cfg.DisabledProxies))
+				for _, id := range cfg.DisabledProxies {
+					if strings.HasPrefix(id, prefix) {
+						disabledForNode = append(disabledForNode, strings.TrimPrefix(id, prefix))
+					} else if !strings.Contains(id, "/") {
+						disabledForNode = append(disabledForNode, id)
+					}
+				}
 				return &nodes.NodeConfigSync{
 					SyncEnabled:            cfg.NodeSyncEnabled,
-					DisabledProxies:        cfg.DisabledProxies,
+					DisabledProxies:        disabledForNode,
 					DisabledHosts:          cfg.DisabledHosts,
 					CheckHostBgEnabled:     cfg.CheckHostBgEnabled,
 					CheckHostIntervalHours: cfg.CheckHostIntervalHours,
@@ -360,7 +374,7 @@ func main() {
 						diagReports, metricsSnap, version, interval,
 						config.CLIConfig.Proxy.CheckMethod, hostIP,
 					)
-					desired, err := reporter.Send(payload)
+					desired, err := reporter.SendWithRetry(payload, nodes.DefaultReportBackoffs)
 					reporterRunning.Store(false)
 					released = true
 					if err != nil {
@@ -585,6 +599,7 @@ func main() {
 				bot.SetDiagnosticsSource(proxyChecker)
 				bot.SetIntervalHandler(rescheduleChecks)
 				bot.SetVersion(version)
+				bot.SetAdminUserIDs(config.CLIConfig.Telegram.AdminUserIDs)
 				if config.CLIConfig.Telegram.RichMode {
 					bot.SetRichMode(true)
 				} else if botCfgMgr == nil {
@@ -753,7 +768,7 @@ func main() {
 			addr := config.CLIConfig.Metrics.Host + ":" + config.CLIConfig.Metrics.Port
 			srv := &http.Server{
 				Addr:              addr,
-				Handler:           mux,
+				Handler:           web.SecurityHeadersMiddleware(mux),
 				ReadHeaderTimeout: 10 * time.Second,
 				IdleTimeout:       60 * time.Second,
 			}
@@ -805,7 +820,7 @@ func updateConfiguration(newConfigs []*models.ProxyConfig, currentConfigs *[]*mo
 		return err
 	}
 
-	if err := xrayRunner.Start(); err != nil {
+	if err := startXrayWithRetry(xrayRunner); err != nil {
 		return err
 	}
 
@@ -820,3 +835,25 @@ func updateConfiguration(newConfigs []*models.ProxyConfig, currentConfigs *[]*mo
 	logger.Info("Configuration updated: %d proxies", len(newConfigs))
 	return nil
 }
+
+var defaultXrayStartBackoffs = []time.Duration{500 * time.Millisecond, 1 * time.Second, 2 * time.Second, 3 * time.Second}
+
+func startWithRetry(start func() error, backoffs []time.Duration) error {
+	var startErr error
+	for attempt := 0; attempt <= len(backoffs); attempt++ {
+		startErr = start()
+		if startErr == nil {
+			return nil
+		}
+		if attempt < len(backoffs) {
+			logger.Warn("Failed to start service (attempt %d/%d): %v. Retrying in %v...", attempt+1, len(backoffs)+1, startErr, backoffs[attempt])
+			time.Sleep(backoffs[attempt])
+		}
+	}
+	return fmt.Errorf("failed after %d attempts: %w", len(backoffs)+1, startErr)
+}
+
+func startXrayWithRetry(runner interface{ Start() error }) error {
+	return startWithRetry(runner.Start, defaultXrayStartBackoffs)
+}
+

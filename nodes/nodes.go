@@ -19,7 +19,8 @@ type NodeConfig struct {
 // ParseNodes parses "name|token" entries. It rejects empty names/tokens,
 // extra pipe-separated parts, and duplicate names.
 func ParseNodes(raw []string) ([]NodeConfig, error) {
-	seen := make(map[string]bool, len(raw))
+	seenName := make(map[string]bool, len(raw))
+	seenToken := make(map[string]bool, len(raw))
 	out := make([]NodeConfig, 0, len(raw))
 	for i, entry := range raw {
 		parts := strings.Split(strings.TrimSpace(entry), "|")
@@ -31,10 +32,14 @@ func ParseNodes(raw []string) ([]NodeConfig, error) {
 		if name == "" || token == "" {
 			return nil, fmt.Errorf("NODES entry %d (%q): name and token must be non-empty", i+1, entry)
 		}
-		if seen[name] {
+		if seenName[name] {
 			return nil, fmt.Errorf("NODES entry %d: duplicate node name %q", i+1, name)
 		}
-		seen[name] = true
+		if seenToken[token] {
+			return nil, fmt.Errorf("NODES entry %d: duplicate token for node %q", i+1, name)
+		}
+		seenName[name] = true
+		seenToken[token] = true
 		out = append(out, NodeConfig{Name: name, Token: token})
 	}
 	return out, nil

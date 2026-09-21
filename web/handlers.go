@@ -3,12 +3,14 @@ package web
 import (
 	"crypto/subtle"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 	"xray-checker/checker"
 	"xray-checker/config"
+	"xray-checker/logger"
 	"xray-checker/metrics"
 	"xray-checker/models"
 	"xray-checker/subscription"
@@ -116,17 +118,146 @@ func HealthHandler() http.HandlerFunc {
 	}
 }
 
+// SecurityHeadersMiddleware adds defensive HTTP security headers to all responses.
+func SecurityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Permissions-Policy", "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()")
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+type AuthLimiter struct {
+	mu           sync.Mutex
+	maxFailures  int
+	lockDuration time.Duration
+	window       time.Duration
+	failures     map[string]*failureRecord
+}
+
+type failureRecord struct {
+	count       int
+	firstFail   time.Time
+	lockedUntil time.Time
+}
+
+func NewAuthLimiter(maxFailures int, lockDuration time.Duration, window time.Duration) *AuthLimiter {
+	return &AuthLimiter{
+		maxFailures:  maxFailures,
+		lockDuration: lockDuration,
+		window:       window,
+		failures:     make(map[string]*failureRecord),
+	}
+}
+
+var (
+	authLimiterMu     sync.RWMutex
+	globalAuthLimiter = NewAuthLimiter(5, 30*time.Second, 1*time.Minute)
+)
+
+func SetAuthLimiter(l *AuthLimiter) {
+	authLimiterMu.Lock()
+	globalAuthLimiter = l
+	authLimiterMu.Unlock()
+}
+
+func getAuthLimiter() *AuthLimiter {
+	authLimiterMu.RLock()
+	defer authLimiterMu.RUnlock()
+	return globalAuthLimiter
+}
+
+func (l *AuthLimiter) isLocked(ip string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	rec, ok := l.failures[ip]
+	if !ok {
+		return false
+	}
+	return time.Now().Before(rec.lockedUntil)
+}
+
+func (l *AuthLimiter) recordFailure(ip string) (bool, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+
+	if len(l.failures) > 1000 {
+		for k, v := range l.failures {
+			if now.Sub(v.firstFail) > 10*time.Minute && now.After(v.lockedUntil) {
+				delete(l.failures, k)
+			}
+		}
+	}
+
+	rec, ok := l.failures[ip]
+	if !ok || now.Sub(rec.firstFail) > l.window {
+		rec = &failureRecord{
+			count:     1,
+			firstFail: now,
+		}
+		l.failures[ip] = rec
+	} else {
+		rec.count++
+	}
+
+	if rec.count >= l.maxFailures {
+		rec.lockedUntil = now.Add(l.lockDuration)
+		return true, rec.count
+	}
+	return false, rec.count
+}
+
+func (l *AuthLimiter) recordSuccess(ip string) {
+	l.mu.Lock()
+	delete(l.failures, ip)
+	l.mu.Unlock()
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 func BasicAuthMiddleware(username, password string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			limiter := getAuthLimiter()
+			ip := clientIP(r)
+
+			if limiter.isLocked(ip) {
+				w.Header().Set("Retry-After", "30")
+				http.Error(w, "Too many failed authentication attempts. Please try again later.", http.StatusTooManyRequests)
+				return
+			}
+
 			user, pass, ok := r.BasicAuth()
 			userMatch := subtle.ConstantTimeCompare([]byte(user), []byte(username)) == 1
 			passMatch := subtle.ConstantTimeCompare([]byte(pass), []byte(password)) == 1
 			if !ok || !userMatch || !passMatch {
+				locked, attempts := limiter.recordFailure(ip)
+				logUser := user
+				if logUser == "" {
+					logUser = "<anonymous>"
+				}
+				if locked {
+					logger.Warn("Basic Auth: IP %s locked out for %v after %d failed attempts (last user: %q)", ip, limiter.lockDuration, attempts, logUser)
+				} else {
+					logger.Warn("Basic Auth failed for user %q from %s (attempt %d/%d)", logUser, ip, attempts, limiter.maxFailures)
+				}
 				w.Header().Set("WWW-Authenticate", `Basic realm="metrics"`)
 				http.Error(w, "Unauthorized.", http.StatusUnauthorized)
 				return
 			}
+
+			limiter.recordSuccess(ip)
 			next.ServeHTTP(w, r)
 		})
 	}

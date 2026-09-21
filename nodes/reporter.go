@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -59,3 +60,37 @@ func (r *Reporter) Send(p ReportPayload) (*IngestResponse, error) {
 	}
 	return &out, nil
 }
+
+// DefaultReportBackoffs are the default backoff intervals when retrying transient report failures.
+var DefaultReportBackoffs = []time.Duration{2 * time.Second, 5 * time.Second}
+
+// SendWithRetry posts the payload with retries on transient network and server errors.
+// Permanent errors (such as HTTP 400 or 401) are not retried.
+func (r *Reporter) SendWithRetry(p ReportPayload, backoffs []time.Duration) (*IngestResponse, error) {
+	if len(backoffs) == 0 {
+		return r.Send(p)
+	}
+
+	var resp *IngestResponse
+	var lastErr error
+
+	for attempt := 0; attempt <= len(backoffs); attempt++ {
+		resp, lastErr = r.Send(p)
+		if lastErr == nil {
+			return resp, nil
+		}
+
+		// Do not retry non-transient HTTP client errors (e.g. 400 Bad Request, 401 Unauthorized)
+		errMsg := lastErr.Error()
+		if strings.Contains(errMsg, "HTTP 401") || strings.Contains(errMsg, "HTTP 400") {
+			return nil, lastErr
+		}
+
+		if attempt < len(backoffs) {
+			time.Sleep(backoffs[attempt])
+		}
+	}
+
+	return nil, fmt.Errorf("failed after %d attempts: %w", len(backoffs)+1, lastErr)
+}
+
