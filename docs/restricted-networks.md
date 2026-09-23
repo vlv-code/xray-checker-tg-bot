@@ -62,7 +62,7 @@ services:
 
   # Агент проверки (нода):
   xray-node:
-    image: ghcr.io/vlv-code/xray-checker-tg-bot:v2.4.1
+    image: ghcr.io/vlv-code/xray-checker-tg-bot:v2.5.0
     container_name: xray-node
     restart: unless-stopped
     depends_on:
@@ -88,7 +88,7 @@ volumes:
 ```
 
 > **Важно:**
-> - Всегда используйте предсобранный образ `ghcr.io/vlv-code/xray-checker-tg-bot:v2.4.1` (или `:latest`). Не используйте `build: https://github.com/...` на нодах — в закрытых сетях сборка падает из-за недоступности GitHub и `proxy.golang.org`.
+> - Всегда используйте предсобранный образ `ghcr.io/vlv-code/xray-checker-tg-bot:v2.5.0` (или `:latest`). Не используйте `build: https://github.com/...` на нодах — в закрытых сетях сборка падает из-за недоступности GitHub и `proxy.golang.org`.
 > - Базы `geosite.dat` и `geoip.dat` уже вшиты в официальный образ GHCR.
 
 Запуск стека:

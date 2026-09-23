@@ -239,7 +239,7 @@ To run a monitoring node on a separate server, different region, or restricted n
      --restart unless-stopped \
      -e REPORT_URL=http://<MASTER_IP>:2112/api/v1/nodes/report \
      -e REPORT_TOKEN=<TOKEN_FROM_BOT> \
-     ghcr.io/vlv-code/xray-checker-tg-bot:v2.4.1
+     ghcr.io/vlv-code/xray-checker-tg-bot:v2.5.0
    ```
 3. Full deployment guide, systemd setup, and network troubleshooting: **[docs/restricted-networks.md](docs/restricted-networks.md)**.
 

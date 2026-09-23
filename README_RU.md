@@ -241,7 +241,7 @@ docker compose up -d --build
      --restart unless-stopped \
      -e REPORT_URL=http://<IP_МАСТЕРА>:2112/api/v1/nodes/report \
      -e REPORT_TOKEN=<ТОКЕН_ИЗ_БОТА> \
-     ghcr.io/vlv-code/xray-checker-tg-bot:v2.4.1
+     ghcr.io/vlv-code/xray-checker-tg-bot:v2.5.0
    ```
 3. Подробное руководство по развёртыванию в изолированных/корпоративных сетях и устранению проблем: **[docs/restricted-networks.md](docs/restricted-networks.md)** (включая запуск через systemd без Docker и решение проблем с сетью).
 
