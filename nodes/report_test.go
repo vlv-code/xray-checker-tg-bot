@@ -156,3 +156,62 @@ func TestBuildReportFromDiagWithMetrics(t *testing.T) {
 		t.Errorf("expected LastCheck 1700000000, got %d", rp.LastCheck)
 	}
 }
+
+func TestResolveNodeSync(t *testing.T) {
+	base := NodeConfigSync{
+		SyncEnabled:           true,
+		CheckIntervalSec:      300,
+		TargetURLs:            []string{"https://master.example/204"},
+		CheckMethod:           "ip",
+		IpCheckURL:            "https://api.ipify.org",
+		StatusCheckURL:        "http://cp.cloudflare.com/generate_204",
+		DownloadURL:           "https://proof.ovh.net/files/1Mb.dat",
+		ProxyTimeoutSec:       30,
+		DownloadTimeoutSec:    60,
+		DownloadMinSize:       51200,
+		CheckConcurrency:      0,
+		SubsUpdateIntervalSec: 300,
+	}
+
+	// nil overrides: base passes through untouched.
+	got := ResolveNodeSync(base, nil)
+	if got.CheckIntervalSec != 300 || got.CheckMethod != "ip" || got.CheckConcurrency != 0 {
+		t.Fatalf("nil overrides changed base: %+v", got)
+	}
+
+	interval := 120
+	method := "status"
+	timeout := 15
+	conc := 4
+	var minSize int64 = 1024
+	subsInt := 600
+	url := "https://node.example/204"
+	ns := &NodeSettings{
+		CheckIntervalSec:      &interval,
+		CheckMethod:           &method,
+		ProxyTimeoutSec:       &timeout,
+		CheckConcurrency:      &conc,
+		DownloadMinSize:       &minSize,
+		SubsUpdateIntervalSec: &subsInt,
+		TargetURLs:            []string{url},
+	}
+	got = ResolveNodeSync(base, ns)
+	if got.CheckIntervalSec != 120 || got.CheckMethod != "status" ||
+		got.ProxyTimeoutSec != 15 || got.CheckConcurrency != 4 ||
+		got.DownloadMinSize != 1024 || got.SubsUpdateIntervalSec != 600 ||
+		len(got.TargetURLs) != 1 || got.TargetURLs[0] != url {
+		t.Fatalf("overrides not applied: %+v", got)
+	}
+	// Untouched base fields survive.
+	if got.IpCheckURL != base.IpCheckURL || got.DownloadURL != base.DownloadURL ||
+		got.DownloadTimeoutSec != 60 {
+		t.Fatalf("base fields lost: %+v", got)
+	}
+
+	// Empty (non-nil) TargetURLs override resets node to built-in defaults.
+	ns2 := &NodeSettings{TargetURLs: []string{}}
+	got = ResolveNodeSync(base, ns2)
+	if len(got.TargetURLs) != 0 {
+		t.Fatalf("empty override must clear targets, got %v", got.TargetURLs)
+	}
+}
