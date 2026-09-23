@@ -93,4 +93,3 @@ func TestReporterSendWithRetry_DoesNotRetry401(t *testing.T) {
 		t.Fatalf("expected 1 attempt (no retries on 401), got %d", attempts)
 	}
 }
-

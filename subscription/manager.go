@@ -359,4 +359,3 @@ func (s *URLStore) Restore(dynamic []string, managed map[string]bool) error {
 	}
 	return s.persistLocked()
 }
-

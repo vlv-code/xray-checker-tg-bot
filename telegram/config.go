@@ -19,25 +19,25 @@ const (
 // BotConfig holds runtime-configurable settings that can be toggled via Telegram
 // and are persisted across restarts.
 type BotConfig struct {
-	QuietHoursEnabled      bool     `json:"quiet_hours_enabled"`
-	QuietHoursStart        string   `json:"quiet_hours_start"`  // e.g. "23:00"
-	QuietHoursEnd          string   `json:"quiet_hours_end"`    // e.g. "08:00"
-	QuietSnoozeUntil       int64    `json:"quiet_snooze_until"` // Unix timestamp
-	DayDigestEnabled       bool     `json:"day_digest_enabled"`
-	DayDigestIntervalHours int      `json:"day_digest_interval_hours"` // e.g. 6
-	AlertMode              string   `json:"alert_mode"`                // AlertModeLive or AlertModeClean
-	TargetURLs             []string `json:"target_urls"`
-	CheckIntervalSec       int      `json:"check_interval_sec,omitempty"`
-	RichMode               bool     `json:"rich_mode"`
-	DisabledHosts          []string `json:"disabled_hosts,omitempty"`
-	DisabledProxies        []string `json:"disabled_proxies,omitempty"`
-	CheckHostBgEnabled     bool     `json:"checkhost_bg_enabled"`
-	CheckHostIntervalHours int      `json:"checkhost_interval_hours"`
-	CheckHostAlertEnabled  bool     `json:"checkhost_alert_enabled"`
-	Timezone               string   `json:"timezone,omitempty"`
-	NodeSyncEnabled        bool     `json:"node_sync_enabled"`
-	NodeAlertsEnabled      bool     `json:"node_alerts_enabled"`
-	NodeProxyAlertsChat    bool     `json:"node_proxy_alerts_chat"`
+	QuietHoursEnabled         bool     `json:"quiet_hours_enabled"`
+	QuietHoursStart           string   `json:"quiet_hours_start"`  // e.g. "23:00"
+	QuietHoursEnd             string   `json:"quiet_hours_end"`    // e.g. "08:00"
+	QuietSnoozeUntil          int64    `json:"quiet_snooze_until"` // Unix timestamp
+	DayDigestEnabled          bool     `json:"day_digest_enabled"`
+	DayDigestIntervalHours    int      `json:"day_digest_interval_hours"` // e.g. 6
+	AlertMode                 string   `json:"alert_mode"`                // AlertModeLive or AlertModeClean
+	TargetURLs                []string `json:"target_urls"`
+	CheckIntervalSec          int      `json:"check_interval_sec,omitempty"`
+	RichMode                  bool     `json:"rich_mode"`
+	DisabledHosts             []string `json:"disabled_hosts,omitempty"`
+	DisabledProxies           []string `json:"disabled_proxies,omitempty"`
+	CheckHostBgEnabled        bool     `json:"checkhost_bg_enabled"`
+	CheckHostIntervalHours    int      `json:"checkhost_interval_hours"`
+	CheckHostAlertEnabled     bool     `json:"checkhost_alert_enabled"`
+	Timezone                  string   `json:"timezone,omitempty"`
+	NodeSyncEnabled           bool     `json:"node_sync_enabled"`
+	NodeAlertsEnabled         bool     `json:"node_alerts_enabled"`
+	NodeProxyAlertsChat       bool     `json:"node_proxy_alerts_chat"`
 	NodeStaleTimeoutSec       int      `json:"node_stale_timeout_sec,omitempty"`
 	MasterPublicURL           string   `json:"master_public_url,omitempty"`
 	ReleaseAlertsEnabled      bool     `json:"release_alerts_enabled"`

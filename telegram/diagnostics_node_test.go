@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -419,4 +420,16 @@ func TestDeepLinks_NodeReports(t *testing.T) {
 	if links[1].Name != "DegradedProxy" || links[1].StableID != "m31a/p3" {
 		t.Errorf("unexpected link 1: %+v", links[1])
 	}
+}
+
+func (m *mockNodeSnapshotManager) NodeSettingsView(node string) ([]NodeSettingEntry, error) {
+	return nil, fmt.Errorf("не поддерживается в тесте")
+}
+
+func (m *mockNodeSnapshotManager) SetNodeSetting(node, key, value string) error {
+	return fmt.Errorf("не поддерживается в тесте")
+}
+
+func (m *mockNodeSnapshotManager) ResetNodeSetting(node, key string) error {
+	return fmt.Errorf("не поддерживается в тесте")
 }

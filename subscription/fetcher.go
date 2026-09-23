@@ -367,4 +367,3 @@ func RedactedList(urls []string) []string {
 	}
 	return out
 }
-

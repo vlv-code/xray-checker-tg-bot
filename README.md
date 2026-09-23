@@ -64,6 +64,9 @@ All features are accessible via the interactive **`/menu`** or direct chat comma
 | `/nodesubs <name>` | List desired subscriptions assigned to a remote node |
 | `/nodeaddsub <name> <URL>` | Assign a subscription URL to a remote node |
 | `/nodedelsub <name> <URL>` | Unassign a subscription URL from a remote node |
+| `/nodeset <name>` | Show a node's effective check settings (master values + overrides) |
+| `/nodeset <name> <key> <value>` | Override a check setting on one node only (see keys below) |
+| `/nodereset <name> [key]` | Return one (or all) node settings to inheriting from the master |
 | `/digest` | Trigger an immediate status digest in chat |
 | `/id` | Print this chat's `chat_id` and `topic_id` for `TELEGRAM_CHAT_IDS` |
 | `/help` | Display quick help summary |
@@ -113,6 +116,14 @@ Run additional lightweight checker node instances anywhere in the world (VPS, ho
   - Master alerts on every node's proxy failures (`🖥 [Нода] <name>` identity).
   - Automatically notifies when a node goes down or recovers.
   - Displays the node's ISP / Hosting Provider ASN (via local `db-ip asn-lite` database).
+- **Settings Inheritance & Per-Node Overrides**:
+  - By default every node inherits the master's check settings: check interval, method (`ip`/`status`/`download`), IP-check/status-check/download URLs, timeouts, download min size, concurrency, subscription update interval, and target URLs.
+  - Override any of them for one specific node via `/nodeset <name> <key> <value>` (e.g. `/nodeset node-1 check_interval 120`), and view what's effective with `/nodeset <name>` (overridden keys are marked ✏️).
+  - `/nodereset <name> [key]` returns one key, or all of them, to inheriting from the master. Changes apply on the node's next report.
+- **Check-Host Audit Ownership Split**:
+  - Each instance audits only its own hosts: the master audits local proxies, every node audits its own — no duplicate load on check-host.net.
+  - Node audit results travel in the node's reports; the master raises the same RU-block alerts with a `— через ноду <name>` attribution.
+  - The node's audit schedule follows the master's Check-Host settings (`CHECKHOST_BG_ENABLED` / `CHECKHOST_INTERVAL_HOURS` bootstrap it until the first report).
 - **Restricted & Enterprise Networks Support**:
   - Remote nodes run smoothly behind enterprise firewalls, NAT, and corporate proxies.
   - Smart traffic separation: master reports bypass proxies automatically (`NO_PROXY` builder), port checks stay direct, and external asset downloads can use a dedicated `BOOTSTRAP_PROXY`.

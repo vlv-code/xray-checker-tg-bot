@@ -51,6 +51,21 @@ type NodeManager interface {
 	NodeSnapshot(node string) []metrics.ProxyMetric
 	// NodeDiagReports returns full diagnostic reports for the given node.
 	NodeDiagReports(node string) []checker.ProxyDiagReport
+	// NodeSettingsView returns the node's effective check settings, marking
+	// which keys carry a per-node override.
+	NodeSettingsView(node string) ([]NodeSettingEntry, error)
+	// SetNodeSetting validates and stores a per-node override for key.
+	SetNodeSetting(node, key, value string) error
+	// ResetNodeSetting clears one override (key) or all of them (key == "").
+	ResetNodeSetting(node, key string) error
+}
+
+// NodeSettingEntry is one row of the /nodeset view: a setting key, its
+// effective value, and whether a per-node override is in effect.
+type NodeSettingEntry struct {
+	Key        string
+	Value      string
+	Overridden bool
 }
 
 // nodeHealthState tracks what the alert loop knows about a node. alerted

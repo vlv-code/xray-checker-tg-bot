@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -241,4 +242,18 @@ func TestGetStatusText_WithNodes_Grouped(t *testing.T) {
 	if !strings.Contains(text, "🔴 <b>NodeProxy2</b> — недоступен") {
 		t.Errorf("expected NodeProxy2 under node section, got:\n%s", text)
 	}
+}
+
+// Settings methods required by the NodeManager interface; behavior is tested
+// in nodes_commands_test.go.
+func (v *viewsTestNodeManager) NodeSettingsView(node string) ([]NodeSettingEntry, error) {
+	return nil, fmt.Errorf("не поддерживается в этом тесте")
+}
+
+func (v *viewsTestNodeManager) SetNodeSetting(node, key, value string) error {
+	return fmt.Errorf("не поддерживается в этом тесте")
+}
+
+func (v *viewsTestNodeManager) ResetNodeSetting(node, key string) error {
+	return fmt.Errorf("не поддерживается в этом тесте")
 }

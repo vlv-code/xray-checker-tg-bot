@@ -220,7 +220,9 @@ func (b *Bot) RunCheckHostAudit() {
 	var targets []auditTarget
 
 	for _, pm := range snapshot {
-		if pm.Disabled {
+		// Audit ownership split: node hosts are audited by their own node
+		// and delivered via reports; the master audits only local proxies.
+		if pm.NodeName != "" || pm.Disabled {
 			continue
 		}
 		host, _, err := net.SplitHostPort(pm.Address)
@@ -376,6 +378,114 @@ func (b *Bot) RunCheckHostAudit() {
 							ParseMode: telego.ModeHTML,
 						}
 						_, _ = b.api.EditMessageText(b.ctx, params)
+					}
+				}
+			}
+		}
+	}
+}
+
+// ProcessNodeCheckHostAudits raises Check-Host RU-block alerts for hosts
+// audited by a remote node (audit ownership split: the node audits its own
+// hosts and ships the summaries in its reports; the master alerts on them).
+// The alert key space matches the master's own audit, so a host is tracked
+// exactly once; processing is idempotent per report via the alert tracker.
+func (b *Bot) ProcessNodeCheckHostAudits(nodeName string, audits map[string]checker.CheckHostSummary) {
+	if len(audits) == 0 || nodeName == "" {
+		return
+	}
+	cfg := b.GetConfig()
+
+	// Resolve display proxy names from the merged snapshot.
+	names := make(map[string]string, len(audits))
+	if b.source != nil {
+		for _, pm := range b.source.MetricsSnapshot() {
+			if pm.NodeName == nodeName && pm.Address != "" {
+				names[pm.Address] = pm.Name
+			}
+		}
+	}
+
+	now := time.Now()
+	for addr, summary := range audits {
+		alertKey := fmt.Sprintf("checkhost:%s", addr)
+		proxyName := addr
+		if n, ok := names[addr]; ok && n != "" {
+			proxyName = n
+		}
+
+		if !summary.RUAvailable {
+			if !cfg.CheckHostAlertEnabled {
+				continue
+			}
+			isQuiet := IsQuietTime(now, cfg)
+
+			for _, ct := range b.targets {
+				if b.tracker.HasAlert(ct.ChatID, ct.ThreadID, alertKey) {
+					continue
+				}
+
+				worldStatus := "❌ недоступен"
+				verdict := "Хост недоступен как из РФ, так и из других стран"
+				if summary.WorldAvailable {
+					worldStatus = "✅ доступен"
+					verdict = "Вероятная блокировка РКН на территории РФ"
+				}
+
+				alertText := fmt.Sprintf("⚠️ <b>[Check-Host] Проблема доступности из РФ</b>\n\n"+
+					"• Сервер: <code>%s</code> <i>(%s)</i> — через ноду %s\n"+
+					"• Статус: РФ ❌ недоступен | Мир %s\n"+
+					"• Вердикт: <b>%s</b>\n"+
+					"🔗 <a href=\"%s\">Отчёт Check-Host</a>",
+					escapeHTML(addr), escapeHTML(proxyName), escapeHTML(nodeName),
+					worldStatus, escapeHTML(verdict), escapeHTML(summary.PermanentLink))
+
+				if isQuiet {
+					b.eventBuffer.Add(BufferedEvent{
+						Timestamp: now,
+						Type:      "down",
+						ProxyName: fmt.Sprintf("[Check-Host] %s", proxyName),
+						Reason:    "Недоступен из РФ",
+					})
+				} else {
+					if sent, err := b.sendAndReturn(ct, alertText); err == nil {
+						b.tracker.Track(ct.ChatID, ct.ThreadID, sent.MessageID, alertKey, proxyName, now, "CheckHost RU Block")
+					}
+				}
+			}
+		} else {
+			// RU is available: resolve any previous alert.
+			for _, ct := range b.targets {
+				alert, hadAlert := b.tracker.Resolve(ct.ChatID, ct.ThreadID, alertKey)
+				if !hadAlert {
+					continue
+				}
+
+				downtime := now.Sub(alert.DownAt)
+				if cfg.AlertMode == AlertModeClean {
+					if b.api != nil {
+						_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+							ChatID:    tu.ID(ct.ChatID),
+							MessageID: alert.MessageID,
+						})
+					}
+					if b.notifyOnRecovery {
+						recText := fmt.Sprintf("✅ <b>[Check-Host] Доступность из РФ восстановилась</b>\n\n• Сервер: <code>%s</code> <i>(%s)</i> — через ноду %s",
+							escapeHTML(addr), escapeHTML(proxyName), escapeHTML(nodeName))
+						if downtime > 0 {
+							recText += fmt.Sprintf("\n• Был недоступен: <b>%s</b>", FormatDowntime(downtime))
+						}
+						if sent, err := b.sendAndReturn(ct, recText); err == nil {
+							go func(cID int64, mID int) {
+								time.Sleep(2 * time.Minute)
+								if b.api != nil {
+									_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+										ChatID:    tu.ID(cID),
+										MessageID: mID,
+									})
+								}
+							}(ct.ChatID, sent.MessageID)
+						}
 					}
 				}
 			}

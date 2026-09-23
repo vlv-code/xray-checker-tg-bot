@@ -425,5 +425,3 @@ func TestRunDiagnostics_CheckHostDeduplication(t *testing.T) {
 		t.Errorf("expected exactly 1 call to check-host API due to deduplication, got %d", checkCalls.Load())
 	}
 }
-
-

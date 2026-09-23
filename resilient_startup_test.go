@@ -241,4 +241,3 @@ func TestStartTelegramBotWithRetry_RunOnceDoesNotRetry(t *testing.T) {
 		t.Errorf("expected tgBot to remain nil, got %v", tgBot.Load())
 	}
 }
-

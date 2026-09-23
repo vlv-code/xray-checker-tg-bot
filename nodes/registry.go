@@ -71,10 +71,13 @@ type Registry struct {
 	byToken    map[string]string     // token -> name
 	subs       NodeSubsSource
 	asn        LookupFunc
-	onUpdate   func()
+	onUpdate   func(nodeName string)
 	cfgSource  func(nodeName string) *NodeConfigSync
 	nodesStore *NodesStore
 	staleCap   time.Duration // 0 = no cap; use node's reported interval
+	// audits holds the latest background Check-Host audit results per node,
+	// keyed by target address (bare host for UDP targets).
+	audits map[string]map[string]checker.CheckHostSummary
 }
 
 // NewRegistry builds a registry for the given node configs. subs may be nil
@@ -85,6 +88,7 @@ func NewRegistry(cfgs []NodeConfig, subs NodeSubsSource, asn LookupFunc) *Regist
 		byToken: make(map[string]string, len(cfgs)),
 		subs:    subs,
 		asn:     asn,
+		audits:  make(map[string]map[string]checker.CheckHostSummary),
 	}
 	for _, cfg := range cfgs {
 		r.nodes[cfg.Name] = &nodeState{cfg: cfg, status: statusPending}
@@ -137,7 +141,7 @@ func (r *Registry) RegisterNode(cfg NodeConfig) error {
 	}
 
 	if r.onUpdate != nil {
-		go r.onUpdate()
+		go r.onUpdate("")
 	}
 	return nil
 }
@@ -163,14 +167,15 @@ func (r *Registry) RemoveNode(name string) error {
 	}
 
 	if r.onUpdate != nil {
-		go r.onUpdate()
+		go r.onUpdate("")
 	}
 	return nil
 }
 
 // SetOnUpdate registers a callback fired after every accepted report and
-// every health transition — the master re-feeds ProcessSnapshot then.
-func (r *Registry) SetOnUpdate(f func()) {
+// every health transition — the master re-feeds ProcessSnapshot then. The
+// callback receives the reporting node's name ("" for structural changes).
+func (r *Registry) SetOnUpdate(f func(nodeName string)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.onUpdate = f
@@ -233,11 +238,16 @@ func (r *Registry) HandleReport() http.HandlerFunc {
 		st.diagReports = diag
 		st.gracePending = false
 		cb := r.onUpdate
+		if payload.CheckHostAudits != nil {
+			r.audits[name] = payload.CheckHostAudits
+		} else {
+			delete(r.audits, name)
+		}
 		r.mu.Unlock()
 
 		logger.Info("Node %s: report accepted (%d proxies, %s)", name, len(payload.Proxies), payload.Version)
 		if cb != nil {
-			go cb()
+			go cb(name)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -423,6 +433,18 @@ func (r *Registry) SubCounts(node string) map[string]int {
 		if pm.SubName != "" {
 			out[pm.SubName]++
 		}
+	}
+	return out
+}
+
+// NodeAudits returns a copy of the node's latest Check-Host audit results;
+// an empty map when the node never delivered audits.
+func (r *Registry) NodeAudits(node string) map[string]checker.CheckHostSummary {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]checker.CheckHostSummary, len(r.audits[node]))
+	for k, v := range r.audits[node] {
+		out[k] = v
 	}
 	return out
 }

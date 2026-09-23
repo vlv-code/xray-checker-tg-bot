@@ -156,3 +156,106 @@ func TestBuildReportFromDiagWithMetrics(t *testing.T) {
 		t.Errorf("expected LastCheck 1700000000, got %d", rp.LastCheck)
 	}
 }
+
+func TestResolveNodeSync(t *testing.T) {
+	base := NodeConfigSync{
+		SyncEnabled:           true,
+		CheckIntervalSec:      300,
+		TargetURLs:            []string{"https://master.example/204"},
+		CheckMethod:           "ip",
+		IpCheckURL:            "https://api.ipify.org",
+		StatusCheckURL:        "http://cp.cloudflare.com/generate_204",
+		DownloadURL:           "https://proof.ovh.net/files/1Mb.dat",
+		ProxyTimeoutSec:       30,
+		DownloadTimeoutSec:    60,
+		DownloadMinSize:       51200,
+		CheckConcurrency:      0,
+		SubsUpdateIntervalSec: 300,
+	}
+
+	// nil overrides: base passes through untouched.
+	got := ResolveNodeSync(base, nil)
+	if got.CheckIntervalSec != 300 || got.CheckMethod != "ip" || got.CheckConcurrency != 0 {
+		t.Fatalf("nil overrides changed base: %+v", got)
+	}
+
+	interval := 120
+	method := "status"
+	timeout := 15
+	conc := 4
+	var minSize int64 = 1024
+	subsInt := 600
+	url := "https://node.example/204"
+	ns := &NodeSettings{
+		CheckIntervalSec:      &interval,
+		CheckMethod:           &method,
+		ProxyTimeoutSec:       &timeout,
+		CheckConcurrency:      &conc,
+		DownloadMinSize:       &minSize,
+		SubsUpdateIntervalSec: &subsInt,
+		TargetURLs:            []string{url},
+	}
+	got = ResolveNodeSync(base, ns)
+	if got.CheckIntervalSec != 120 || got.CheckMethod != "status" ||
+		got.ProxyTimeoutSec != 15 || got.CheckConcurrency != 4 ||
+		got.DownloadMinSize != 1024 || got.SubsUpdateIntervalSec != 600 ||
+		len(got.TargetURLs) != 1 || got.TargetURLs[0] != url {
+		t.Fatalf("overrides not applied: %+v", got)
+	}
+	// Untouched base fields survive.
+	if got.IpCheckURL != base.IpCheckURL || got.DownloadURL != base.DownloadURL ||
+		got.DownloadTimeoutSec != 60 {
+		t.Fatalf("base fields lost: %+v", got)
+	}
+
+	// Empty (non-nil) TargetURLs override resets node to built-in defaults.
+	ns2 := &NodeSettings{TargetURLs: []string{}}
+	got = ResolveNodeSync(base, ns2)
+	if len(got.TargetURLs) != 0 {
+		t.Fatalf("empty override must clear targets, got %v", got.TargetURLs)
+	}
+}
+
+func TestSyncToRuntimeSettings(t *testing.T) {
+	sync := NodeConfigSync{
+		CheckMethod:           "download",
+		IpCheckURL:            "https://ip.example/",
+		ProxyTimeoutSec:       20,
+		DownloadMinSize:       4096,
+		CheckConcurrency:      0,
+		SubsUpdateIntervalSec: 600,
+	}
+	rs := SyncToRuntimeSettings(sync)
+	if rs.CheckMethod == nil || *rs.CheckMethod != "download" {
+		t.Fatal("method not mapped")
+	}
+	if rs.CheckConcurrency == nil || *rs.CheckConcurrency != 0 {
+		t.Fatal("explicit zero concurrency must map to non-nil pointer")
+	}
+	if rs.IpCheckURL == nil || rs.ProxyTimeoutSec == nil || rs.DownloadMinSize == nil {
+		t.Fatal("fields not mapped")
+	}
+}
+
+func TestReportCheckHostAuditsRoundTrip(t *testing.T) {
+	p := ReportPayload{
+		Version: "v", CheckIntervalSec: 60,
+		CheckHostAudits: map[string]checker.CheckHostSummary{
+			"host.example:443": {RUAvailable: false, WorldAvailable: true},
+		},
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back ReportPayload
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	if len(back.CheckHostAudits) != 1 {
+		t.Fatalf("audits lost: %+v", back.CheckHostAudits)
+	}
+	if back.CheckHostAudits["host.example:443"].WorldAvailable != true {
+		t.Fatalf("summary fields lost: %+v", back.CheckHostAudits["host.example:443"])
+	}
+}

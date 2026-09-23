@@ -38,9 +38,16 @@ type ReportPayload struct {
 	CheckMethod      string        `json:"checkMethod"`
 	HostIP           string        `json:"hostIP"`
 	Proxies          []ReportProxy `json:"proxies"`
+	// CheckHostAudits carries the node's latest background Check-Host audit
+	// results, keyed by target address (bare host for UDP targets). The
+	// master raises RU-block alerts for node hosts from this data.
+	CheckHostAudits map[string]checker.CheckHostSummary `json:"checkHostAudits,omitempty"`
 }
 
 // NodeConfigSync contains runtime settings transmitted from the master bot to nodes.
+// The master sends the fully resolved set (per-node overrides already merged
+// in): under SyncEnabled the node applies the whole payload, so 0 is a
+// meaningful value (e.g. CheckConcurrency 0 = unlimited).
 type NodeConfigSync struct {
 	SyncEnabled            bool     `json:"syncEnabled"`
 	DisabledProxies        []string `json:"disabledProxies,omitempty"`
@@ -54,6 +61,60 @@ type NodeConfigSync struct {
 	NodeAlertsEnabled      bool     `json:"nodeAlertsEnabled"`
 	NodeProxyAlertsChat    bool     `json:"nodeProxyAlertsChat"`
 	NodeStaleTimeoutSec    int      `json:"nodeStaleTimeoutSec,omitempty"`
+
+	CheckMethod           string `json:"checkMethod"`
+	IpCheckURL            string `json:"ipCheckUrl"`
+	StatusCheckURL        string `json:"statusCheckUrl"`
+	DownloadURL           string `json:"downloadUrl"`
+	ProxyTimeoutSec       int    `json:"proxyTimeoutSec"`
+	DownloadTimeoutSec    int    `json:"downloadTimeoutSec"`
+	DownloadMinSize       int64  `json:"downloadMinSize"`
+	CheckConcurrency      int    `json:"checkConcurrency"`
+	SubsUpdateIntervalSec int    `json:"subsUpdateIntervalSec"`
+}
+
+// ResolveNodeSync merges per-node settings overrides into the master's base
+// sync payload: every set override field replaces the base value; nil fields
+// (and a nil ns) leave the base untouched. A non-nil (even empty) TargetURLs
+// override replaces the base target list.
+func ResolveNodeSync(base NodeConfigSync, ns *NodeSettings) NodeConfigSync {
+	if ns == nil {
+		return base
+	}
+	if ns.CheckIntervalSec != nil {
+		base.CheckIntervalSec = *ns.CheckIntervalSec
+	}
+	if ns.CheckMethod != nil {
+		base.CheckMethod = *ns.CheckMethod
+	}
+	if ns.IpCheckURL != nil {
+		base.IpCheckURL = *ns.IpCheckURL
+	}
+	if ns.StatusCheckURL != nil {
+		base.StatusCheckURL = *ns.StatusCheckURL
+	}
+	if ns.DownloadURL != nil {
+		base.DownloadURL = *ns.DownloadURL
+	}
+	if ns.ProxyTimeoutSec != nil {
+		base.ProxyTimeoutSec = *ns.ProxyTimeoutSec
+	}
+	if ns.DownloadTimeoutSec != nil {
+		base.DownloadTimeoutSec = *ns.DownloadTimeoutSec
+	}
+	if ns.DownloadMinSize != nil {
+		base.DownloadMinSize = *ns.DownloadMinSize
+	}
+	if ns.CheckConcurrency != nil {
+		base.CheckConcurrency = *ns.CheckConcurrency
+	}
+	if ns.SubsUpdateIntervalSec != nil {
+		base.SubsUpdateIntervalSec = *ns.SubsUpdateIntervalSec
+	}
+	if ns.TargetURLs != nil {
+		base.TargetURLs = append([]string(nil), ns.TargetURLs...)
+	}
+	return base
 }
 
 // IngestResponse is the master's reply: the full desired list of managed
@@ -247,4 +308,21 @@ func ProxyDiagReportsFromReport(p ReportPayload) []checker.ProxyDiagReport {
 		out = append(out, rep)
 	}
 	return out
+}
+
+// SyncToRuntimeSettings maps a fully resolved sync payload onto the node
+// checker's runtime settings. Every field maps non-nil: the payload carries
+// the complete resolved configuration, including meaningful zeros (e.g.
+// CheckConcurrency 0 = unlimited).
+func SyncToRuntimeSettings(cs NodeConfigSync) checker.RuntimeCheckSettings {
+	return checker.RuntimeCheckSettings{
+		CheckMethod:        &cs.CheckMethod,
+		IpCheckURL:         &cs.IpCheckURL,
+		StatusCheckURL:     &cs.StatusCheckURL,
+		DownloadURL:        &cs.DownloadURL,
+		ProxyTimeoutSec:    &cs.ProxyTimeoutSec,
+		DownloadTimeoutSec: &cs.DownloadTimeoutSec,
+		DownloadMinSize:    &cs.DownloadMinSize,
+		CheckConcurrency:   &cs.CheckConcurrency,
+	}
 }

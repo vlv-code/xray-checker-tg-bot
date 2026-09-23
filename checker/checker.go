@@ -87,6 +87,64 @@ func (pc *ProxyChecker) SetDisabledFilter(f func(server, stableID string) bool) 
 	pc.disabledFilter = f
 }
 
+// RuntimeCheckSettings carries mutable check parameters; a nil field keeps
+// the current value, a set field replaces it. An explicit zero applies where
+// it is meaningful (CheckConcurrency 0 = unlimited).
+type RuntimeCheckSettings struct {
+	CheckMethod        *string
+	IpCheckURL         *string
+	StatusCheckURL     *string
+	DownloadURL        *string
+	ProxyTimeoutSec    *int
+	DownloadTimeoutSec *int
+	DownloadMinSize    *int64
+	CheckConcurrency   *int
+}
+
+// SetRuntimeCheckSettings applies runtime changes to the checker under its
+// lock, rebuilding the shared IP-echo HTTP client when the proxy timeout
+// changes. Invalid values (unknown method, non-http URL, non-positive
+// timeouts, negative limits) are skipped with a warning.
+func (pc *ProxyChecker) SetRuntimeCheckSettings(s RuntimeCheckSettings) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if s.CheckMethod != nil {
+		m := *s.CheckMethod
+		if m == "ip" || m == "status" || m == "download" {
+			pc.checkMethod = m
+		} else {
+			logger.Warn("Ignoring invalid runtime check method %q", m)
+		}
+	}
+	applyURL := func(dst *string, v *string, name string) {
+		if v == nil {
+			return
+		}
+		u := strings.TrimSpace(*v)
+		if u == "" || (!strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://")) {
+			logger.Warn("Ignoring invalid runtime %s %q", name, u)
+			return
+		}
+		*dst = u
+	}
+	applyURL(&pc.ipCheck, s.IpCheckURL, "ip-check URL")
+	applyURL(&pc.genMethodURL, s.StatusCheckURL, "status-check URL")
+	applyURL(&pc.downloadURL, s.DownloadURL, "download URL")
+	if s.ProxyTimeoutSec != nil && *s.ProxyTimeoutSec > 0 {
+		pc.ipCheckTimeout = *s.ProxyTimeoutSec
+		pc.httpClient = &http.Client{Timeout: time.Second * time.Duration(pc.ipCheckTimeout)}
+	}
+	if s.DownloadTimeoutSec != nil && *s.DownloadTimeoutSec > 0 {
+		pc.downloadTimeout = *s.DownloadTimeoutSec
+	}
+	if s.DownloadMinSize != nil && *s.DownloadMinSize >= 0 {
+		pc.downloadMinSize = *s.DownloadMinSize
+	}
+	if s.CheckConcurrency != nil && *s.CheckConcurrency >= 0 {
+		pc.checkConcurrency = *s.CheckConcurrency
+	}
+}
+
 // IsProxyDisabled returns true if the proxy is configured to be skipped from checks.
 func (pc *ProxyChecker) IsProxyDisabled(proxy *models.ProxyConfig) bool {
 	pc.mu.RLock()
@@ -168,7 +226,10 @@ func (pc *ProxyChecker) GetCurrentIP() (string, error) {
 	}
 	pc.mu.RUnlock()
 
-	resp, err := pc.httpClient.Get(pc.ipCheck)
+	pc.mu.RLock()
+	checkURL := pc.ipCheck
+	pc.mu.RUnlock()
+	resp, err := pc.httpClient.Get(checkURL)
 	if err != nil {
 		return "", fmt.Errorf("error getting current IP: %v", err)
 	}
@@ -259,23 +320,36 @@ func (pc *ProxyChecker) checkProxyInternal(proxy *models.ProxyConfig) {
 		return
 	}
 
+	// Snapshot runtime settings under the lock: SetRuntimeCheckSettings may
+	// change them concurrently mid-cycle.
+	pc.mu.RLock()
+	checkMethod := pc.checkMethod
+	ipCheckURL := pc.ipCheck
+	genMethodURL := pc.genMethodURL
+	downloadURL := pc.downloadURL
+	downloadTimeout := pc.downloadTimeout
+	downloadMinSize := pc.downloadMinSize
+	ipTimeout := pc.ipCheckTimeout
+	pc.mu.RUnlock()
+
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy:             http.ProxyURL(proxyURLParsed),
 			DisableKeepAlives: true,
 		},
-		Timeout: time.Second * time.Duration(pc.ipCheckTimeout),
+		Timeout: time.Second * time.Duration(ipTimeout),
 	}
 
 	var outcome checkOutcome
-	if pc.checkMethod == "ip" {
-		outcome = pc.checkByIP(client)
-	} else if pc.checkMethod == "status" {
-		outcome = pc.checkByGen(client)
-	} else if pc.checkMethod == "download" {
-		outcome = pc.checkByDownload(client)
-	} else {
-		logger.Error("Invalid check method: %s", pc.checkMethod)
+	switch checkMethod {
+	case "ip":
+		outcome = pc.checkByIP(client, ipCheckURL)
+	case "status":
+		outcome = pc.checkByGen(client, genMethodURL)
+	case "download":
+		outcome = pc.checkByDownload(client, downloadURL, downloadTimeout, downloadMinSize)
+	default:
+		logger.Error("Invalid check method: %s", checkMethod)
 		return
 	}
 
@@ -346,7 +420,7 @@ func (pc *ProxyChecker) checkProxyInternal(proxy *models.ProxyConfig) {
 	}
 }
 
-func (pc *ProxyChecker) checkByIP(client *http.Client) checkOutcome {
+func (pc *ProxyChecker) checkByIP(client *http.Client, ipCheckURL string) checkOutcome {
 	var tlsStart, tlsDone time.Time
 	var gotFirstByte time.Time
 	start := time.Now()
@@ -358,7 +432,7 @@ func (pc *ProxyChecker) checkByIP(client *http.Client) checkOutcome {
 		},
 	}
 	ctx := httptrace.WithClientTrace(context.Background(), trace)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pc.ipCheck, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ipCheckURL, nil)
 	if err != nil {
 		return checkOutcome{err: err}
 	}
@@ -392,7 +466,7 @@ func (pc *ProxyChecker) checkByIP(client *http.Client) checkOutcome {
 			tlsHandshakeMs: tlsHandshakeMs,
 			ttfbMs:         ttfbMs,
 			httpStatus:     resp.StatusCode,
-			err:            fmt.Errorf("HTTP %d from %s", resp.StatusCode, pc.ipCheck),
+			err:            fmt.Errorf("HTTP %d from %s", resp.StatusCode, ipCheckURL),
 		}
 	}
 
@@ -468,8 +542,8 @@ func (pc *ProxyChecker) GetTargetManager() *TargetManager {
 	return pc.targetManager
 }
 
-func (pc *ProxyChecker) checkByGen(client *http.Client) checkOutcome {
-	targets := []string{pc.genMethodURL}
+func (pc *ProxyChecker) checkByGen(client *http.Client, genMethodURL string) checkOutcome {
+	targets := []string{genMethodURL}
 	if tm := pc.GetTargetManager(); tm != nil {
 		configured := tm.GetTargets()
 		if len(configured) > 0 {
@@ -554,8 +628,8 @@ func (pc *ProxyChecker) checkByGen(client *http.Client) checkOutcome {
 	return lastOutcome
 }
 
-func (pc *ProxyChecker) checkByDownload(client *http.Client) checkOutcome {
-	if pc.downloadURL == "" {
+func (pc *ProxyChecker) checkByDownload(client *http.Client, downloadURL string, downloadTimeout int, downloadMinSize int64) checkOutcome {
+	if downloadURL == "" {
 		return checkOutcome{
 			logMessage: "Download URL not configured",
 			err:        fmt.Errorf("download URL not configured"),
@@ -573,14 +647,14 @@ func (pc *ProxyChecker) checkByDownload(client *http.Client) checkOutcome {
 		},
 	}
 	ctx := httptrace.WithClientTrace(context.Background(), trace)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pc.downloadURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return checkOutcome{err: err}
 	}
 
 	downloadClient := &http.Client{
 		Transport: client.Transport,
-		Timeout:   time.Second * time.Duration(pc.downloadTimeout),
+		Timeout:   time.Second * time.Duration(downloadTimeout),
 	}
 
 	resp, err := downloadClient.Do(req)
@@ -626,7 +700,7 @@ func (pc *ProxyChecker) checkByDownload(client *http.Client) checkOutcome {
 			totalBytes += int64(n)
 		}
 
-		if totalBytes >= pc.downloadMinSize {
+		if totalBytes >= downloadMinSize {
 			break
 		}
 
@@ -646,8 +720,8 @@ func (pc *ProxyChecker) checkByDownload(client *http.Client) checkOutcome {
 		}
 	}
 
-	success := totalBytes >= pc.downloadMinSize
-	logMessage := fmt.Sprintf("Downloaded: %d bytes (min: %d)", totalBytes, pc.downloadMinSize)
+	success := totalBytes >= downloadMinSize
+	logMessage := fmt.Sprintf("Downloaded: %d bytes (min: %d)", totalBytes, downloadMinSize)
 	latency := time.Duration(ttfbMs) * time.Millisecond
 	if latency == 0 {
 		latency = time.Since(start)
@@ -772,9 +846,10 @@ func (pc *ProxyChecker) CheckAllProxies() {
 	pc.mu.RLock()
 	proxiesToCheck := make([]*models.ProxyConfig, len(pc.proxies))
 	copy(proxiesToCheck, pc.proxies)
+	checkConcurrency := pc.checkConcurrency
 	pc.mu.RUnlock()
 
-	runBoundedChecks(proxiesToCheck, pc.checkConcurrency, pc.checkProxyInternal)
+	runBoundedChecks(proxiesToCheck, checkConcurrency, pc.checkProxyInternal)
 }
 
 // runBoundedChecks runs check(p) for every proxy concurrently. concurrency == 0
@@ -871,4 +946,3 @@ func (pc *ProxyChecker) GetCheckHostClient() *CheckHostClient {
 	defer pc.mu.RUnlock()
 	return pc.checkHostClient
 }
-

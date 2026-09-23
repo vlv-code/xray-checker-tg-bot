@@ -322,4 +322,3 @@ func TestFormatSingleProxyDiagWithStats_AntiProbeAndTargetInsideTunnel(t *testin
 		t.Errorf("expected detailed timeout explanation inside tunnel, got:\n%s", out2)
 	}
 }
-

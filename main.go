@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -209,10 +211,52 @@ func main() {
 	var checkScheduler *gocron.Scheduler
 	var checkSchedulerMu sync.Mutex
 
+	// updateScheduler drives periodic subscription reloads on this instance
+	// (master or node); rescheduleSubscriptionUpdates re-applies the master's
+	// desired interval on a node. Assigned at the creation site below.
+	var updateScheduler *gocron.Scheduler
+	var updateSchedulerMu sync.Mutex
+	var rescheduleSubscriptionUpdates func(seconds int)
+
 	var reporter *nodes.Reporter
 	var reporterRunning atomic.Bool
 	if config.CLIConfig.Report.URL != "" {
 		reporter = nodes.NewReporter(config.CLIConfig.Report.URL, config.CLIConfig.Report.Token)
+	}
+
+	// nodeAuditor runs the node's own background Check-Host audit (audit
+	// ownership split: the master audits only its local hosts, each node
+	// audits its own). Schedule arrives via config sync; the node's env is
+	// the bootstrap until the first report.
+	var nodeAuditor *nodes.Auditor
+	if reporter != nil {
+		nodeAuditor = nodes.NewAuditor(nil, func() []nodes.AuditTarget {
+			seen := make(map[string]bool)
+			var out []nodes.AuditTarget
+			for _, p := range proxyChecker.GetProxies() {
+				if proxyChecker.IsProxyDisabled(p) {
+					continue
+				}
+				isUDP := checker.IsUDPProto(p.Protocol)
+				dedupKey := net.JoinHostPort(p.Server, strconv.Itoa(p.Port))
+				if isUDP {
+					dedupKey = p.Server
+				}
+				if seen[dedupKey] {
+					continue
+				}
+				seen[dedupKey] = true
+				out = append(out, nodes.AuditTarget{
+					Address: dedupKey,
+					Host:    p.Server,
+					IsUDP:   isUDP,
+					Name:    p.Name,
+				})
+			}
+			return out
+		})
+		nodeAuditor.SetSchedule(config.CLIConfig.Telegram.CheckHostBgEnabled, config.CLIConfig.Telegram.CheckHostIntervalHours)
+		defer nodeAuditor.Stop()
 	}
 
 	// reconcileDesired applies the master's desired managed-subscription list
@@ -261,49 +305,75 @@ func main() {
 	}
 
 	if nodeRegistry != nil {
-		nodeRegistry.SetOnUpdate(func() {
+		nodeRegistry.SetOnUpdate(func(nodeName string) {
 			emitSnapshot()
 			if b := tgBot.Load(); b != nil {
 				b.ProcessNodesHealth(toNodeInfos(nodeRegistry.HealthSnapshot()))
+				if nodeName != "" {
+					b.ProcessNodeCheckHostAudits(nodeName, nodeRegistry.NodeAudits(nodeName))
+				}
 			}
 		})
 		nodeRegistry.SetConfigSource(func(nodeName string) *nodes.NodeConfigSync {
-			if b := tgBot.Load(); b != nil {
-				cfg := b.GetConfig()
-				prefix := nodeName + "/"
-				disabledForNode := make([]string, 0, len(cfg.DisabledProxies))
-				for _, id := range cfg.DisabledProxies {
-					if strings.HasPrefix(id, prefix) {
-						disabledForNode = append(disabledForNode, strings.TrimPrefix(id, prefix))
-					} else if !strings.Contains(id, "/") {
-						disabledForNode = append(disabledForNode, id)
+			base := func() *nodes.NodeConfigSync {
+				if b := tgBot.Load(); b != nil {
+					cfg := b.GetConfig()
+					prefix := nodeName + "/"
+					disabledForNode := make([]string, 0, len(cfg.DisabledProxies))
+					for _, id := range cfg.DisabledProxies {
+						if strings.HasPrefix(id, prefix) {
+							disabledForNode = append(disabledForNode, strings.TrimPrefix(id, prefix))
+						} else if !strings.Contains(id, "/") {
+							disabledForNode = append(disabledForNode, id)
+						}
+					}
+					return &nodes.NodeConfigSync{
+						SyncEnabled:            cfg.NodeSyncEnabled,
+						DisabledProxies:        disabledForNode,
+						DisabledHosts:          cfg.DisabledHosts,
+						CheckHostBgEnabled:     cfg.CheckHostBgEnabled,
+						CheckHostIntervalHours: cfg.CheckHostIntervalHours,
+						CheckIntervalSec:       cfg.CheckIntervalSec,
+						TargetURLs:             cfg.TargetURLs,
+						QuietHoursEnabled:      cfg.QuietHoursEnabled,
+						AlertMode:              cfg.AlertMode,
+						NodeAlertsEnabled:      cfg.NodeAlertsEnabled,
+						NodeProxyAlertsChat:    cfg.NodeProxyAlertsChat,
+						NodeStaleTimeoutSec:    cfg.NodeStaleTimeoutSec,
 					}
 				}
 				return &nodes.NodeConfigSync{
-					SyncEnabled:            cfg.NodeSyncEnabled,
-					DisabledProxies:        disabledForNode,
-					DisabledHosts:          cfg.DisabledHosts,
-					CheckHostBgEnabled:     cfg.CheckHostBgEnabled,
-					CheckHostIntervalHours: cfg.CheckHostIntervalHours,
-					CheckIntervalSec:       cfg.CheckIntervalSec,
-					TargetURLs:             cfg.TargetURLs,
-					QuietHoursEnabled:      cfg.QuietHoursEnabled,
-					AlertMode:              cfg.AlertMode,
-					NodeAlertsEnabled:      cfg.NodeAlertsEnabled,
-					NodeProxyAlertsChat:    cfg.NodeProxyAlertsChat,
-					NodeStaleTimeoutSec:    cfg.NodeStaleTimeoutSec,
+					SyncEnabled:         true,
+					CheckIntervalSec:    config.CLIConfig.Proxy.CheckInterval,
+					TargetURLs:          config.CLIConfig.Telegram.TargetURLs,
+					QuietHoursEnabled:   config.CLIConfig.Telegram.QuietHoursEnabled,
+					AlertMode:           config.CLIConfig.Telegram.AlertMode,
+					NodeAlertsEnabled:   true,
+					NodeProxyAlertsChat: true,
+					NodeStaleTimeoutSec: 300,
+				}
+			}()
+
+			// Full resolved check settings ride along on every sync: the master's
+			// effective configuration is the inheritance base for every node.
+			base.CheckMethod = config.CLIConfig.Proxy.CheckMethod
+			base.IpCheckURL = config.CLIConfig.Proxy.IpCheckUrl
+			base.StatusCheckURL = config.CLIConfig.Proxy.StatusCheckUrl
+			base.DownloadURL = config.CLIConfig.Proxy.DownloadUrl
+			base.ProxyTimeoutSec = config.CLIConfig.Proxy.Timeout
+			base.DownloadTimeoutSec = config.CLIConfig.Proxy.DownloadTimeout
+			base.DownloadMinSize = config.CLIConfig.Proxy.DownloadMinSize
+			base.CheckConcurrency = config.CLIConfig.Proxy.CheckConcurrency
+			base.SubsUpdateIntervalSec = config.CLIConfig.Subscription.UpdateInterval
+
+			// Per-node overrides win over the master's base values.
+			if nodesStore != nil {
+				if ns, ok := nodesStore.Settings(nodeName); ok {
+					merged := nodes.ResolveNodeSync(*base, ns)
+					return &merged
 				}
 			}
-			return &nodes.NodeConfigSync{
-				SyncEnabled:         true,
-				CheckIntervalSec:    config.CLIConfig.Proxy.CheckInterval,
-				TargetURLs:          config.CLIConfig.Telegram.TargetURLs,
-				QuietHoursEnabled:   config.CLIConfig.Telegram.QuietHoursEnabled,
-				AlertMode:           config.CLIConfig.Telegram.AlertMode,
-				NodeAlertsEnabled:   true,
-				NodeProxyAlertsChat: true,
-				NodeStaleTimeoutSec: 300,
-			}
+			return base
 		})
 	}
 
@@ -385,6 +455,9 @@ func main() {
 						diagReports, metricsSnap, version, interval,
 						config.CLIConfig.Proxy.CheckMethod, hostIP,
 					)
+					if nodeAuditor != nil {
+						payload.CheckHostAudits = nodeAuditor.Results()
+					}
 					desired, err := reporter.SendWithRetry(payload, nodes.DefaultReportBackoffs)
 					reporterRunning.Store(false)
 					released = true
@@ -399,21 +472,34 @@ func main() {
 							}
 						}
 						if desired.ConfigSync != nil && desired.ConfigSync.SyncEnabled {
-							if desired.ConfigSync.CheckIntervalSec > 0 {
+							cs := desired.ConfigSync
+							// Full resolved check settings from the master: the
+							// payload is the complete configuration, including
+							// meaningful zeros (concurrency 0 = unlimited).
+							proxyChecker.SetRuntimeCheckSettings(nodes.SyncToRuntimeSettings(*cs))
+							if cs.CheckIntervalSec > 0 {
 								checkSchedulerMu.Lock()
 								curInterval := config.CLIConfig.Proxy.CheckInterval
 								checkSchedulerMu.Unlock()
-								if curInterval != desired.ConfigSync.CheckIntervalSec {
-									logger.Info("Agent check interval updated by master: %ds", desired.ConfigSync.CheckIntervalSec)
-									rescheduleChecks(desired.ConfigSync.CheckIntervalSec)
+								if curInterval != cs.CheckIntervalSec {
+									logger.Info("Agent check interval updated by master: %ds", cs.CheckIntervalSec)
+									rescheduleChecks(cs.CheckIntervalSec)
 								}
 							}
-							if tm := proxyChecker.GetTargetManager(); tm != nil && len(desired.ConfigSync.TargetURLs) > 0 {
-								tm.SetTargets(desired.ConfigSync.TargetURLs)
+							// Resolved target list: empty means the master wants
+							// the node back on built-in defaults.
+							if tm := proxyChecker.GetTargetManager(); tm != nil {
+								tm.SetTargets(cs.TargetURLs)
 							}
-							if len(desired.ConfigSync.DisabledHosts) > 0 || len(desired.ConfigSync.DisabledProxies) > 0 {
-								disHosts := desired.ConfigSync.DisabledHosts
-								disProxies := desired.ConfigSync.DisabledProxies
+							if cs.SubsUpdateIntervalSec > 0 && rescheduleSubscriptionUpdates != nil {
+								rescheduleSubscriptionUpdates(cs.SubsUpdateIntervalSec)
+							}
+							if nodeAuditor != nil {
+								nodeAuditor.SetSchedule(cs.CheckHostBgEnabled, cs.CheckHostIntervalHours)
+							}
+							if len(cs.DisabledHosts) > 0 || len(cs.DisabledProxies) > 0 {
+								disHosts := cs.DisabledHosts
+								disProxies := cs.DisabledProxies
 								proxyChecker.SetDisabledFilter(func(server, stableID string) bool {
 									for _, h := range disHosts {
 										if strings.EqualFold(h, server) {
@@ -504,6 +590,34 @@ func main() {
 		return true, len(*proxyConfigs), nil
 	}
 
+	// rescheduleSubscriptionUpdates applies the master's desired subscription
+	// update interval on a node (config sync). A no-op when the instance runs
+	// with subscription updates disabled.
+	rescheduleSubscriptionUpdates = func(seconds int) {
+		if seconds < 60 {
+			seconds = 60
+		}
+		updateSchedulerMu.Lock()
+		defer updateSchedulerMu.Unlock()
+		if updateScheduler == nil {
+			return
+		}
+		config.CLIConfig.Subscription.UpdateInterval = seconds
+		logger.Info("Rescheduling subscription updates with interval %ds (set by master)", seconds)
+		updateScheduler.Clear()
+		updateScheduler.Every(seconds).Seconds().WaitForSchedule().Do(func() {
+			logger.Info("Checking subscriptions for updates...")
+			changed, count, err := reloadSubscriptions()
+			if err != nil {
+				logger.Error("Error fetching subscriptions: %v", err)
+			} else if changed {
+				logger.Info("Configuration updated: %d proxies", count)
+			} else {
+				logger.Info("Subscriptions checked, no changes")
+			}
+		})
+	}
+
 	reconcileDesired = func(desired []string) error {
 		changed, err := subscription.ReconcileManaged(subURLStore, desired, reloadSubscriptions, subscription.DefaultSubscriptionValidator)
 		if err == nil && changed {
@@ -528,21 +642,21 @@ func main() {
 			targetMgr := proxyChecker.GetTargetManager()
 
 			defaultBotCfg := telegram.BotConfig{
-				QuietHoursEnabled:      config.CLIConfig.Telegram.QuietHoursEnabled,
-				QuietHoursStart:        config.CLIConfig.Telegram.QuietHoursStart,
-				QuietHoursEnd:          config.CLIConfig.Telegram.QuietHoursEnd,
-				DayDigestEnabled:       config.CLIConfig.Telegram.DayDigestEnabled,
-				DayDigestIntervalHours: config.CLIConfig.Telegram.DayDigestIntervalHours,
-				AlertMode:              config.CLIConfig.Telegram.AlertMode,
-				TargetURLs:             targetMgr.GetTargets(),
-				CheckIntervalSec:       config.CLIConfig.Proxy.CheckInterval,
-				RichMode:               config.CLIConfig.Telegram.RichMode,
-				CheckHostBgEnabled:     config.CLIConfig.Telegram.CheckHostBgEnabled,
-				CheckHostIntervalHours: config.CLIConfig.Telegram.CheckHostIntervalHours,
-				CheckHostAlertEnabled:  config.CLIConfig.Telegram.CheckHostAlertEnabled,
-				NodeSyncEnabled:        true,
-				NodeAlertsEnabled:      true,
-				NodeProxyAlertsChat:    true,
+				QuietHoursEnabled:         config.CLIConfig.Telegram.QuietHoursEnabled,
+				QuietHoursStart:           config.CLIConfig.Telegram.QuietHoursStart,
+				QuietHoursEnd:             config.CLIConfig.Telegram.QuietHoursEnd,
+				DayDigestEnabled:          config.CLIConfig.Telegram.DayDigestEnabled,
+				DayDigestIntervalHours:    config.CLIConfig.Telegram.DayDigestIntervalHours,
+				AlertMode:                 config.CLIConfig.Telegram.AlertMode,
+				TargetURLs:                targetMgr.GetTargets(),
+				CheckIntervalSec:          config.CLIConfig.Proxy.CheckInterval,
+				RichMode:                  config.CLIConfig.Telegram.RichMode,
+				CheckHostBgEnabled:        config.CLIConfig.Telegram.CheckHostBgEnabled,
+				CheckHostIntervalHours:    config.CLIConfig.Telegram.CheckHostIntervalHours,
+				CheckHostAlertEnabled:     config.CLIConfig.Telegram.CheckHostAlertEnabled,
+				NodeSyncEnabled:           true,
+				NodeAlertsEnabled:         true,
+				NodeProxyAlertsChat:       true,
 				NodeStaleTimeoutSec:       90,
 				MasterPublicURL:           config.CLIConfig.Nodes.MasterPublicURL,
 				ReleaseAlertsEnabled:      config.CLIConfig.Telegram.ReleaseAlertsEnabled,
@@ -612,7 +726,17 @@ func main() {
 					bot.SetAlertTracker(alertTracker)
 				}
 				if nodeRegistry != nil {
-					bot.SetNodeManager(&nodeManagerAdapter{reg: nodeRegistry, subs: nodeSubsStore})
+					bot.SetNodeManager(&nodeManagerAdapter{
+						reg:   nodeRegistry,
+						subs:  nodeSubsStore,
+						store: nodesStore,
+						botCfg: func() telegram.BotConfig {
+							if b := tgBot.Load(); b != nil {
+								return b.GetConfig()
+							}
+							return telegram.BotConfig{}
+						},
+					})
 				}
 				bot.SetASNLookup(asnLookup)
 				bot.SetDiagnosticsSource(proxyChecker)
@@ -678,7 +802,8 @@ func main() {
 	go runCheckIteration()
 
 	if config.CLIConfig.Subscription.Update {
-		updateScheduler := gocron.NewScheduler(time.UTC)
+		updateSchedulerMu.Lock()
+		updateScheduler = gocron.NewScheduler(time.UTC)
 		updateScheduler.Every(config.CLIConfig.Subscription.UpdateInterval).Seconds().WaitForSchedule().Do(func() {
 			logger.Info("Checking subscriptions for updates...")
 			changed, count, err := reloadSubscriptions()
@@ -691,6 +816,7 @@ func main() {
 			}
 		})
 		updateScheduler.StartAsync()
+		updateSchedulerMu.Unlock()
 
 		geoScheduler := gocron.NewScheduler(time.UTC)
 		geoScheduler.Every(24).Hours().Do(func() {
@@ -1018,6 +1144,3 @@ func startTelegramBotWithRetry(
 		}
 	}()
 }
-
-
-
