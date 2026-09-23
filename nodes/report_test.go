@@ -236,3 +236,26 @@ func TestSyncToRuntimeSettings(t *testing.T) {
 		t.Fatal("fields not mapped")
 	}
 }
+
+func TestReportCheckHostAuditsRoundTrip(t *testing.T) {
+	p := ReportPayload{
+		Version: "v", CheckIntervalSec: 60,
+		CheckHostAudits: map[string]checker.CheckHostSummary{
+			"host.example:443": {RUAvailable: false, WorldAvailable: true},
+		},
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back ReportPayload
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	if len(back.CheckHostAudits) != 1 {
+		t.Fatalf("audits lost: %+v", back.CheckHostAudits)
+	}
+	if back.CheckHostAudits["host.example:443"].WorldAvailable != true {
+		t.Fatalf("summary fields lost: %+v", back.CheckHostAudits["host.example:443"])
+	}
+}

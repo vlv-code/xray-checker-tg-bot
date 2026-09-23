@@ -601,4 +601,3 @@ func TestBot_AdminUserIDs(t *testing.T) {
 		t.Errorf("expected non-admin user 9999 to be rejected")
 	}
 }
-

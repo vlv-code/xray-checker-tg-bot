@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -222,6 +224,41 @@ func main() {
 		reporter = nodes.NewReporter(config.CLIConfig.Report.URL, config.CLIConfig.Report.Token)
 	}
 
+	// nodeAuditor runs the node's own background Check-Host audit (audit
+	// ownership split: the master audits only its local hosts, each node
+	// audits its own). Schedule arrives via config sync; the node's env is
+	// the bootstrap until the first report.
+	var nodeAuditor *nodes.Auditor
+	if reporter != nil {
+		nodeAuditor = nodes.NewAuditor(nil, func() []nodes.AuditTarget {
+			seen := make(map[string]bool)
+			var out []nodes.AuditTarget
+			for _, p := range proxyChecker.GetProxies() {
+				if proxyChecker.IsProxyDisabled(p) {
+					continue
+				}
+				isUDP := checker.IsUDPProto(p.Protocol)
+				dedupKey := net.JoinHostPort(p.Server, strconv.Itoa(p.Port))
+				if isUDP {
+					dedupKey = p.Server
+				}
+				if seen[dedupKey] {
+					continue
+				}
+				seen[dedupKey] = true
+				out = append(out, nodes.AuditTarget{
+					Address: dedupKey,
+					Host:    p.Server,
+					IsUDP:   isUDP,
+					Name:    p.Name,
+				})
+			}
+			return out
+		})
+		nodeAuditor.SetSchedule(config.CLIConfig.Telegram.CheckHostBgEnabled, config.CLIConfig.Telegram.CheckHostIntervalHours)
+		defer nodeAuditor.Stop()
+	}
+
 	// reconcileDesired applies the master's desired managed-subscription list
 	// on the node side; assigned after reloadSubscriptions is defined below.
 	var reconcileDesired func(desired []string) error
@@ -268,10 +305,13 @@ func main() {
 	}
 
 	if nodeRegistry != nil {
-		nodeRegistry.SetOnUpdate(func() {
+		nodeRegistry.SetOnUpdate(func(nodeName string) {
 			emitSnapshot()
 			if b := tgBot.Load(); b != nil {
 				b.ProcessNodesHealth(toNodeInfos(nodeRegistry.HealthSnapshot()))
+				if nodeName != "" {
+					b.ProcessNodeCheckHostAudits(nodeName, nodeRegistry.NodeAudits(nodeName))
+				}
 			}
 		})
 		nodeRegistry.SetConfigSource(func(nodeName string) *nodes.NodeConfigSync {
@@ -415,6 +455,9 @@ func main() {
 						diagReports, metricsSnap, version, interval,
 						config.CLIConfig.Proxy.CheckMethod, hostIP,
 					)
+					if nodeAuditor != nil {
+						payload.CheckHostAudits = nodeAuditor.Results()
+					}
 					desired, err := reporter.SendWithRetry(payload, nodes.DefaultReportBackoffs)
 					reporterRunning.Store(false)
 					released = true
@@ -450,6 +493,9 @@ func main() {
 							}
 							if cs.SubsUpdateIntervalSec > 0 && rescheduleSubscriptionUpdates != nil {
 								rescheduleSubscriptionUpdates(cs.SubsUpdateIntervalSec)
+							}
+							if nodeAuditor != nil {
+								nodeAuditor.SetSchedule(cs.CheckHostBgEnabled, cs.CheckHostIntervalHours)
 							}
 							if len(cs.DisabledHosts) > 0 || len(cs.DisabledProxies) > 0 {
 								disHosts := cs.DisabledHosts

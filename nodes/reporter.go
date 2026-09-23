@@ -93,4 +93,3 @@ func (r *Reporter) SendWithRetry(p ReportPayload, backoffs []time.Duration) (*In
 
 	return nil, fmt.Errorf("failed after %d attempts: %w", len(backoffs)+1, lastErr)
 }
-

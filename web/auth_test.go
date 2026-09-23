@@ -133,4 +133,3 @@ func TestBasicAuthRateLimiter(t *testing.T) {
 		}
 	}
 }
-

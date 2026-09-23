@@ -38,6 +38,10 @@ type ReportPayload struct {
 	CheckMethod      string        `json:"checkMethod"`
 	HostIP           string        `json:"hostIP"`
 	Proxies          []ReportProxy `json:"proxies"`
+	// CheckHostAudits carries the node's latest background Check-Host audit
+	// results, keyed by target address (bare host for UDP targets). The
+	// master raises RU-block alerts for node hosts from this data.
+	CheckHostAudits map[string]checker.CheckHostSummary `json:"checkHostAudits,omitempty"`
 }
 
 // NodeConfigSync contains runtime settings transmitted from the master bot to nodes.

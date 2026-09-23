@@ -286,4 +286,3 @@ func TestCheckHostClient_RateLimiter(t *testing.T) {
 		t.Errorf("expected error on canceled context, got nil")
 	}
 }
-

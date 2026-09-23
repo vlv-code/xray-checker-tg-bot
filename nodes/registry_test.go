@@ -204,7 +204,7 @@ func TestSubCounts(t *testing.T) {
 func TestOnUpdateFires(t *testing.T) {
 	reg, _ := newTestRegistry(nil)
 	fired := make(chan struct{}, 1)
-	reg.SetOnUpdate(func() {
+	reg.SetOnUpdate(func(_ string) {
 		select {
 		case fired <- struct{}{}:
 		default:
@@ -379,7 +379,7 @@ func TestHandleReport_AsyncOnUpdate(t *testing.T) {
 	updateStarted := make(chan struct{})
 	finishUpdate := make(chan struct{})
 
-	reg.SetOnUpdate(func() {
+	reg.SetOnUpdate(func(_ string) {
 		close(updateStarted)
 		<-finishUpdate
 	})
@@ -550,6 +550,40 @@ func TestSweepStale_RespectsMasterStaleCap(t *testing.T) {
 	}
 }
 
+func TestRegistryAudits(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	calls := make(chan string, 4)
+	reg.SetOnUpdate(func(nodeName string) { calls <- nodeName })
 
+	audits := map[string]checker.CheckHostSummary{
+		"host.example:443": {RUAvailable: false, WorldAvailable: true},
+	}
+	postReport(t, reg.HandleReport(), "t1", ReportPayload{
+		Version: "1", CheckIntervalSec: 60,
+		CheckHostAudits: audits,
+	})
 
+	select {
+	case name := <-calls:
+		if name != "n1" {
+			t.Fatalf("onUpdate node name = %q", name)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("onUpdate must fire with node name")
+	}
 
+	got := reg.NodeAudits("n1")
+	if len(got) != 1 || got["host.example:443"].WorldAvailable != true {
+		t.Fatalf("NodeAudits: %+v", got)
+	}
+	if got2 := reg.NodeAudits("unknown"); len(got2) != 0 {
+		t.Fatalf("unknown node audits: %+v", got2)
+	}
+
+	// A report without audits replaces the stored map (empty = stale results
+	// must not linger).
+	postReport(t, reg.HandleReport(), "t1", ReportPayload{Version: "1", CheckIntervalSec: 60})
+	if got := reg.NodeAudits("n1"); len(got) != 0 {
+		t.Fatalf("audits must be replaced by newer report: %+v", got)
+	}
+}

@@ -114,7 +114,6 @@ func TestNodesStore_MigrateLegacyPlaintext(t *testing.T) {
 	}
 }
 
-
 func TestNodesStore_SettingsRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nodes.json")
 	store, err := NewNodesStore(path)
