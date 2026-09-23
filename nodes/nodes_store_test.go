@@ -114,3 +114,98 @@ func TestNodesStore_MigrateLegacyPlaintext(t *testing.T) {
 	}
 }
 
+
+func TestNodesStore_SettingsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nodes.json")
+	store, err := NewNodesStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save("node-1", "tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	interval := 120
+	conc := 4
+	ns := &NodeSettings{
+		CheckIntervalSec: &interval,
+		CheckConcurrency: &conc,
+		TargetURLs:       []string{"https://t1.example/204"},
+	}
+	if err := store.SetSettings("node-1", ns); err != nil {
+		t.Fatalf("SetSettings: %v", err)
+	}
+	got, ok := store.Settings("node-1")
+	if !ok || got.CheckIntervalSec == nil || *got.CheckIntervalSec != 120 ||
+		got.CheckConcurrency == nil || *got.CheckConcurrency != 4 ||
+		len(got.TargetURLs) != 1 {
+		t.Fatalf("settings lost: %+v", got)
+	}
+
+	// Persistence across reload.
+	store2, err := NewNodesStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, ok := store2.Settings("node-1")
+	if !ok || got2.CheckIntervalSec == nil || *got2.CheckIntervalSec != 120 {
+		t.Fatalf("settings lost after reload: %+v", got2)
+	}
+
+	// Saving the same node again must keep its settings.
+	if err := store2.Save("node-1", "new-token"); err != nil {
+		t.Fatal(err)
+	}
+	if got3, _ := store2.Settings("node-1"); got3 == nil || got3.CheckIntervalSec == nil {
+		t.Fatal("Save must preserve existing settings")
+	}
+
+	// Clearing settings.
+	if err := store2.SetSettings("node-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got4, _ := store2.Settings("node-1"); got4 != nil {
+		t.Fatalf("expected cleared settings, got %+v", got4)
+	}
+
+	// Unknown node.
+	if err := store2.SetSettings("nope", ns); err == nil {
+		t.Fatal("SetSettings on unknown node must error")
+	}
+	if _, ok := store2.Settings("nope"); ok {
+		t.Fatal("Settings on unknown node must report false")
+	}
+
+	// Deleting the node removes its settings.
+	if err := store2.Save("node-2", "t2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store2.SetSettings("node-2", ns); err != nil {
+		t.Fatal(err)
+	}
+	if err := store2.Delete("node-2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store2.Settings("node-2"); ok {
+		t.Fatal("Delete must remove settings too")
+	}
+}
+
+func TestNodesStore_LegacyHashedFormatLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nodes.json")
+	legacy := `{"node-a": "sha256:deadbeef"}`
+	if err := os.WriteFile(path, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewNodesStore(path)
+	if err != nil {
+		t.Fatalf("legacy hashed format must load: %v", err)
+	}
+	all := store.All()
+	if len(all) != 1 || all[0].Name != "node-a" || all[0].Token != "deadbeef" {
+		t.Fatalf("unexpected nodes: %+v", all)
+	}
+	if got, _ := store.Settings("node-a"); got != nil {
+		t.Fatalf("legacy entries must have no settings: %+v", got)
+	}
+}
