@@ -278,3 +278,73 @@ func (b *Bot) handleNodeAddSubURL(msg *telego.Message, node string, rawURL strin
 	t := targetFromMessage(msg)
 	b.sendOrUpdateMenu(t, text, markup)
 }
+
+// nodeSettingsHelp lists the overridable setting keys for /nodeset.
+const nodeSettingsHelp = "Ключи: check_interval, check_method, ip_check_url, status_check_url, " +
+	"download_url, proxy_timeout, download_timeout, download_min_size, check_concurrency, " +
+	"subs_update_interval, target_urls"
+
+func (b *Bot) replyNodeSettings(msg *telego.Message) {
+	args := commandArgs(msg.Text)
+	if b.nodeMgr == nil {
+		b.replyCommand(msg, "Ноды не настроены.")
+		return
+	}
+	switch len(args) {
+	case 0:
+		b.replyCommand(msg, "Использование:\n/nodeset &lt;имя ноды&gt; — показать настройки\n"+
+			"/nodeset &lt;имя&gt; &lt;ключ&gt; &lt;значение&gt; — переопределить\n\n"+nodeSettingsHelp)
+	case 1:
+		entries, err := b.nodeMgr.NodeSettingsView(args[0])
+		if err != nil {
+			b.replyCommand(msg, "❌ "+escapeHTML(err.Error()))
+			return
+		}
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "⚙️ <b>Настройки ноды %s</b>\n", escapeHTML(args[0]))
+		for _, e := range entries {
+			mark := ""
+			if e.Overridden {
+				mark = " ✏️"
+			}
+			fmt.Fprintf(&sb, "• %s: <code>%s</code>%s\n", e.Key, escapeHTML(e.Value), mark)
+		}
+		sb.WriteString("\n✏️ — переопределено на ноде; /nodereset возвращает к мастеру.")
+		b.replyCommand(msg, sb.String())
+	case 2:
+		b.replyCommand(msg, "Не хватает значения: /nodeset &lt;имя&gt; &lt;ключ&gt; &lt;значение&gt;")
+	default:
+		value := strings.Join(args[2:], " ")
+		if err := b.nodeMgr.SetNodeSetting(args[0], args[1], value); err != nil {
+			b.replyCommand(msg, "❌ "+escapeHTML(err.Error())+"\n\n"+nodeSettingsHelp)
+			return
+		}
+		b.replyCommand(msg, fmt.Sprintf("✅ Нода <b>%s</b>: %s = %s.\nПрименится при следующем отчёте ноды.",
+			escapeHTML(args[0]), escapeHTML(args[1]), escapeHTML(value)))
+	}
+}
+
+func (b *Bot) handleNodeReset(msg *telego.Message) {
+	args := commandArgs(msg.Text)
+	if len(args) < 1 {
+		b.replyCommand(msg, "Использование: /nodereset &lt;имя ноды&gt; [ключ]")
+		return
+	}
+	if b.nodeMgr == nil {
+		b.replyCommand(msg, "Ноды не настроены.")
+		return
+	}
+	key := ""
+	if len(args) >= 2 {
+		key = args[1]
+	}
+	if err := b.nodeMgr.ResetNodeSetting(args[0], key); err != nil {
+		b.replyCommand(msg, "❌ "+escapeHTML(err.Error()))
+		return
+	}
+	if key == "" {
+		b.replyCommand(msg, fmt.Sprintf("✅ Все настройки ноды <b>%s</b> возвращены к мастеру.\nПрименится при следующем отчёте ноды.", escapeHTML(args[0])))
+		return
+	}
+	b.replyCommand(msg, fmt.Sprintf("✅ Нода <b>%s</b>: %s снова наследуется от мастера.\nПрименится при следующем отчёте ноды.", escapeHTML(args[0]), escapeHTML(key)))
+}

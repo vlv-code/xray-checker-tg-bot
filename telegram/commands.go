@@ -63,6 +63,7 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 	mutating := map[string]bool{
 		"interval": true, "addsub": true, "delsub": true, "removesub": true,
 		"nodeadd": true, "nodedel": true, "nodeaddsub": true, "nodedelsub": true,
+		"nodeset": true, "nodereset": true,
 		"togglenode": true, "disablenode": true, "togglehost": true,
 		"checkhost": true, "checkhost_bg": true, "targets": true, "quiet": true,
 		"tz": true, "timezone": true, "digest": true,
@@ -133,6 +134,10 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		go b.handleNodeAddSub(msg)
 	case "nodedelsub":
 		go b.handleNodeDelSub(msg)
+	case "nodeset":
+		b.replyNodeSettings(msg)
+	case "nodereset":
+		b.handleNodeReset(msg)
 	case "nodes":
 		b.replyNodes(t)
 	case "subs":
@@ -500,7 +505,9 @@ func (b *Bot) replyHelp(t ChatTarget) {
 			"/nodedel &lt;имя&gt; — удалить ноду с мастера\n" +
 			"/nodesubs &lt;имя&gt; — подписки ноды, назначенные с мастера\n" +
 			"/nodeaddsub &lt;имя&gt; &lt;URL&gt; — назначить подписку ноде\n" +
-			"/nodedelsub &lt;имя&gt; &lt;URL&gt; — снять подписку с ноды\n"
+			"/nodedelsub &lt;имя&gt; &lt;URL&gt; — снять подписку с ноды\n" +
+			"/nodeset &lt;имя&gt; [ключ значение] — настройки проверок ноды (override мастера)\n" +
+			"/nodereset &lt;имя&gt; [ключ] — вернуть настройки ноды к мастеру\n"
 	}
 	text += "/checkupdate — проверить наличие новой версии чекера\n" +
 		"/help — эта справка\n\n" +

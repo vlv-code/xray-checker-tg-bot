@@ -680,7 +680,17 @@ func main() {
 					bot.SetAlertTracker(alertTracker)
 				}
 				if nodeRegistry != nil {
-					bot.SetNodeManager(&nodeManagerAdapter{reg: nodeRegistry, subs: nodeSubsStore})
+					bot.SetNodeManager(&nodeManagerAdapter{
+						reg:   nodeRegistry,
+						subs:  nodeSubsStore,
+						store: nodesStore,
+						botCfg: func() telegram.BotConfig {
+							if b := tgBot.Load(); b != nil {
+								return b.GetConfig()
+							}
+							return telegram.BotConfig{}
+						},
+					})
 				}
 				bot.SetASNLookup(asnLookup)
 				bot.SetDiagnosticsSource(proxyChecker)

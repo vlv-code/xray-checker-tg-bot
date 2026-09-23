@@ -52,8 +52,9 @@ func TestFormatAge(t *testing.T) {
 }
 
 type fakeNodeManager struct {
-	nodes map[string]string   // name -> token
-	subs  map[string][]string // name -> URLs
+	nodes      map[string]string   // name -> token
+	subs       map[string][]string // name -> URLs
+	overridden map[string]bool     // settings override marks
 }
 
 func (f *fakeNodeManager) Nodes() []NodeInfo {
@@ -244,4 +245,40 @@ func TestNodeSubsCallbacks(t *testing.T) {
 	if len(subs) != 0 {
 		t.Fatalf("expected 0 subs after deletion, got %d", len(subs))
 	}
+}
+
+func (f *fakeNodeManager) NodeSettingsView(node string) ([]NodeSettingEntry, error) {
+	if _, ok := f.nodes[node]; !ok {
+		return nil, fmt.Errorf("неизвестная нода: %s", node)
+	}
+	return []NodeSettingEntry{
+		{Key: "check_interval", Value: "300"},
+		{Key: "check_method", Value: "status", Overridden: f.overridden["check_method"]},
+	}, nil
+}
+
+func (f *fakeNodeManager) SetNodeSetting(node, key, value string) error {
+	if _, ok := f.nodes[node]; !ok {
+		return fmt.Errorf("неизвестная нода: %s", node)
+	}
+	if key != "check_method" && key != "check_interval" {
+		return fmt.Errorf("неизвестный ключ %q", key)
+	}
+	if f.overridden == nil {
+		f.overridden = map[string]bool{}
+	}
+	f.overridden[key] = true
+	return nil
+}
+
+func (f *fakeNodeManager) ResetNodeSetting(node, key string) error {
+	if _, ok := f.nodes[node]; !ok {
+		return fmt.Errorf("неизвестная нода: %s", node)
+	}
+	if key != "" {
+		delete(f.overridden, key)
+	} else {
+		f.overridden = nil
+	}
+	return nil
 }
