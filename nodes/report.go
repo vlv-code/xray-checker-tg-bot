@@ -305,3 +305,20 @@ func ProxyDiagReportsFromReport(p ReportPayload) []checker.ProxyDiagReport {
 	}
 	return out
 }
+
+// SyncToRuntimeSettings maps a fully resolved sync payload onto the node
+// checker's runtime settings. Every field maps non-nil: the payload carries
+// the complete resolved configuration, including meaningful zeros (e.g.
+// CheckConcurrency 0 = unlimited).
+func SyncToRuntimeSettings(cs NodeConfigSync) checker.RuntimeCheckSettings {
+	return checker.RuntimeCheckSettings{
+		CheckMethod:        &cs.CheckMethod,
+		IpCheckURL:         &cs.IpCheckURL,
+		StatusCheckURL:     &cs.StatusCheckURL,
+		DownloadURL:        &cs.DownloadURL,
+		ProxyTimeoutSec:    &cs.ProxyTimeoutSec,
+		DownloadTimeoutSec: &cs.DownloadTimeoutSec,
+		DownloadMinSize:    &cs.DownloadMinSize,
+		CheckConcurrency:   &cs.CheckConcurrency,
+	}
+}

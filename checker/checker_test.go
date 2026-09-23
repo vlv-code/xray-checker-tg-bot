@@ -402,7 +402,7 @@ func TestCheckByIP_TransparentAndValidation(t *testing.T) {
 	defer mockSameIP.Close()
 	pc.ipCheck = mockSameIP.URL
 
-	outcome := pc.checkByIP(mockSameIP.Client())
+	outcome := pc.checkByIP(mockSameIP.Client(), pc.ipCheck)
 	if outcome.success {
 		t.Errorf("expected checkByIP to fail when proxy returns same host IP")
 	}
@@ -417,7 +417,7 @@ func TestCheckByIP_TransparentAndValidation(t *testing.T) {
 	defer mockDiffIP.Close()
 	pc.ipCheck = mockDiffIP.URL
 
-	outcome = pc.checkByIP(mockDiffIP.Client())
+	outcome = pc.checkByIP(mockDiffIP.Client(), pc.ipCheck)
 	if !outcome.success {
 		t.Errorf("expected checkByIP to succeed for different IP, got: %v", outcome.err)
 	}
@@ -430,7 +430,7 @@ func TestCheckByIP_TransparentAndValidation(t *testing.T) {
 	defer mockHTML.Close()
 	pc.ipCheck = mockHTML.URL
 
-	outcome = pc.checkByIP(mockHTML.Client())
+	outcome = pc.checkByIP(mockHTML.Client(), pc.ipCheck)
 	if outcome.success {
 		t.Errorf("expected checkByIP to fail on 502 HTML")
 	}
@@ -462,4 +462,66 @@ func TestGetCurrentIP_TTLExpirationRefetches(t *testing.T) {
 	if ip != "198.51.100.2" {
 		t.Errorf("expected GetCurrentIP to refetch expired IP and get 198.51.100.2, got %q", ip)
 	}
+}
+
+func TestSetRuntimeCheckSettings(t *testing.T) {
+	pc := NewProxyChecker(nil, 10000, "https://api.ipify.org", 30,
+		"http://cp.cloudflare.com/generate_204", "https://proof.ovh.net/files/1Mb.dat",
+		60, 51200, "ip", 0)
+
+	intPtr := func(i int) *int { return &i }
+	strPtr := func(s string) *string { return &s }
+	i64Ptr := func(i int64) *int64 { return &i }
+
+	// Apply a full set.
+	pc.SetRuntimeCheckSettings(RuntimeCheckSettings{
+		CheckMethod:        strPtr("status"),
+		IpCheckURL:         strPtr("https://ip.example/"),
+		StatusCheckURL:     strPtr("http://status.example/204"),
+		DownloadURL:        strPtr("https://dl.example/1Mb.dat"),
+		ProxyTimeoutSec:    intPtr(15),
+		DownloadTimeoutSec: intPtr(45),
+		DownloadMinSize:    i64Ptr(2048),
+		CheckConcurrency:   intPtr(4),
+	})
+	pc.mu.RLock()
+	method, ipURL, statusURL, dlURL := pc.checkMethod, pc.ipCheck, pc.genMethodURL, pc.downloadURL
+	proxyTo, dlTo, dlMin, conc := pc.ipCheckTimeout, pc.downloadTimeout, pc.downloadMinSize, pc.checkConcurrency
+	hcTimeout := pc.httpClient.Timeout
+	pc.mu.RUnlock()
+	if method != "status" || ipURL != "https://ip.example/" || statusURL != "http://status.example/204" ||
+		dlURL != "https://dl.example/1Mb.dat" || proxyTo != 15 || dlTo != 45 || dlMin != 2048 || conc != 4 {
+		t.Fatalf("settings not applied: method=%s ip=%s status=%s dl=%s to=%d dlTo=%d min=%d conc=%d",
+			method, ipURL, statusURL, dlURL, proxyTo, dlTo, dlMin, conc)
+	}
+	if hcTimeout != 15*time.Second {
+		t.Fatalf("httpClient timeout not rebuilt: %s", hcTimeout)
+	}
+
+	// Zero-value (unlimited) concurrency must be settable explicitly.
+	conc5 := 5
+	pc.SetRuntimeCheckSettings(RuntimeCheckSettings{CheckConcurrency: intPtr(5)})
+	pc.SetRuntimeCheckSettings(RuntimeCheckSettings{CheckConcurrency: intPtr(0)})
+	pc.mu.RLock()
+	conc = pc.checkConcurrency
+	pc.mu.RUnlock()
+	if conc != 0 {
+		t.Fatalf("explicit zero concurrency must apply, got %d", conc)
+	}
+	_ = conc5
+
+	// Nil fields and invalid values are skipped.
+	pc.SetRuntimeCheckSettings(RuntimeCheckSettings{
+		CheckMethod:     strPtr("bogus"),
+		ProxyTimeoutSec: intPtr(-5),
+	})
+	pc.mu.RLock()
+	method = pc.checkMethod
+	pc.mu.RUnlock()
+	if method != "status" {
+		t.Fatalf("invalid method must be skipped, got %q", method)
+	}
+
+	// Empty runtime struct changes nothing.
+	pc.SetRuntimeCheckSettings(RuntimeCheckSettings{})
 }

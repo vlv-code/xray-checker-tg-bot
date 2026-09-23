@@ -525,6 +525,8 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 	pc.mu.RLock()
 	proxies := make([]*models.ProxyConfig, len(pc.proxies))
 	copy(proxies, pc.proxies)
+	diagConcurrency := pc.checkConcurrency
+	diagTimeoutSec := pc.ipCheckTimeout
 	pc.mu.RUnlock()
 
 	if len(targets) == 0 {
@@ -542,8 +544,8 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 	// proxies add a synchronous Check-Host poll — a large subscription must
 	// not launch all of that in a single burst.
 	var sem chan struct{}
-	if pc.checkConcurrency > 0 {
-		sem = make(chan struct{}, pc.checkConcurrency)
+	if diagConcurrency > 0 {
+		sem = make(chan struct{}, diagConcurrency)
 	}
 
 	type chCacheEntry struct {
@@ -596,7 +598,7 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 				return
 			}
 
-			diagTimeout := time.Duration(pc.ipCheckTimeout) * time.Second
+			diagTimeout := time.Duration(diagTimeoutSec) * time.Second
 			if diagTimeout <= 0 {
 				diagTimeout = 10 * time.Second
 			}

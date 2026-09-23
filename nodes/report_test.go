@@ -215,3 +215,24 @@ func TestResolveNodeSync(t *testing.T) {
 		t.Fatalf("empty override must clear targets, got %v", got.TargetURLs)
 	}
 }
+
+func TestSyncToRuntimeSettings(t *testing.T) {
+	sync := NodeConfigSync{
+		CheckMethod:           "download",
+		IpCheckURL:            "https://ip.example/",
+		ProxyTimeoutSec:       20,
+		DownloadMinSize:       4096,
+		CheckConcurrency:      0,
+		SubsUpdateIntervalSec: 600,
+	}
+	rs := SyncToRuntimeSettings(sync)
+	if rs.CheckMethod == nil || *rs.CheckMethod != "download" {
+		t.Fatal("method not mapped")
+	}
+	if rs.CheckConcurrency == nil || *rs.CheckConcurrency != 0 {
+		t.Fatal("explicit zero concurrency must map to non-nil pointer")
+	}
+	if rs.IpCheckURL == nil || rs.ProxyTimeoutSec == nil || rs.DownloadMinSize == nil {
+		t.Fatal("fields not mapped")
+	}
+}
