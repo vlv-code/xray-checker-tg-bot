@@ -275,42 +275,65 @@ func main() {
 			}
 		})
 		nodeRegistry.SetConfigSource(func(nodeName string) *nodes.NodeConfigSync {
-			if b := tgBot.Load(); b != nil {
-				cfg := b.GetConfig()
-				prefix := nodeName + "/"
-				disabledForNode := make([]string, 0, len(cfg.DisabledProxies))
-				for _, id := range cfg.DisabledProxies {
-					if strings.HasPrefix(id, prefix) {
-						disabledForNode = append(disabledForNode, strings.TrimPrefix(id, prefix))
-					} else if !strings.Contains(id, "/") {
-						disabledForNode = append(disabledForNode, id)
+			base := func() *nodes.NodeConfigSync {
+				if b := tgBot.Load(); b != nil {
+					cfg := b.GetConfig()
+					prefix := nodeName + "/"
+					disabledForNode := make([]string, 0, len(cfg.DisabledProxies))
+					for _, id := range cfg.DisabledProxies {
+						if strings.HasPrefix(id, prefix) {
+							disabledForNode = append(disabledForNode, strings.TrimPrefix(id, prefix))
+						} else if !strings.Contains(id, "/") {
+							disabledForNode = append(disabledForNode, id)
+						}
+					}
+					return &nodes.NodeConfigSync{
+						SyncEnabled:            cfg.NodeSyncEnabled,
+						DisabledProxies:        disabledForNode,
+						DisabledHosts:          cfg.DisabledHosts,
+						CheckHostBgEnabled:     cfg.CheckHostBgEnabled,
+						CheckHostIntervalHours: cfg.CheckHostIntervalHours,
+						CheckIntervalSec:       cfg.CheckIntervalSec,
+						TargetURLs:             cfg.TargetURLs,
+						QuietHoursEnabled:      cfg.QuietHoursEnabled,
+						AlertMode:              cfg.AlertMode,
+						NodeAlertsEnabled:      cfg.NodeAlertsEnabled,
+						NodeProxyAlertsChat:    cfg.NodeProxyAlertsChat,
+						NodeStaleTimeoutSec:    cfg.NodeStaleTimeoutSec,
 					}
 				}
 				return &nodes.NodeConfigSync{
-					SyncEnabled:            cfg.NodeSyncEnabled,
-					DisabledProxies:        disabledForNode,
-					DisabledHosts:          cfg.DisabledHosts,
-					CheckHostBgEnabled:     cfg.CheckHostBgEnabled,
-					CheckHostIntervalHours: cfg.CheckHostIntervalHours,
-					CheckIntervalSec:       cfg.CheckIntervalSec,
-					TargetURLs:             cfg.TargetURLs,
-					QuietHoursEnabled:      cfg.QuietHoursEnabled,
-					AlertMode:              cfg.AlertMode,
-					NodeAlertsEnabled:      cfg.NodeAlertsEnabled,
-					NodeProxyAlertsChat:    cfg.NodeProxyAlertsChat,
-					NodeStaleTimeoutSec:    cfg.NodeStaleTimeoutSec,
+					SyncEnabled:         true,
+					CheckIntervalSec:    config.CLIConfig.Proxy.CheckInterval,
+					TargetURLs:          config.CLIConfig.Telegram.TargetURLs,
+					QuietHoursEnabled:   config.CLIConfig.Telegram.QuietHoursEnabled,
+					AlertMode:           config.CLIConfig.Telegram.AlertMode,
+					NodeAlertsEnabled:   true,
+					NodeProxyAlertsChat: true,
+					NodeStaleTimeoutSec: 300,
+				}
+			}()
+
+			// Full resolved check settings ride along on every sync: the master's
+			// effective configuration is the inheritance base for every node.
+			base.CheckMethod = config.CLIConfig.Proxy.CheckMethod
+			base.IpCheckURL = config.CLIConfig.Proxy.IpCheckUrl
+			base.StatusCheckURL = config.CLIConfig.Proxy.StatusCheckUrl
+			base.DownloadURL = config.CLIConfig.Proxy.DownloadUrl
+			base.ProxyTimeoutSec = config.CLIConfig.Proxy.Timeout
+			base.DownloadTimeoutSec = config.CLIConfig.Proxy.DownloadTimeout
+			base.DownloadMinSize = config.CLIConfig.Proxy.DownloadMinSize
+			base.CheckConcurrency = config.CLIConfig.Proxy.CheckConcurrency
+			base.SubsUpdateIntervalSec = config.CLIConfig.Subscription.UpdateInterval
+
+			// Per-node overrides win over the master's base values.
+			if nodesStore != nil {
+				if ns, ok := nodesStore.Settings(nodeName); ok {
+					merged := nodes.ResolveNodeSync(*base, ns)
+					return &merged
 				}
 			}
-			return &nodes.NodeConfigSync{
-				SyncEnabled:         true,
-				CheckIntervalSec:    config.CLIConfig.Proxy.CheckInterval,
-				TargetURLs:          config.CLIConfig.Telegram.TargetURLs,
-				QuietHoursEnabled:   config.CLIConfig.Telegram.QuietHoursEnabled,
-				AlertMode:           config.CLIConfig.Telegram.AlertMode,
-				NodeAlertsEnabled:   true,
-				NodeProxyAlertsChat: true,
-				NodeStaleTimeoutSec: 300,
-			}
+			return base
 		})
 	}
 
