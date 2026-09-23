@@ -209,6 +209,13 @@ func main() {
 	var checkScheduler *gocron.Scheduler
 	var checkSchedulerMu sync.Mutex
 
+	// updateScheduler drives periodic subscription reloads on this instance
+	// (master or node); rescheduleSubscriptionUpdates re-applies the master's
+	// desired interval on a node. Assigned at the creation site below.
+	var updateScheduler *gocron.Scheduler
+	var updateSchedulerMu sync.Mutex
+	var rescheduleSubscriptionUpdates func(seconds int)
+
 	var reporter *nodes.Reporter
 	var reporterRunning atomic.Bool
 	if config.CLIConfig.Report.URL != "" {
@@ -399,21 +406,31 @@ func main() {
 							}
 						}
 						if desired.ConfigSync != nil && desired.ConfigSync.SyncEnabled {
-							if desired.ConfigSync.CheckIntervalSec > 0 {
+							cs := desired.ConfigSync
+							// Full resolved check settings from the master: the
+							// payload is the complete configuration, including
+							// meaningful zeros (concurrency 0 = unlimited).
+							proxyChecker.SetRuntimeCheckSettings(nodes.SyncToRuntimeSettings(*cs))
+							if cs.CheckIntervalSec > 0 {
 								checkSchedulerMu.Lock()
 								curInterval := config.CLIConfig.Proxy.CheckInterval
 								checkSchedulerMu.Unlock()
-								if curInterval != desired.ConfigSync.CheckIntervalSec {
-									logger.Info("Agent check interval updated by master: %ds", desired.ConfigSync.CheckIntervalSec)
-									rescheduleChecks(desired.ConfigSync.CheckIntervalSec)
+								if curInterval != cs.CheckIntervalSec {
+									logger.Info("Agent check interval updated by master: %ds", cs.CheckIntervalSec)
+									rescheduleChecks(cs.CheckIntervalSec)
 								}
 							}
-							if tm := proxyChecker.GetTargetManager(); tm != nil && len(desired.ConfigSync.TargetURLs) > 0 {
-								tm.SetTargets(desired.ConfigSync.TargetURLs)
+							// Resolved target list: empty means the master wants
+							// the node back on built-in defaults.
+							if tm := proxyChecker.GetTargetManager(); tm != nil {
+								tm.SetTargets(cs.TargetURLs)
 							}
-							if len(desired.ConfigSync.DisabledHosts) > 0 || len(desired.ConfigSync.DisabledProxies) > 0 {
-								disHosts := desired.ConfigSync.DisabledHosts
-								disProxies := desired.ConfigSync.DisabledProxies
+							if cs.SubsUpdateIntervalSec > 0 && rescheduleSubscriptionUpdates != nil {
+								rescheduleSubscriptionUpdates(cs.SubsUpdateIntervalSec)
+							}
+							if len(cs.DisabledHosts) > 0 || len(cs.DisabledProxies) > 0 {
+								disHosts := cs.DisabledHosts
+								disProxies := cs.DisabledProxies
 								proxyChecker.SetDisabledFilter(func(server, stableID string) bool {
 									for _, h := range disHosts {
 										if strings.EqualFold(h, server) {
@@ -504,6 +521,34 @@ func main() {
 		return true, len(*proxyConfigs), nil
 	}
 
+	// rescheduleSubscriptionUpdates applies the master's desired subscription
+	// update interval on a node (config sync). A no-op when the instance runs
+	// with subscription updates disabled.
+	rescheduleSubscriptionUpdates = func(seconds int) {
+		if seconds < 60 {
+			seconds = 60
+		}
+		updateSchedulerMu.Lock()
+		defer updateSchedulerMu.Unlock()
+		if updateScheduler == nil {
+			return
+		}
+		config.CLIConfig.Subscription.UpdateInterval = seconds
+		logger.Info("Rescheduling subscription updates with interval %ds (set by master)", seconds)
+		updateScheduler.Clear()
+		updateScheduler.Every(seconds).Seconds().WaitForSchedule().Do(func() {
+			logger.Info("Checking subscriptions for updates...")
+			changed, count, err := reloadSubscriptions()
+			if err != nil {
+				logger.Error("Error fetching subscriptions: %v", err)
+			} else if changed {
+				logger.Info("Configuration updated: %d proxies", count)
+			} else {
+				logger.Info("Subscriptions checked, no changes")
+			}
+		})
+	}
+
 	reconcileDesired = func(desired []string) error {
 		changed, err := subscription.ReconcileManaged(subURLStore, desired, reloadSubscriptions, subscription.DefaultSubscriptionValidator)
 		if err == nil && changed {
@@ -528,21 +573,21 @@ func main() {
 			targetMgr := proxyChecker.GetTargetManager()
 
 			defaultBotCfg := telegram.BotConfig{
-				QuietHoursEnabled:      config.CLIConfig.Telegram.QuietHoursEnabled,
-				QuietHoursStart:        config.CLIConfig.Telegram.QuietHoursStart,
-				QuietHoursEnd:          config.CLIConfig.Telegram.QuietHoursEnd,
-				DayDigestEnabled:       config.CLIConfig.Telegram.DayDigestEnabled,
-				DayDigestIntervalHours: config.CLIConfig.Telegram.DayDigestIntervalHours,
-				AlertMode:              config.CLIConfig.Telegram.AlertMode,
-				TargetURLs:             targetMgr.GetTargets(),
-				CheckIntervalSec:       config.CLIConfig.Proxy.CheckInterval,
-				RichMode:               config.CLIConfig.Telegram.RichMode,
-				CheckHostBgEnabled:     config.CLIConfig.Telegram.CheckHostBgEnabled,
-				CheckHostIntervalHours: config.CLIConfig.Telegram.CheckHostIntervalHours,
-				CheckHostAlertEnabled:  config.CLIConfig.Telegram.CheckHostAlertEnabled,
-				NodeSyncEnabled:        true,
-				NodeAlertsEnabled:      true,
-				NodeProxyAlertsChat:    true,
+				QuietHoursEnabled:         config.CLIConfig.Telegram.QuietHoursEnabled,
+				QuietHoursStart:           config.CLIConfig.Telegram.QuietHoursStart,
+				QuietHoursEnd:             config.CLIConfig.Telegram.QuietHoursEnd,
+				DayDigestEnabled:          config.CLIConfig.Telegram.DayDigestEnabled,
+				DayDigestIntervalHours:    config.CLIConfig.Telegram.DayDigestIntervalHours,
+				AlertMode:                 config.CLIConfig.Telegram.AlertMode,
+				TargetURLs:                targetMgr.GetTargets(),
+				CheckIntervalSec:          config.CLIConfig.Proxy.CheckInterval,
+				RichMode:                  config.CLIConfig.Telegram.RichMode,
+				CheckHostBgEnabled:        config.CLIConfig.Telegram.CheckHostBgEnabled,
+				CheckHostIntervalHours:    config.CLIConfig.Telegram.CheckHostIntervalHours,
+				CheckHostAlertEnabled:     config.CLIConfig.Telegram.CheckHostAlertEnabled,
+				NodeSyncEnabled:           true,
+				NodeAlertsEnabled:         true,
+				NodeProxyAlertsChat:       true,
 				NodeStaleTimeoutSec:       90,
 				MasterPublicURL:           config.CLIConfig.Nodes.MasterPublicURL,
 				ReleaseAlertsEnabled:      config.CLIConfig.Telegram.ReleaseAlertsEnabled,
@@ -678,7 +723,8 @@ func main() {
 	go runCheckIteration()
 
 	if config.CLIConfig.Subscription.Update {
-		updateScheduler := gocron.NewScheduler(time.UTC)
+		updateSchedulerMu.Lock()
+		updateScheduler = gocron.NewScheduler(time.UTC)
 		updateScheduler.Every(config.CLIConfig.Subscription.UpdateInterval).Seconds().WaitForSchedule().Do(func() {
 			logger.Info("Checking subscriptions for updates...")
 			changed, count, err := reloadSubscriptions()
@@ -691,6 +737,7 @@ func main() {
 			}
 		})
 		updateScheduler.StartAsync()
+		updateSchedulerMu.Unlock()
 
 		geoScheduler := gocron.NewScheduler(time.UTC)
 		geoScheduler.Every(24).Hours().Do(func() {
@@ -1018,6 +1065,3 @@ func startTelegramBotWithRetry(
 		}
 	}()
 }
-
-
-
