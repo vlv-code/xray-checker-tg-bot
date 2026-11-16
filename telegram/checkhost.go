@@ -88,15 +88,36 @@ func (b *Bot) handleCheckHostProxy(chatID int64, msgID int, stableID string) {
 		target = target + ":443"
 	}
 
-	b.editWithMarkup(chatID, msgID, fmt.Sprintf("⏳ <b>Запрос отправлен в Check-Host.net...</b>\n"+
-		"Проверяем <b>%s</b> (<code>%s</code>) по всемирной сети узлов...\nПожалуйста, подождите 4–6 секунд...",
-		escapeHTML(targetProxy.Name), escapeHTML(target)), BackToMenuMarkup())
+	isUDP := checker.IsUDPProto(targetProxy.Protocol)
 
-	chClient := checker.NewCheckHostClient("", 1500*time.Millisecond)
+	protoNote := ""
+	if isUDP {
+		protoNote = " (PING)"
+	}
+	b.editWithMarkup(chatID, msgID, fmt.Sprintf("⏳ <b>Запрос отправлен в Check-Host.net...</b>\n"+
+		"Проверяем <b>%s</b> (<code>%s</code>)%s по всемирной сети узлов...\nПожалуйста, подождите 4–6 секунд...",
+		escapeHTML(targetProxy.Name), escapeHTML(target), protoNote), BackToMenuMarkup())
+
+	chClient := b.checkHostClient
+	if chClient == nil {
+		chClient = checker.NewCheckHostClient("", 1500*time.Millisecond)
+	}
 	ctx, cancel := context.WithTimeout(b.ctx, 15*time.Second)
 	defer cancel()
 
-	summary, err := chClient.CheckTCP(ctx, target, checker.DefaultWorldwideNodes)
+	var summary *checker.CheckHostSummary
+	var err error
+	if isUDP {
+		// UDP-only protocols (hysteria/hysteria2/tuic/wireguard) have no TCP
+		// listener on the port: probe the bare host with ICMP pings instead.
+		pingHost, _, splitErr := net.SplitHostPort(targetProxy.Address)
+		if splitErr != nil {
+			pingHost = targetProxy.Address
+		}
+		summary, err = chClient.CheckPing(ctx, pingHost, checker.DefaultWorldwideNodes)
+	} else {
+		summary, err = chClient.CheckTCP(ctx, target, checker.DefaultWorldwideNodes)
+	}
 	if !b.isMsgSeqValid(chatID, msgID, seq) {
 		return
 	}
@@ -302,8 +323,17 @@ func (b *Bot) runAuditNow() {
 		alertKey := fmt.Sprintf("checkhost:%s", target.targetAddr)
 		now := time.Now()
 
+		if !summary.RUAvailable && !summary.WorldAvailable {
+			// ICMP-filtered or fully down host: no asymmetric RU-block
+			// signature. Alerting here would stick forever (resolution
+			// requires an RU success), so send and track nothing.
+			logger.Warn("Check-Host %s: unreachable from RU and world (ICMP filtered or fully down); no RU-block alert", target.targetAddr)
+			continue
+		}
+
 		if !summary.RUAvailable {
-			// Unreachable from Russian federation nodes
+			// Unreachable from Russian federation nodes while reachable from
+			// world nodes: the RU-block signature.
 			if !cfg.CheckHostAlertEnabled {
 				continue
 			}
@@ -314,20 +344,13 @@ func (b *Bot) runAuditNow() {
 					continue
 				}
 
-				worldStatus := "❌ недоступен"
-				verdict := "Хост недоступен как из РФ, так и из других стран"
-				if summary.WorldAvailable {
-					worldStatus = "✅ доступен"
-					verdict = "Вероятная блокировка РКН на территории РФ"
-				}
-
 				alertText := fmt.Sprintf("⚠️ <b>[Check-Host] Проблема доступности из РФ</b>\n\n"+
 					"• Сервер: <code>%s</code> <i>(%s)</i>\n"+
-					"• Статус: РФ ❌ недоступен | Мир %s\n"+
-					"• Вердикт: <b>%s</b>\n"+
+					"• Статус: РФ ❌ недоступен | Мир ✅ доступен\n"+
+					"• Вердикт: <b>Вероятная блокировка РКН на территории РФ</b>\n"+
 					"🔗 <a href=\"%s\">Отчёт Check-Host</a>",
 					escapeHTML(target.targetAddr), escapeHTML(target.proxyName),
-					worldStatus, escapeHTML(verdict), escapeHTML(summary.PermanentLink))
+					escapeHTML(summary.PermanentLink))
 
 				if isQuiet {
 					b.eventBuffer.Add(BufferedEvent{
@@ -423,7 +446,17 @@ func (b *Bot) ProcessNodeCheckHostAudits(nodeName string, audits map[string]chec
 			proxyName = n
 		}
 
+		if !summary.RUAvailable && !summary.WorldAvailable {
+			// ICMP-filtered or fully down host: no asymmetric RU-block
+			// signature. Alerting here would stick forever (resolution
+			// requires an RU success), so send and track nothing.
+			logger.Warn("Check-Host %s: unreachable from RU and world (ICMP filtered or fully down); no RU-block alert", addr)
+			continue
+		}
+
 		if !summary.RUAvailable {
+			// Unreachable from Russian federation nodes while reachable from
+			// world nodes: the RU-block signature.
 			if !cfg.CheckHostAlertEnabled {
 				continue
 			}
@@ -434,20 +467,13 @@ func (b *Bot) ProcessNodeCheckHostAudits(nodeName string, audits map[string]chec
 					continue
 				}
 
-				worldStatus := "❌ недоступен"
-				verdict := "Хост недоступен как из РФ, так и из других стран"
-				if summary.WorldAvailable {
-					worldStatus = "✅ доступен"
-					verdict = "Вероятная блокировка РКН на территории РФ"
-				}
-
 				alertText := fmt.Sprintf("⚠️ <b>[Check-Host] Проблема доступности из РФ</b>\n\n"+
 					"• Сервер: <code>%s</code> <i>(%s)</i> — через ноду %s\n"+
-					"• Статус: РФ ❌ недоступен | Мир %s\n"+
-					"• Вердикт: <b>%s</b>\n"+
+					"• Статус: РФ ❌ недоступен | Мир ✅ доступен\n"+
+					"• Вердикт: <b>Вероятная блокировка РКН на территории РФ</b>\n"+
 					"🔗 <a href=\"%s\">Отчёт Check-Host</a>",
 					escapeHTML(addr), escapeHTML(proxyName), escapeHTML(nodeName),
-					worldStatus, escapeHTML(verdict), escapeHTML(summary.PermanentLink))
+					escapeHTML(summary.PermanentLink))
 
 				if isQuiet {
 					b.eventBuffer.Add(BufferedEvent{

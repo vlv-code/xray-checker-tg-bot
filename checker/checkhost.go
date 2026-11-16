@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"xray-checker/logger"
 )
 
 // CheckHostNodeResult holds individual node check results
@@ -28,6 +30,7 @@ type CheckHostNodeResult struct {
 // CheckHostSummary contains the aggregate check result for a host
 type CheckHostSummary struct {
 	Host           string                `json:"host"`
+	CheckKind      string                `json:"checkKind,omitempty"`
 	RequestID      string                `json:"request_id"`
 	PermanentLink  string                `json:"permanent_link"`
 	Results        []CheckHostNodeResult `json:"results"`
@@ -269,6 +272,15 @@ func (c *CheckHostClient) checkInternal(ctx context.Context, checkType, host str
 		nodeMeta[nID] = res
 	}
 
+	// check-host.net silently drops unknown/retired requested nodes: their IDs
+	// never appear in the accepted node list nor in check-result. Warn once per
+	// dropped node; the completion loop below tracks accepted nodes only.
+	for _, nID := range nodes {
+		if _, accepted := nodeMeta[nID]; !accepted {
+			logger.Warn("check-host dropped requested node %s (host %s): not in accepted node list", nID, host)
+		}
+	}
+
 	// 2. Poll for results
 	resultURL := fmt.Sprintf("%s/check-result/%s", c.BaseURL, initResp.RequestID)
 	ticker := time.NewTicker(c.PollInterval)
@@ -305,9 +317,12 @@ func (c *CheckHostClient) checkInternal(ctx context.Context, checkType, host str
 				continue
 			}
 
-			// Check if all requested nodes have finished (non-nil results)
+			// Check if all ACCEPTED nodes have finished (non-nil results).
+			// Requested-but-dropped nodes never appear in check-result and
+			// would otherwise stall polling until the context deadline.
+			// Accepted-but-pending (nil) nodes still keep the poll waiting.
 			allFinished := true
-			for _, nID := range nodes {
+			for nID := range nodeMeta {
 				val, exists := resultMap[nID]
 				if !exists || val == nil {
 					allFinished = false
@@ -394,6 +409,7 @@ DonePolling:
 
 	summary := &CheckHostSummary{
 		Host:           host,
+		CheckKind:      strings.TrimPrefix(checkType, "check-"),
 		RequestID:      initResp.RequestID,
 		PermanentLink:  initResp.PermanentLink,
 		Results:        resultsList,
@@ -422,7 +438,12 @@ func EvaluateCheckHostVerdict(ruAvailable, worldAvailable bool) string {
 // FormatCheckHostReport formats full Check-Host results into clean Telegram markdown
 func FormatCheckHostReport(summary *CheckHostSummary) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🌐 <b>Результаты Check-Host для</b> <code>%s</code> <b>(TCP):</b>\n\n", html.EscapeString(summary.Host)))
+
+	kindLabel := "(TCP)"
+	if summary.CheckKind == "ping" {
+		kindLabel = "(PING)"
+	}
+	sb.WriteString(fmt.Sprintf("🌐 <b>Результаты Check-Host для</b> <code>%s</code> <b>%s:</b>\n\n", html.EscapeString(summary.Host), kindLabel))
 
 	var ruLines, euLines, amLines, asLines []string
 
@@ -436,13 +457,16 @@ func FormatCheckHostReport(summary *CheckHostSummary) string {
 				statusText = "Timeout"
 			}
 		}
+		// External API data must be escaped exactly once before it lands in
+		// the HTML-parse-mode Telegram message.
+		statusText = html.EscapeString(statusText)
 
-		line := fmt.Sprintf("  • %s (%s): %s %s", res.City, strings.ToUpper(res.Country), icon, statusText)
+		line := fmt.Sprintf("  • %s (%s): %s %s", html.EscapeString(res.City), html.EscapeString(strings.ToUpper(res.Country)), icon, statusText)
 
 		switch res.Country {
 		case "ru":
 			ruLines = append(ruLines, line)
-		case "de", "nl", "fi", "pl", "uk", "fr", "ch", "es", "at", "bg", "it", "ro", "se":
+		case "de", "nl", "fi", "pl", "uk", "gb", "fr", "ch", "es", "at", "bg", "it", "ro", "se":
 			euLines = append(euLines, line)
 		case "us", "ca", "br":
 			amLines = append(amLines, line)

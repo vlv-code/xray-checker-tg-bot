@@ -16,7 +16,7 @@ Agent instructions: [AGENTS.md](AGENTS.md) | Policy: [.agents/project_knowledge/
 > [!NOTE]
 > **This repository is a fork of the original [kutovoys/xray-checker](https://github.com/kutovoys/xray-checker)** featuring a fully integrated Telegram Bot built on the official `mymmrac/telego` library:
 > - ⚡ **Multi-Stage Connection Diagnostics**: Isolated analysis of DNS resolution, TCP ping (RTT), TLS handshake, Xray SOCKS tunnel, and target endpoints (paginated view + Telegram 10.1 rich format).
-> - 🌐 **Check-Host.net Background Audit**: Periodic reachability checks across all subscription hosts with automated Russian blocking alerts (`RUAvailable == false`) and deduplication.
+> - 🌐 **Check-Host.net Background Audit**: Periodic reachability checks across all subscription hosts with automated Russian blocking alerts (an alert fires only when a host is reachable from world nodes but not from RU nodes; hosts unreachable from everywhere — e.g. ICMP-filtered — do not raise RU-block alerts) and deduplication.
 > - 🚫 **Individual Node Disabling**: Toggle checks for specific proxy connections directly in the bot menu without modifying subscription files.
 > - ⏱️ **Dynamic Runtime Check Interval**: Change check frequency on the fly (`/interval` or menu) without container restarts.
 > - 🔔 **Smart Alert Lifecycle**: Clean Mode (auto-deletes alerts upon recovery) and Live Mode (updates original outage message with total downtime) with persistent state and anti-flapping.

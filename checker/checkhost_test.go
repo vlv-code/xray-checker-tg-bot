@@ -286,3 +286,127 @@ func TestCheckHostClient_RateLimiter(t *testing.T) {
 		t.Errorf("expected error on canceled context, got nil")
 	}
 }
+
+// TestCheckHostClient_DroppedRequestedNodeCompletesFromAccepted pins that the
+// poll-completion loop tracks ACCEPTED nodes (initResp.Nodes), not the
+// requested list: check-host.net silently drops unknown/retired requested
+// nodes, and a dropped node's key never appears in check-result, which must
+// not stall polling until the context deadline.
+func TestCheckHostClient_DroppedRequestedNodeCompletesFromAccepted(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/check-tcp") {
+			// Request asked for de1 + zz9, but only de1 was accepted.
+			resp := map[string]interface{}{
+				"ok":             1,
+				"request_id":     "drop1234",
+				"permanent_link": "https://check-host.net/check-report/drop1234",
+				"nodes": map[string]interface{}{
+					"de1.node.check-host.net": []interface{}{"de", "Germany", "Nuremberg", "142.132.174.167", "AS24940"},
+				},
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		if strings.HasPrefix(r.URL.Path, "/check-result/drop1234") {
+			// zz9 never appears here; de1 is already finished on first poll.
+			resp := map[string]interface{}{
+				"de1.node.check-host.net": []interface{}{
+					map[string]interface{}{"time": 0.03, "address": "1.1.1.1"},
+				},
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	client := NewCheckHostClient(ts.URL, 20*time.Millisecond)
+	client.HTTPClient = ts.Client()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	summary, err := client.CheckTCP(ctx, "1.1.1.1:443", []string{"de1.node.check-host.net", "zz9.node.check-host.net"})
+	if err != nil {
+		t.Fatalf("expected completion from accepted nodes despite dropped zz9, got error: %v", err)
+	}
+	if summary == nil {
+		t.Fatal("expected non-nil summary, got nil")
+	}
+	if len(summary.Results) != 1 {
+		t.Fatalf("expected only the accepted node de1 in results, got %d: %+v", len(summary.Results), summary.Results)
+	}
+	if !summary.WorldAvailable {
+		t.Errorf("expected WorldAvailable=true from accepted de1 result, got false")
+	}
+}
+
+// TestFormatCheckHostReport_GBUnderEurope pins that the check-host country
+// code "gb" (e.g. uk1.node.check-host.net reports gb) is grouped under the
+// Europe section instead of falling into the "Азия / Другие" default bucket.
+func TestFormatCheckHostReport_GBUnderEurope(t *testing.T) {
+	summary := &CheckHostSummary{
+		Host: "example.com:443",
+		Results: []CheckHostNodeResult{
+			{Node: "uk1.node.check-host.net", Country: "gb", City: "London", Success: true, Latency: 30 * time.Millisecond},
+		},
+		WorldAvailable: true,
+	}
+
+	report := FormatCheckHostReport(summary)
+	if !strings.Contains(report, "Европа") {
+		t.Errorf("expected gb (London) grouped under Европа, got: %s", report)
+	}
+	if strings.Contains(report, "Азия / Другие") {
+		t.Errorf("did not expect gb to fall into Азия / Другие bucket, got: %s", report)
+	}
+}
+
+// TestFormatCheckHostReport_EscapesNodeData pins that external API data
+// (City, error statusText) is html-escaped before being interpolated into the
+// HTML-parse-mode Telegram message.
+func TestFormatCheckHostReport_EscapesNodeData(t *testing.T) {
+	summary := &CheckHostSummary{
+		Host: "example.com:443",
+		Results: []CheckHostNodeResult{
+			{Node: "de1.node.check-host.net", Country: "de", City: "A<b>&c", Success: false, Error: "err<&>"},
+		},
+		Verdict: "Безопасный текст вывода",
+	}
+
+	report := FormatCheckHostReport(summary)
+	if !strings.Contains(report, "A&lt;b&gt;&amp;c") {
+		t.Errorf("expected escaped city A&lt;b&gt;&amp;c, got: %s", report)
+	}
+	if !strings.Contains(report, "err&lt;&amp;&gt;") {
+		t.Errorf("expected escaped status text err&lt;&amp;&gt;, got: %s", report)
+	}
+	if strings.Contains(report, "<b>&c") {
+		t.Errorf("did not expect raw unescaped API data in HTML report, got: %s", report)
+	}
+}
+
+// TestFormatCheckHostReport_PingLabel pins that ping-kind summaries
+// (CheckKind == "ping") render a "(PING)" header instead of the hardcoded
+// "(TCP)" label.
+func TestFormatCheckHostReport_PingLabel(t *testing.T) {
+	summary := &CheckHostSummary{
+		Host:      "1.1.1.1",
+		CheckKind: "ping",
+		Results: []CheckHostNodeResult{
+			{Node: "de1.node.check-host.net", Country: "de", City: "Frankfurt", Success: true, Latency: 25 * time.Millisecond},
+		},
+		WorldAvailable: true,
+	}
+
+	report := FormatCheckHostReport(summary)
+	if !strings.Contains(report, "(PING)") {
+		t.Errorf("expected (PING) header label for ping-kind summary, got: %s", report)
+	}
+	if strings.Contains(report, "(TCP)") {
+		t.Errorf("did not expect (TCP) label for ping-kind summary, got: %s", report)
+	}
+}

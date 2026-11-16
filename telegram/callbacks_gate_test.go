@@ -269,7 +269,8 @@ func TestCallbackGate_EmptyAdminListBackwardCompat(t *testing.T) {
 func TestCallbackRunNow_TriggersAuditDespiteBgDisabled(t *testing.T) {
 	ft, api := newFakeTelegramBot(t)
 
-	// Fake Check-Host API: RU node always times out -> RU unavailable -> alert.
+	// Fake Check-Host API: RU node always times out, world node succeeds ->
+	// RU❌+World✅ signature -> RU-block alert fires (see F4 alert-gate change).
 	chTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasPrefix(r.URL.Path, "/check-tcp") {
@@ -279,6 +280,7 @@ func TestCallbackRunNow_TriggersAuditDespiteBgDisabled(t *testing.T) {
 				"permanent_link": "https://check-host.net/check-report/audit1",
 				"nodes": map[string]interface{}{
 					"ru2.node.check-host.net": []interface{}{"ru", "Russia", "Moscow", "1.2.3.4", "AS1"},
+					"de1.node.check-host.net": []interface{}{"de", "Germany", "Frankfurt", "5.6.7.8", "AS2"},
 				},
 			})
 			return
@@ -286,6 +288,7 @@ func TestCallbackRunNow_TriggersAuditDespiteBgDisabled(t *testing.T) {
 		if strings.HasPrefix(r.URL.Path, "/check-result/audit1") {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"ru2.node.check-host.net": []interface{}{map[string]interface{}{"error": "Connection timed out"}},
+				"de1.node.check-host.net": []interface{}{map[string]interface{}{"time": 0.02, "address": "1.1.1.1"}},
 			})
 			return
 		}
@@ -351,6 +354,8 @@ func TestRunCheckHostAudit_BgGateAndExplicitBypass(t *testing.T) {
 				"permanent_link": "https://check-host.net/check-report/audit1",
 				"nodes": map[string]interface{}{
 					"ru2.node.check-host.net": []interface{}{"ru", "Russia", "Moscow", "1.2.3.4", "AS1"},
+					// world node succeeds so the summary keeps the RU-block signature (RU❌+World✅) after the F4 alert-gate change
+					"de1.node.check-host.net": []interface{}{"de", "Germany", "Frankfurt", "5.6.7.8", "AS2"},
 				},
 			})
 			return
@@ -358,6 +363,7 @@ func TestRunCheckHostAudit_BgGateAndExplicitBypass(t *testing.T) {
 		if strings.HasPrefix(r.URL.Path, "/check-result/audit1") {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"ru2.node.check-host.net": []interface{}{map[string]interface{}{"error": "Connection timed out"}},
+				"de1.node.check-host.net": []interface{}{map[string]interface{}{"time": 0.02, "address": "1.1.1.1"}},
 			})
 			return
 		}
