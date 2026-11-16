@@ -36,6 +36,7 @@ type ProxyChecker struct {
 	checkConcurrency int // max proxies checked in parallel per cycle; 0 = unlimited
 	targetManager    *TargetManager
 	checkHostClient  *CheckHostClient
+	cheburClient     *CheburcheckClient
 	disabledFilter   func(server, stableID string) bool
 	mu               sync.RWMutex
 	// ipFetchMu serializes IP-echo fetches so concurrent cache misses collapse
@@ -196,6 +197,9 @@ func NewProxyChecker(proxies []*models.ProxyConfig, startPort int, ipCheckURL st
 		checkMethod:      checkMethod,
 		checkConcurrency: checkConcurrency,
 		checkHostClient:  NewCheckHostClient("", 1500*time.Millisecond),
+		// Inactive while DefaultCheburScanners is empty (public repo) —
+		// every downstream call site no-ops gracefully.
+		cheburClient: NewCheburcheckClient("", 0, DefaultCheburScanners),
 	}
 }
 
@@ -979,4 +983,16 @@ func (pc *ProxyChecker) GetCheckHostClient() *CheckHostClient {
 	pc.mu.RLock()
 	defer pc.mu.RUnlock()
 	return pc.checkHostClient
+}
+
+func (pc *ProxyChecker) SetCheburClient(c *CheburcheckClient) {
+	pc.mu.Lock()
+	pc.cheburClient = c
+	pc.mu.Unlock()
+}
+
+func (pc *ProxyChecker) GetCheburClient() *CheburcheckClient {
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	return pc.cheburClient
 }

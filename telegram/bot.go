@@ -79,6 +79,7 @@ type Bot struct {
 	checkHostRunning   bool
 	lastCheckHostAudit time.Time
 	checkHostClient    *checker.CheckHostClient
+	cheburClient       *checker.CheburcheckClient
 	checkHostNodes     []string
 
 	lastMenuMu  sync.Mutex
@@ -485,6 +486,7 @@ func (b *Bot) setupBotMenuButton() {
 		{Command: "menu", Description: "Главное меню и сводка"},
 		{Command: "diag", Description: "Подробная сводка"},
 		{Command: "checkhost", Description: "Проверка Check-Host"},
+		{Command: "cheburcheck", Description: "Активный пробинг блокировок РФ (Cheburcheck)"},
 		{Command: "settings", Description: "Настройки бота"},
 		{Command: "status", Description: "Статус прокси-хостов"},
 		{Command: "id", Description: "ID чата и топика для настроек"},

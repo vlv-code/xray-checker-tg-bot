@@ -423,12 +423,75 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 		}
 	}
 
+	// 5b. Cheburcheck active RF probes (present only when scanners are configured)
+	if rep.Chebur != nil {
+		sb.WriteString(formatCheburDiagBlock(rep.Chebur))
+	}
+
 	// 6. Verdict
 	if rep.Verdict != "" {
 		fmt.Fprintf(sb, "  💡 <i>Вердикт: %s</i>\n", escapeHTML(rep.Verdict))
 	}
 
 	sb.WriteString("\n")
+}
+
+// cheburProbeIcon picks the per-scanner icon from raw verdict kinds.
+func cheburProbeIcon(verdicts []string) string {
+	for _, v := range verdicts {
+		switch v {
+		case "cdn_block", "sni_block", "dns_spoofing", "tspu_block":
+			return "⛔"
+		}
+	}
+	for _, v := range verdicts {
+		if v == "ok" {
+			return "✅"
+		}
+	}
+	return "❓"
+}
+
+// cheburProbeLabels renders RU verdict labels (unknown kinds pass through raw,
+// so HTML contexts must escape the joined result).
+func cheburProbeLabels(verdicts []string) string {
+	labels := make([]string, 0, len(verdicts))
+	for _, v := range verdicts {
+		labels = append(labels, checker.CheburVerdictLabel(v))
+	}
+	return strings.Join(labels, ", ")
+}
+
+// formatCheburDiagBlock renders a compact escaped Cheburcheck block (verdict
+// line + per-scanner one-liners) for the HTML diagnostics views.
+func formatCheburDiagBlock(cheb *checker.CheburcheckSummary) string {
+	if cheb == nil {
+		return ""
+	}
+	var sb strings.Builder
+	verdict := cheb.Verdict
+	if verdict == "" {
+		verdict = "нет данных"
+	}
+	fmt.Fprintf(&sb, "  • Cheburcheck: %s\n", escapeHTML(verdict))
+	for _, r := range cheb.Results {
+		meta := ""
+		switch {
+		case r.Region != "" && r.Provider != "":
+			meta = fmt.Sprintf(" (%s/%s)", escapeHTML(r.Region), escapeHTML(r.Provider))
+		case r.Region != "":
+			meta = fmt.Sprintf(" (%s)", escapeHTML(r.Region))
+		case r.Provider != "":
+			meta = fmt.Sprintf(" (%s)", escapeHTML(r.Provider))
+		}
+		cached := ""
+		if r.Cached {
+			cached = " (кеш)"
+		}
+		fmt.Fprintf(&sb, "      – %s%s %s %s%s\n",
+			escapeHTML(r.Name), meta, cheburProbeIcon(r.Verdicts), escapeHTML(cheburProbeLabels(r.Verdicts)), cached)
+	}
+	return sb.String()
 }
 
 func (b *Bot) getDiagnosticsText() string {
@@ -881,6 +944,10 @@ func (b *Bot) handleDeepDiagnostics(chatID int64, msgID int, stableID string, pa
 		}
 
 		text := b.formatDeepDiagnostics(targetMetric, health, ch)
+		if rep != nil && rep.Chebur != nil {
+			// Cheburcheck enrichment below the Check-Host block (escaped HTML).
+			text += "\n🇷🇺 <b>CHEBURCHECK (активный пробинг РФ):</b>\n" + formatCheburDiagBlock(rep.Chebur)
+		}
 		b.editWithMarkup(chatID, msgID, text, DeepDiagnosticsMarkup(stableID, curPage))
 	}()
 }
@@ -1131,6 +1198,32 @@ func (b *Bot) buildDiagnosticsDetailsRichMessageWithTarget(reports []checker.Pro
 				detailLines = append(detailLines, "Check-Host: РФ ❌ | Мир ❌ (домен не резолвится внешними узлами)")
 			} else {
 				detailLines = append(detailLines, fmt.Sprintf("Check-Host: РФ %s | Мир %s", ruStatus, worldStatus))
+			}
+		}
+
+		// 5b. Cheburcheck active RF probes (plain-text rich context)
+		if rep.Chebur != nil {
+			verdict := rep.Chebur.Verdict
+			if verdict == "" {
+				verdict = "нет данных"
+			}
+			detailLines = append(detailLines, fmt.Sprintf("Cheburcheck: %s", verdict))
+			for _, r := range rep.Chebur.Results {
+				meta := ""
+				switch {
+				case r.Region != "" && r.Provider != "":
+					meta = fmt.Sprintf(" (%s/%s)", r.Region, r.Provider)
+				case r.Region != "":
+					meta = fmt.Sprintf(" (%s)", r.Region)
+				case r.Provider != "":
+					meta = fmt.Sprintf(" (%s)", r.Provider)
+				}
+				cached := ""
+				if r.Cached {
+					cached = " (кеш)"
+				}
+				detailLines = append(detailLines, fmt.Sprintf("  %s %s%s %s%s",
+					cheburProbeIcon(r.Verdicts), r.Name, meta, cheburProbeLabels(r.Verdicts), cached))
 			}
 		}
 

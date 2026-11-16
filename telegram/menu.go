@@ -614,6 +614,9 @@ func IntervalMenuMarkup(currentInterval int) *telego.InlineKeyboardMarkup {
 }
 
 // CheckHostMenuMarkup returns keyboard for selecting a proxy to test with Check-Host.
+// Each proxy gets a row with two sibling actions: the worldwide Check-Host
+// audit and the Cheburcheck active RF probe (menu:chebur:<stableID>, which
+// stays within Telegram's 64-byte callback_data limit — test-pinned).
 func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
 	limit := len(proxies)
@@ -621,17 +624,11 @@ func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMa
 		limit = 20
 	}
 
-	for i := 0; i < limit; i += 2 {
-		if i+1 < limit {
-			rows = append(rows, tu.InlineKeyboardRow(
-				btn(truncateButtonText(proxies[i].Name, 24), "menu:checkhost:run:"+proxies[i].StableID),
-				btn(truncateButtonText(proxies[i+1].Name, 24), "menu:checkhost:run:"+proxies[i+1].StableID),
-			))
-		} else {
-			rows = append(rows, tu.InlineKeyboardRow(
-				btn(truncateButtonText(proxies[i].Name, 24), "menu:checkhost:run:"+proxies[i].StableID),
-			))
-		}
+	for i := 0; i < limit; i++ {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn(truncateButtonText(proxies[i].Name, 24), "menu:checkhost:run:"+proxies[i].StableID),
+			btn("🇷🇺 Cheburcheck", "menu:chebur:"+proxies[i].StableID),
+		))
 	}
 
 	if len(proxies) > 20 {

@@ -42,17 +42,18 @@ type NodeHealth struct {
 
 // ProxyDiagReport holds diagnostic results across all target endpoints for one proxy.
 type ProxyDiagReport struct {
-	ProxyName  string             `json:"proxy_name"`
-	Protocol   string             `json:"protocol"`
-	Server     string             `json:"server"`
-	Port       int                `json:"port"`
-	StableID   string             `json:"stable_id"`
-	NodeHealth NodeHealth         `json:"node_health"`
-	CheckHost  *CheckHostSummary  `json:"check_host,omitempty"`
-	Targets    []TargetDiagResult `json:"targets"`
-	Status     string             `json:"status"` // "online", "degraded", "offline", "disabled"
-	Verdict    string             `json:"verdict"`
-	Disabled   bool               `json:"disabled,omitempty"`
+	ProxyName  string              `json:"proxy_name"`
+	Protocol   string              `json:"protocol"`
+	Server     string              `json:"server"`
+	Port       int                 `json:"port"`
+	StableID   string              `json:"stable_id"`
+	NodeHealth NodeHealth          `json:"node_health"`
+	CheckHost  *CheckHostSummary   `json:"check_host,omitempty"`
+	Chebur     *CheburcheckSummary `json:"chebur,omitempty"`
+	Targets    []TargetDiagResult  `json:"targets"`
+	Status     string              `json:"status"` // "online", "degraded", "offline", "disabled"
+	Verdict    string              `json:"verdict"`
+	Disabled   bool                `json:"disabled,omitempty"`
 }
 
 // TargetManager manages the list of target endpoints to test proxies against.
@@ -560,6 +561,16 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 	var chCache sync.Map
 	var chMu sync.Map
 
+	// Cheburcheck enrichment shares the same dedup/singleflight pattern; the
+	// cache is keyed by the bare server host (the probe API has no port
+	// concept, so UDP and TCP proxies with the same server share one entry).
+	type chebCacheEntry struct {
+		summary *CheburcheckSummary
+		err     error
+	}
+	var chebCache sync.Map
+	var chebMu sync.Map
+
 	for i, p := range proxies {
 		wg.Add(1)
 		go func(idx int, proxy *models.ProxyConfig) {
@@ -645,6 +656,7 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 			status, verdict := DetermineVerdict(proxy.Protocol, health, targetResults)
 
 			var checkHostSummary *CheckHostSummary
+			var cheburSummary *CheburcheckSummary
 			// Run Check-Host if the node has connectivity issues.
 			// Deduplicate checks across proxies sharing the same host/port to avoid rate-limiting and timeouts.
 			if status == "offline" && proxy.Server != "" {
@@ -692,6 +704,42 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 					checkHostSummary = chSummary
 					verdict = EnrichVerdictWithCheckHost(verdict, chSummary, health.DNSErr)
 				}
+
+				// Cheburcheck enrichment (active RF blocking probes) follows the
+				// same dedup/singleflight pattern, keyed by the bare server host.
+				// Only runs when a client with active scanners is wired; any
+				// error is logged and skipped — the verdict is never degraded by
+				// Cheburcheck failures.
+				chebKey := proxy.Server
+				var chebSummary *CheburcheckSummary
+				var chebErr error
+				if cached, ok := chebCache.Load(chebKey); ok {
+					entry := cached.(*chebCacheEntry)
+					chebSummary, chebErr = entry.summary, entry.err
+				} else {
+					muAny, _ := chebMu.LoadOrStore(chebKey, &sync.Mutex{})
+					keyMu := muAny.(*sync.Mutex)
+					keyMu.Lock()
+					if cached, ok := chebCache.Load(chebKey); ok {
+						entry := cached.(*chebCacheEntry)
+						chebSummary, chebErr = entry.summary, entry.err
+					} else {
+						chebClient := pc.GetCheburClient()
+						if chebClient != nil && chebClient.HasActiveScanners() {
+							chebCtx, chebCancel := context.WithTimeout(context.Background(), 12*time.Second)
+							chebSummary, chebErr = chebClient.CheckTarget(chebCtx, chebKey)
+							chebCancel()
+						}
+						chebCache.Store(chebKey, &chebCacheEntry{summary: chebSummary, err: chebErr})
+					}
+					keyMu.Unlock()
+				}
+				if chebErr != nil {
+					logger.Warn("cheburcheck enrichment for %s skipped: %v", chebKey, chebErr)
+				} else if chebSummary != nil {
+					cheburSummary = chebSummary
+					verdict = EnrichVerdictWithChebur(verdict, chebSummary)
+				}
 			}
 
 			results[idx] = ProxyDiagReport{
@@ -702,6 +750,7 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 				StableID:   proxy.StableID,
 				NodeHealth: health,
 				CheckHost:  checkHostSummary,
+				Chebur:     cheburSummary,
 				Targets:    targetResults,
 				Status:     status,
 				Verdict:    verdict,

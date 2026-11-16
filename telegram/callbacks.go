@@ -697,6 +697,9 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		} else if strings.HasPrefix(cb.Data, "menu:checkhost:run:") {
 			stableID := strings.TrimPrefix(cb.Data, "menu:checkhost:run:")
 			go b.handleCheckHostProxy(chatID, msgID, stableID)
+		} else if strings.HasPrefix(cb.Data, "menu:chebur:") {
+			stableID := strings.TrimPrefix(cb.Data, "menu:chebur:")
+			go b.handleCheburcheckProxy(chatID, msgID, stableID)
 		} else if strings.HasPrefix(cb.Data, "menu:interval:set:") {
 			secStr := strings.TrimPrefix(cb.Data, "menu:interval:set:")
 			if sec, err := strconv.Atoi(secStr); err == nil && sec >= 10 {

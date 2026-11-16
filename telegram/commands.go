@@ -65,7 +65,7 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		"nodeadd": true, "nodedel": true, "nodeaddsub": true, "nodedelsub": true,
 		"nodeset": true, "nodereset": true,
 		"togglenode": true, "disablenode": true, "togglehost": true,
-		"checkhost": true, "checkhost_bg": true, "targets": true, "quiet": true,
+		"checkhost": true, "checkhost_bg": true, "cheburcheck": true, "targets": true, "quiet": true,
 		"tz": true, "timezone": true, "digest": true,
 	}
 
@@ -116,6 +116,8 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		b.handleCheckHostBgCommand(msg)
 	case "checkhost":
 		go b.handleCheckHostCommand(msg)
+	case "cheburcheck":
+		go b.handleCheburcheckCommand(msg)
 	case "settings":
 		b.replySettings(t)
 	case "togglehost":
@@ -512,6 +514,7 @@ func (b *Bot) replyHelp(t ChatTarget) {
 		"/togglenode <имя|ID> — включить/отключить проверку хоста (не ноды-инстанса)\n" +
 		"/checkhost <хост[:порт]> — глобальная проверка через Check-Host.net\n" +
 		"/checkhost_bg [on|off|1h|run] — фоновая проверка Check-Host\n" +
+		"/cheburcheck <хост> — активный пробинг блокировок РФ (Cheburcheck)\n" +
 		"/stats — статистика аптайма и инцидентов\n" +
 		"/interval [сек] — интервал проверок прокси-хостов\n" +
 		"/quiet — настройки тихого режима\n" +
