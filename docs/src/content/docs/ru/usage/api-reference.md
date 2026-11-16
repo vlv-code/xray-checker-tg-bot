@@ -258,7 +258,7 @@ GET /api/v1/nodes
       "name": "node-spb",
       "up": true,
       "everReported": true,
-      "version": "v2.0.1",
+      "version": "v2.8.0",
       "hostIP": "95.173.136.1",
       "asn": "AS12389 PJSC Rostelecom",
       "online": 8,
@@ -284,7 +284,7 @@ POST /api/v1/nodes/report
 ```json
 {
   "node": "node-spb",
-  "version": "v2.0.1",
+  "version": "v2.8.0",
   "checkIntervalSec": 60,
   "proxies": [
     {

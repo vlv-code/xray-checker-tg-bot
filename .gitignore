@@ -35,7 +35,8 @@ TODO.md
 
 # Subscription store & runtime data
 subscriptions.json
-nodesubs.json
+proxy_cache.json
+node_subs.json
 bot_config.json
 stats.json
 alerts.json

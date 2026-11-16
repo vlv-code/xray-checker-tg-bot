@@ -12,10 +12,13 @@ paths:
   /api/v1/public/proxies:
     get:
       summary: List all proxies (public)
-      description: Returns a list of all proxies with status. No authentication required. Does not expose sensitive data like server IPs and ports.
+      description: >
+        Returns a list of all proxies with public info (no sensitive data like
+        server IPs and ports). Unauthenticated ONLY when the server runs in
+        --web-public mode; in the default protected mode the endpoint is
+        mounted behind basic auth alongside the rest of the dashboard API.
       tags:
         - Public
-      security: []
       responses:
         '200':
           description: List of proxies with public info only

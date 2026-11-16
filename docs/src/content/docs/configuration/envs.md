@@ -523,6 +523,16 @@ Interval in hours between background Check-Host audits.
 
 Send Telegram alert when a proxy host becomes unreachable from Russian probe nodes (`RUAvailable == false`).
 
+## Cheburcheck (RF Blocking Probing)
+
+### CHEBURCHECK_API_KEY
+
+- CLI: `--cheburcheck-api-key`
+- Required: No
+- Default: None
+
+Cheburcheck API token (Bearer) used for `/probe` streams to the RF scanners (`/cheburcheck` command and the «Cheburcheck РФ» bot menu). When empty, per-scanner tokens from the built-in default scanner list are used.
+
 ## Remote Nodes (Push Reporting)
 
 ### NODES

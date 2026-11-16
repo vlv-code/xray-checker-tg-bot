@@ -200,6 +200,14 @@ description: متغیرهای محیطی برای Xray Checker
 
 ## رابط وب
 
+### WEB_ENABLED
+
+- CLI: `--web-enabled`
+- Required: No
+- Default: `true`
+
+Enables the web dashboard panel, static assets, and web API endpoints. When set to `false`, the web UI and web API routes are completely disabled. Prometheus `/metrics` and `/health` remain operational (unless `METRICS_PORT=0` or empty, which runs in pure headless mode with only Telegram bot and periodic checks).
+
 ### WEB_SHOW_DETAILS
 
 - CLI: `--web-show-details`
@@ -380,6 +388,95 @@ description: متغیرهای محیطی برای Xray Checker
 
 فعال‌سازی دستورات تعاملی ربات (`/status`، `/help`، `/start`).
 
+### TELEGRAM_MANAGE_SUBSCRIPTIONS
+
+- CLI: `--telegram-manage-subscriptions`
+- Required: No
+- Default: `true`
+
+Enables dynamic subscription management commands (`/subs`, `/addsub`, `/delsub`) from authorized chats.
+
+### TELEGRAM_ALERT_MODE
+
+- CLI: `--telegram-alert-mode`
+- Required: No
+- Default: `clean`
+- Values: `clean`, `live`
+
+Alert handling mode: `clean` (auto-deletes outage notifications once proxy recovers) or `live` (edits the outage alert message in-place with downtime timer).
+
+### TELEGRAM_RICH_MODE
+
+- CLI: `--telegram-rich-mode`
+- Required: No
+- Default: `false`
+
+Use Telegram Bot API 10.1 rich formatting (table rendering + collapsible details spoilers) for `/diag` reports.
+
+### ALERT_STORE_PATH
+
+- CLI: `--telegram-alert-store-path`
+- Required: No
+- Default: `alerts.json`
+
+JSON file path for persistent storage of active outage alerts across container restarts (prevents alert spam on restarts).
+
+### STATS_STORE_PATH
+
+- CLI: `--telegram-stats-store-path`
+- Required: No
+- Default: `stats.json`
+
+JSON file path for persistent storage of outage history, incident logs, and reliability statistics (`/stats`).
+
+### BOT_CONFIG_STORE_PATH
+
+- CLI: `--telegram-config-store-path`
+- Required: No
+- Default: `bot_config.json`
+
+JSON file path for runtime bot configuration (check interval, quiet hours, disabled nodes list).
+
+### TELEGRAM_QUIET_HOURS_ENABLED
+
+- CLI: `--telegram-quiet-hours`
+- Required: No
+- Default: `true`
+
+Enables quiet hours schedule (outage notifications sent without sound pings).
+
+### TELEGRAM_QUIET_HOURS_START
+
+- CLI: `--telegram-quiet-hours-start`
+- Required: No
+- Default: `23:00`
+
+Quiet hours start time in `HH:MM` format.
+
+### TELEGRAM_QUIET_HOURS_END
+
+- CLI: `--telegram-quiet-hours-end`
+- Required: No
+- Default: `08:00`
+
+Quiet hours end time in `HH:MM` format. Triggers the morning summary digest.
+
+### TELEGRAM_DAY_DIGEST_ENABLED
+
+- CLI: `--telegram-day-digest`
+- Required: No
+- Default: `true`
+
+Enables periodic daytime status summaries.
+
+### TELEGRAM_DAY_DIGEST_INTERVAL_HOURS
+
+- CLI: `--telegram-day-digest-interval`
+- Required: No
+- Default: `6`
+
+Interval in hours between daytime status summaries.
+
 ### TELEGRAM_RELEASE_ALERTS
 
 - CLI: `--telegram-release-alerts`
@@ -396,6 +493,43 @@ description: متغیرهای محیطی برای Xray Checker
 
 فاصله زمانی به ساعت برای بررسی نسخه‌های جدید گیت‌هاب.
 
+## Check-Host
+
+### CHECKHOST_BG_ENABLED
+
+- CLI: `--checkhost-bg-enabled`
+- Required: No
+- Default: `true`
+
+Enables background periodic reachability auditing for all subscription hosts via Check-Host.net nodes.
+
+### CHECKHOST_INTERVAL_HOURS
+
+- CLI: `--checkhost-interval-hours`
+- Required: No
+- Default: `1`
+- Values: `1`, `2`, `4`, `6`, `12`
+
+Interval in hours between background Check-Host audits.
+
+### CHECKHOST_ALERT_ENABLED
+
+- CLI: `--checkhost-alert-enabled`
+- Required: No
+- Default: `true`
+
+Send Telegram alert when a proxy host becomes unreachable from Russian probe nodes (`RUAvailable == false`).
+
+## Cheburcheck (RF Blocking Probing)
+
+### CHEBURCHECK_API_KEY
+
+- CLI: `--cheburcheck-api-key`
+- Required: No
+- Default: None
+
+Cheburcheck API token (Bearer) used for `/probe` streams to the RF scanners (`/cheburcheck` command and the «Cheburcheck РФ» bot menu). When empty, per-scanner tokens from the built-in default scanner list are used.
+
 ## نودهای راه دور (Remote Nodes)
 
 ### NODES
@@ -405,6 +539,22 @@ description: متغیرهای محیطی برای Xray Checker
 - پیش‌فرض: ""
 
 فهرست نودهای مورد اعتماد به فرمت `name|token`.
+
+### NODES_STORE_PATH
+
+- CLI: `--nodes-store-path`
+- Required: No
+- Default: `node_subs.json`
+
+JSON file for storing desired managed subscriptions assigned to remote nodes via `/nodeaddsub` and `/nodedelsub`. Note: dynamically registered nodes via `/nodeadd` are stored alongside this in `nodes.json`.
+
+### MASTER_PUBLIC_URL
+
+- CLI: `--master-public-url`
+- Required: No
+- Default: ""
+
+Public URL of the master report endpoint displayed in Telegram bot `/nodeadd` setup instructions and generated Docker commands. If empty, the master automatically detects its public/host IP address.
 
 ### MASTER_STALE_TIMEOUT_SEC
 
@@ -429,6 +579,14 @@ description: متغیرهای محیطی برای Xray Checker
 - پیش‌فرض: ""
 
 توکن احراز هویت Bearer برای اتصال نود به سرور اصلی.
+
+### ASN_DB_URL
+
+- CLI: `--asn-db-url`
+- Required: No
+- Default: `https://download.db-ip.com/free/dbip-asn-lite-2026-08.mmdb.gz`
+
+URL for automatic download of Autonomous System Numbers (ASN) mmdb database in db-ip asn-lite format (gzipped).
 
 ## پروکسی خروجی (Outbound Proxy)
 
