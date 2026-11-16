@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -95,18 +96,34 @@ func (s *NodeSubsStore) Remove(node, raw string) (bool, error) {
 	return false, nil
 }
 
-// persistLocked atomically writes the map. Callers hold s.mu.
+// persistLocked atomically writes the map (parent dir created on demand,
+// tmp flushed with f.Sync before rename). Callers hold s.mu.
 func (s *NodeSubsStore) persistLocked() error {
 	if s.path == "" {
 		return nil
+	}
+	if dir := filepath.Dir(s.path); dir != "" && dir != "." {
+		_ = os.MkdirAll(dir, 0o755)
 	}
 	data, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding node subscriptions store: %w", err)
 	}
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return fmt.Errorf("writing node subscriptions store: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("writing node subscriptions store: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("syncing node subscriptions store: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing node subscriptions store: %w", err)
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
 		return fmt.Errorf("saving node subscriptions store: %w", err)

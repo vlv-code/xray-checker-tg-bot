@@ -291,6 +291,92 @@ func TestRegistry_RegisterAndRemoveNode(t *testing.T) {
 	}
 }
 
+// Adversarial: removing a STATIC node (token from NODES env, stored
+// plaintext) must revoke its bearer token — byToken is keyed by the token
+// hash, so nodeState.cfg.Token must hold the same hash for RemoveNode's
+// delete to land on the right key.
+func TestRegistry_RemoveNode_RevokesStaticToken(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	h := reg.HandleReport()
+
+	if err := reg.RemoveNode("n1"); err != nil {
+		t.Fatalf("RemoveNode: %v", err)
+	}
+	if rec := postReport(t, h, "t1", ReportPayload{Version: "1", CheckIntervalSec: 60}); rec.Code != http.StatusUnauthorized {
+		t.Errorf("removed static node's token: want 401, got %d", rec.Code)
+	}
+}
+
+// Adversarial: re-registering a removed name with a rotated token must leave
+// exactly one valid token — the old token must stop authenticating (no ghost
+// byToken entry may survive removal and keep authenticating).
+func TestRegistry_ReRegister_OldTokenRevoked(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	h := reg.HandleReport()
+
+	if err := reg.RemoveNode("n1"); err != nil {
+		t.Fatalf("RemoveNode: %v", err)
+	}
+	if err := reg.RegisterNode(NodeConfig{Name: "n1", Token: "t1-rotated"}); err != nil {
+		t.Fatalf("RegisterNode: %v", err)
+	}
+
+	if rec := postReport(t, h, "t1", ReportPayload{Version: "1", CheckIntervalSec: 60}); rec.Code != http.StatusUnauthorized {
+		t.Errorf("old token after re-register: want 401, got %d", rec.Code)
+	}
+	if rec := postReport(t, h, "t1-rotated", ReportPayload{Version: "1", CheckIntervalSec: 60}); rec.Code != http.StatusOK {
+		t.Errorf("new token after re-register: want 200, got %d", rec.Code)
+	}
+}
+
+// Adversarial: a token that authenticates to a name absent from nodes (ghost
+// byToken entry, e.g. after a Remove/authenticate race) must fail closed with
+// 401 — HandleReport must never nil-dereference a missing nodeState.
+func TestRegistry_GhostTokenReport_FailsClosed(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	reg.mu.Lock()
+	reg.byToken[HashToken("ghost-token")] = "ghost-node" // resolves, but not in r.nodes
+	reg.mu.Unlock()
+
+	h := reg.HandleReport()
+	if rec := postReport(t, h, "ghost-token", ReportPayload{Version: "1", CheckIntervalSec: 60}); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("ghost token: want 401, got %d", rec.Code)
+	}
+	if reg.NodeExists("ghost-node") {
+		t.Error("ghost node must not materialize in the registry")
+	}
+}
+
+// Adversarial: a store record whose token hash collides with an existing
+// static node must be skipped with a warning — loading the store must never
+// silently remap the static node's token identity to the intruder's name.
+func TestRegistry_SetNodesStore_TokenCollisionSkipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	nodesStore, err := NewNodesStore(tmpDir + "/nodes.json")
+	if err != nil {
+		t.Fatalf("NewNodesStore: %v", err)
+	}
+	// Persist a store record claiming the static node's token for another name.
+	if err := nodesStore.Save("intruder", "t1"); err != nil {
+		t.Fatalf("store Save: %v", err)
+	}
+
+	reg := NewRegistry([]NodeConfig{{Name: "n1", Token: "t1"}}, nil, nil)
+	reg.SetNodesStore(nodesStore)
+
+	if reg.NodeExists("intruder") {
+		t.Error("colliding store record must be skipped, not loaded")
+	}
+	h := reg.HandleReport()
+	if rec := postReport(t, h, "t1", ReportPayload{Version: "1", CheckIntervalSec: 60}); rec.Code != http.StatusOK {
+		t.Fatalf("static token report: want 200, got %d", rec.Code)
+	}
+	hs := reg.HealthSnapshot()
+	if len(hs) != 1 || hs[0].Name != "n1" || !hs[0].Up {
+		t.Errorf("report must attribute to the static node n1, got %+v", hs)
+	}
+}
+
 func TestRegistry_NodeSnapshot(t *testing.T) {
 	reg, _ := newTestRegistry(nil)
 	if snap := reg.NodeSnapshot("n1"); snap != nil {
@@ -371,6 +457,100 @@ func TestRegistry_NodeDiagReports(t *testing.T) {
 	reports2 := reg.NodeDiagReports("n1")
 	if reports2[0].ProxyName != "Proxy1" {
 		t.Errorf("NodeDiagReports did not return an isolated copy")
+	}
+}
+
+// Adversarial: NodeDiagReports must deep-copy the nested mutable state —
+// mutating returned Targets elements or the pointed CheckHost summary (its
+// value fields and Results backing array) must never reach the registry's
+// internal nodeState through shared references.
+func TestRegistry_NodeDiagReports_DeepCopyIsolation(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	postReport(t, reg.HandleReport(), "t1", ReportPayload{
+		Version: "1", CheckIntervalSec: 60,
+		Proxies: []ReportProxy{{
+			StableID: "p1", Name: "Proxy1", Online: true,
+			Targets: []checker.TargetDiagResult{
+				{URL: "https://t.example/204", Success: true, StatusCode: 204},
+				{URL: "https://t2.example/204", Success: false},
+			},
+			CheckHost: &checker.CheckHostSummary{
+				Host:    "host.example",
+				Verdict: "ru-ok",
+				Results: []checker.CheckHostNodeResult{
+					{Country: "ru", Success: true},
+					{Country: "de", Success: true},
+				},
+			},
+		}},
+	})
+
+	reports := reg.NodeDiagReports("n1")
+	if len(reports) != 1 {
+		t.Fatalf("expected 1 diag report, got %d", len(reports))
+	}
+	// Mutate the returned copy in every shared way: nested element writes
+	// (through the still-shared backing array), appends, pointer-target
+	// writes, nested backing-array writes.
+	reports[0].Targets[0].StatusCode = 500
+	reports[0].Targets = append(reports[0].Targets, checker.TargetDiagResult{URL: "injected"})
+	reports[0].CheckHost.Verdict = "mutated"
+	reports[0].CheckHost.Results[0].Success = false
+	reports[0].CheckHost.Results = append(reports[0].CheckHost.Results, checker.CheckHostNodeResult{Country: "xx"})
+
+	fresh := reg.NodeDiagReports("n1")
+	if len(fresh) != 1 {
+		t.Fatalf("expected 1 fresh diag report, got %d", len(fresh))
+	}
+	f := fresh[0]
+	if len(f.Targets) != 2 || f.Targets[0].StatusCode != 204 || f.Targets[0].URL != "https://t.example/204" {
+		t.Errorf("internal Targets mutated through returned copy: %+v", f.Targets)
+	}
+	if f.CheckHost == nil || f.CheckHost.Verdict != "ru-ok" ||
+		len(f.CheckHost.Results) != 2 || !f.CheckHost.Results[0].Success {
+		t.Errorf("internal CheckHost mutated through returned copy: %+v", f.CheckHost)
+	}
+}
+
+// Adversarial: NodeAudits must copy each summary's Results backing array —
+// mutating a returned entry must not corrupt the stored audit state that
+// feeds RU-block alerting.
+func TestRegistry_NodeAudits_DeepCopyIsolation(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	postReport(t, reg.HandleReport(), "t1", ReportPayload{
+		Version: "1", CheckIntervalSec: 60,
+		CheckHostAudits: map[string]checker.CheckHostSummary{
+			"host.example:443": {
+				Host:    "host.example:443",
+				Verdict: "ru-ok",
+				Results: []checker.CheckHostNodeResult{
+					{Country: "ru", Success: true},
+					{Country: "de", Success: true},
+				},
+			},
+		},
+	})
+
+	got := reg.NodeAudits("n1")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 audit, got %d", len(got))
+	}
+	entry := got["host.example:443"]
+	entry.Verdict = "mutated"
+	entry.Results[0].Success = false
+	entry.Results = append(entry.Results, checker.CheckHostNodeResult{Country: "xx"})
+	_ = entry // further writes below go through the freshly fetched map
+	got = reg.NodeAudits("n1")
+	got["host.example:443"].Results[1].Success = false
+	got["injected"] = checker.CheckHostSummary{Host: "injected"}
+
+	fresh := reg.NodeAudits("n1")
+	fe := fresh["host.example:443"]
+	if fe.Verdict != "ru-ok" || len(fe.Results) != 2 || !fe.Results[0].Success {
+		t.Errorf("internal audit summary mutated through returned map: %+v", fe)
+	}
+	if _, ok := fresh["injected"]; ok {
+		t.Error("map key injection must not reach internal audits")
 	}
 }
 

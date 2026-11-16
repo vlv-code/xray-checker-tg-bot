@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"xray-checker/logger"
 )
 
 const tokenHashPrefix = "sha256:"
@@ -98,16 +100,25 @@ func NewNodesStore(path string) (*NodesStore, error) {
 	}
 
 	// Migration: any token not prefixed with "sha256:" is legacy plaintext.
-	// Hash it and re-persist to disk.
+	// Hash it and re-persist to disk. Records with an empty tokenHash are
+	// corrupted: reject them instead of fabricating a credential for the
+	// well-known empty-string hash.
 	migrated := false
-	for _, rec := range s.data {
-		if !strings.HasPrefix(rec.TokenHash, tokenHashPrefix) {
+	for name, rec := range s.data {
+		switch {
+		case rec.TokenHash == "":
+			logger.Warn("nodes store %s: node %q has an empty tokenHash record; rejecting it (re-register the node)", s.path, name)
+			delete(s.data, name)
+		case !strings.HasPrefix(rec.TokenHash, tokenHashPrefix):
 			rec.TokenHash = tokenHashPrefix + HashToken(rec.TokenHash)
 			migrated = true
 		}
 	}
 	if migrated {
-		_ = s.persistLocked() // best-effort migration save
+		// Best-effort migration save; stay loud when plaintext remains.
+		if err := s.persistLocked(); err != nil {
+			logger.Warn("nodes store %s: failed to persist migrated token hashes: %v; plaintext tokens remain on disk", s.path, err)
+		}
 	}
 
 	return s, nil

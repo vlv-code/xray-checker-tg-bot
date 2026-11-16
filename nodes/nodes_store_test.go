@@ -208,3 +208,120 @@ func TestNodesStore_LegacyHashedFormatLoads(t *testing.T) {
 		t.Fatalf("legacy entries must have no settings: %+v", got)
 	}
 }
+
+func TestNodesStore_RejectsEmptyTokenHashRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nodes.json")
+	// Corrupted record: empty tokenHash must be rejected, not migrated into
+	// a fabricated credential for the well-known empty-string hash.
+	if err := os.WriteFile(path, []byte(`{"n1": {}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewNodesStore(path)
+	if err != nil {
+		t.Fatalf("corrupted record must not fail store init: %v", err)
+	}
+	if all := store.All(); len(all) != 0 {
+		t.Fatalf("node with empty tokenHash must be rejected, got: %+v", all)
+	}
+	// The empty-string credential must never become usable via reload either.
+	store2, err := NewNodesStore(path)
+	if err != nil {
+		t.Fatalf("reload after rejection must succeed: %v", err)
+	}
+	for _, n := range store2.All() {
+		if n.Name == "n1" || n.Token == HashToken("") {
+			t.Fatalf("rejected node reappeared or empty-string hash fabricated: %+v", n)
+		}
+	}
+}
+
+func TestNodesStore_MigrationPersistFailureIsNonFatal(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "nodes.json")
+	if err := os.WriteFile(path, []byte(`{"legacy-node": "my-plain-token"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Occupy the atomic-write tmp path with a directory so persistLocked
+	// fails deterministically on every platform.
+	if err := os.Mkdir(path+".tmp", 0755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewNodesStore(path)
+	if err != nil {
+		t.Fatalf("migration persist failure must not fail store init: %v", err)
+	}
+	all := store.All()
+	if len(all) != 1 || all[0].Name != "legacy-node" || all[0].Token != HashToken("my-plain-token") {
+		t.Fatalf("migration must apply in-memory even when persist fails, got: %+v", all)
+	}
+	// Persist failed, so the legacy plaintext remains on disk; the store must
+	// not pretend the migration was saved (loud warning is expected).
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "my-plain-token") {
+		t.Fatalf("expected unchanged legacy file after failed persist, got: %s", content)
+	}
+}
+
+// Behavior pins for corrupted store files (test-suite hole). Unparseable
+// content must fail closed: NewNodesStore returns an error, and main.go then
+// disables the store with a loud warning (graceful degradation, no partial
+// adoption). An empty file is tolerated as a fresh empty store.
+func TestNodesStore_CorruptedFilesFailClosed(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		wantErr bool
+	}{
+		{"empty file starts fresh", "", false},
+		{"truncated json fails closed", `{"n1":`, true},
+		{"garbage bytes fail closed", "\x00\x01\x02not-json", true},
+		{"top-level array fails closed", `["array"]`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "nodes.json")
+			if err := os.WriteFile(path, []byte(tc.content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			store, err := NewNodesStore(path)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("corrupted store content %q must fail closed (main.go then disables the store with a warning), got nil error", tc.content)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("empty file must start a fresh store, got: %v", err)
+			}
+			if all := store.All(); len(all) != 0 {
+				t.Fatalf("fresh store over an empty file must be empty, got: %+v", all)
+			}
+		})
+	}
+}
+
+// Pin: an object whose values are plain strings is NOT wrong-type garbage —
+// it is exactly the legacy name→plaintext-token schema, so the store adopts
+// it through the legacy migration path with the token hashed at rest. A
+// stricter "error on any non-record value" rule would break plaintext legacy
+// migration (see TestNodesStore_MigrateLegacyPlaintext).
+func TestNodesStore_ObjectWithStringValuesLoadsAsLegacy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nodes.json")
+	if err := os.WriteFile(path, []byte(`{"a":"string"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewNodesStore(path)
+	if err != nil {
+		t.Fatalf("legacy name→token schema must load: %v", err)
+	}
+	all := store.All()
+	if len(all) != 1 || all[0].Name != "a" {
+		t.Fatalf("legacy record must be adopted, got: %+v", all)
+	}
+	if all[0].Token != HashToken("string") {
+		t.Fatalf("legacy plaintext token must be hashed on load, got: %q", all[0].Token)
+	}
+}

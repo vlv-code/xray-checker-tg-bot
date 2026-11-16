@@ -1,8 +1,10 @@
 package nodes
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -91,5 +93,79 @@ func TestReporterSendWithRetry_DoesNotRetry401(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("expected 1 attempt (no retries on 401), got %d", attempts)
+	}
+}
+
+// countingRT is a RoundTripper that always fails with a fixed error,
+// counting attempts — lets tests inject transport-level failures.
+type countingRT struct {
+	attempts int
+	err      error
+}
+
+func (rt *countingRT) RoundTrip(*http.Request) (*http.Response, error) {
+	rt.attempts++
+	return nil, rt.err
+}
+
+// Adversarial: a transport error that merely CONTAINS the text "HTTP 401"
+// (e.g. an intermediary's message wrapped in a network error) must not be
+// classified as a permanent master rejection — only a real master status
+// answer may stop retries.
+func TestReporterSendWithRetry_WrappedSubstringErrorIsRetried(t *testing.T) {
+	rt := &countingRT{err: fmt.Errorf("dial tcp: gateway interposed HTTP 401 during CONNECT")}
+	rep := NewReporter("http://127.0.0.1:1/", "tok")
+	rep.client = &http.Client{Transport: rt}
+
+	_, err := rep.SendWithRetry(ReportPayload{}, []time.Duration{time.Millisecond, time.Millisecond})
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	if rt.attempts != 3 {
+		t.Fatalf("wrapped error mentioning \"HTTP 401\" must stay transient and be retried, got %d attempts", rt.attempts)
+	}
+}
+
+func TestReporterSendWithRetry_DoesNotRetry400(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	rep := NewReporter(srv.URL, "tok")
+	_, err := rep.SendWithRetry(ReportPayload{}, []time.Duration{10 * time.Millisecond, 20 * time.Millisecond})
+	if err == nil {
+		t.Fatal("expected error on 400")
+	}
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt (no retries on 400), got %d", attempts)
+	}
+	// The permanent error must surface the exact user-visible master message.
+	if got := err.Error(); got != "master answered HTTP 400" {
+		t.Fatalf("unexpected permanent error text: %q", got)
+	}
+}
+
+func TestReporterSendWithRetry_Retries500UntilExhausted(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	rep := NewReporter(srv.URL, "tok")
+	backoffs := []time.Duration{time.Millisecond, time.Millisecond}
+	_, err := rep.SendWithRetry(ReportPayload{}, backoffs)
+	if err == nil {
+		t.Fatal("expected error after exhausting retries on 500")
+	}
+	if attempts != len(backoffs)+1 {
+		t.Fatalf("500 must be retried per backoff config, got %d attempts, want %d", attempts, len(backoffs)+1)
+	}
+	if !strings.Contains(err.Error(), "failed after 3 attempts") {
+		t.Fatalf("exhausted retries must wrap attempts count, got: %v", err)
 	}
 }

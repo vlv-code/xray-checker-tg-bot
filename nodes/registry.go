@@ -35,6 +35,12 @@ const (
 // returning "" when unavailable.
 type LookupFunc func(ip string) string
 
+// nodeState is the registry's per-node runtime state. Invariant: cfg.Token
+// always holds the canonical sha256 hex hash of the node's bearer token —
+// never plaintext — regardless of node origin (static NODES config,
+// store-loaded, dynamically registered). byToken keys and cfg.Token must
+// stay in the same representation: RemoveNode revokes a token by deleting
+// the byToken key stored in cfg.Token.
 type nodeState struct {
 	cfg          NodeConfig
 	status       nodeStatus
@@ -91,8 +97,11 @@ func NewRegistry(cfgs []NodeConfig, subs NodeSubsSource, asn LookupFunc) *Regist
 		audits:  make(map[string]map[string]checker.CheckHostSummary),
 	}
 	for _, cfg := range cfgs {
+		// Canonical representation: store the token hashed so cfg.Token and
+		// byToken keys match (cfg is a range copy — caller's slice untouched).
+		cfg.Token = HashToken(cfg.Token)
 		r.nodes[cfg.Name] = &nodeState{cfg: cfg, status: statusPending}
-		r.byToken[HashToken(cfg.Token)] = cfg.Name
+		r.byToken[cfg.Token] = cfg.Name
 	}
 	return r
 }
@@ -105,6 +114,12 @@ func (r *Registry) SetNodesStore(store *NodesStore) {
 	if store != nil {
 		for _, cfg := range store.All() {
 			if _, exists := r.nodes[cfg.Name]; !exists {
+				// Never silently remap an existing node's token identity to a
+				// different name: skip the colliding store record instead.
+				if owner, collides := r.byToken[cfg.Token]; collides && owner != cfg.Name {
+					logger.Warn("Nodes store record %q skipped: its token is already owned by node %q", cfg.Name, owner)
+					continue
+				}
 				r.nodes[cfg.Name] = &nodeState{cfg: cfg, status: statusPending}
 				r.byToken[cfg.Token] = cfg.Name
 			}
@@ -227,7 +242,14 @@ func (r *Registry) HandleReport() http.HandlerFunc {
 		diag := ProxyDiagReportsFromReport(payload)
 
 		r.mu.Lock()
-		st := r.nodes[name]
+		st, ok := r.nodes[name]
+		if !ok {
+			// Token resolved to a name that no longer exists (ghost byToken
+			// entry, e.g. after a concurrent RemoveNode): fail closed.
+			r.mu.Unlock()
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		st.status = statusUp
 		st.lastReport = time.Now()
 		st.intervalSec = payload.CheckIntervalSec
@@ -331,6 +353,30 @@ func (r *Registry) NodeSnapshot(name string) []metrics.ProxyMetric {
 	return out
 }
 
+// cloneCheckHostSummary duplicates a summary with a private Results slice so
+// callers can never reach stored audit/diag state through a shared backing
+// array.
+func cloneCheckHostSummary(s checker.CheckHostSummary) checker.CheckHostSummary {
+	if len(s.Results) > 0 {
+		s.Results = append([]checker.CheckHostNodeResult(nil), s.Results...)
+	}
+	return s
+}
+
+// cloneDiagReport deep-copies one report's mutable nested state: the Targets
+// slice and the pointed CheckHost summary (value copy plus private Results).
+// nil Targets/Results stay nil so wire and view rendering is unchanged.
+func cloneDiagReport(rep checker.ProxyDiagReport) checker.ProxyDiagReport {
+	if len(rep.Targets) > 0 {
+		rep.Targets = append([]checker.TargetDiagResult(nil), rep.Targets...)
+	}
+	if rep.CheckHost != nil {
+		ch := cloneCheckHostSummary(*rep.CheckHost)
+		rep.CheckHost = &ch
+	}
+	return rep
+}
+
 // NodeDiagReports returns a copy of the latest diagnostic reports reported by the specified node.
 // Returns nil if the node does not exist or has never reported any diagnostic reports.
 func (r *Registry) NodeDiagReports(name string) []checker.ProxyDiagReport {
@@ -341,7 +387,9 @@ func (r *Registry) NodeDiagReports(name string) []checker.ProxyDiagReport {
 		return nil
 	}
 	out := make([]checker.ProxyDiagReport, len(st.diagReports))
-	copy(out, st.diagReports)
+	for i, rep := range st.diagReports {
+		out[i] = cloneDiagReport(rep)
+	}
 	return out
 }
 
@@ -438,13 +486,14 @@ func (r *Registry) SubCounts(node string) map[string]int {
 }
 
 // NodeAudits returns a copy of the node's latest Check-Host audit results;
-// an empty map when the node never delivered audits.
+// an empty map when the node never delivered audits. Each summary carries a
+// private Results slice — callers cannot corrupt stored audit state.
 func (r *Registry) NodeAudits(node string) map[string]checker.CheckHostSummary {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make(map[string]checker.CheckHostSummary, len(r.audits[node]))
 	for k, v := range r.audits[node] {
-		out[k] = v
+		out[k] = cloneCheckHostSummary(v)
 	}
 	return out
 }

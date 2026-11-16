@@ -4,15 +4,31 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 )
 
 // reportTimeout bounds a single push attempt; the next check cycle retries.
 const reportTimeout = 15 * time.Second
+
+// httpStatusError is a non-2xx status answered by the master's ingest
+// endpoint. Classification uses errors.As, so a network error that merely
+// mentions an HTTP status in its text is never mistaken for a master answer.
+type httpStatusError struct {
+	code int
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("master answered HTTP %d", e.code)
+}
+
+// StatusCode returns the HTTP status the master answered with.
+func (e *httpStatusError) StatusCode() int {
+	return e.code
+}
 
 // Reporter pushes check snapshots to the master's ingest endpoint and returns
 // the desired managed-subscription list from the response.
@@ -51,7 +67,7 @@ func (r *Reporter) Send(p ReportPayload) (*IngestResponse, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<10))
-		return nil, fmt.Errorf("master answered HTTP %d", resp.StatusCode)
+		return nil, &httpStatusError{code: resp.StatusCode}
 	}
 
 	var out IngestResponse
@@ -80,9 +96,12 @@ func (r *Reporter) SendWithRetry(p ReportPayload, backoffs []time.Duration) (*In
 			return resp, nil
 		}
 
-		// Do not retry non-transient HTTP client errors (e.g. 400 Bad Request, 401 Unauthorized)
-		errMsg := lastErr.Error()
-		if strings.Contains(errMsg, "HTTP 401") || strings.Contains(errMsg, "HTTP 400") {
+		// Do not retry non-transient master rejections (400 Bad Request,
+		// 401 Unauthorized); only a typed status answer counts — any other
+		// error (network failures, 5xx, other statuses) stays transient.
+		var statusErr *httpStatusError
+		if errors.As(lastErr, &statusErr) &&
+			(statusErr.StatusCode() == http.StatusBadRequest || statusErr.StatusCode() == http.StatusUnauthorized) {
 			return nil, lastErr
 		}
 

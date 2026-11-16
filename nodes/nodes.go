@@ -24,13 +24,16 @@ func ParseNodes(raw []string) ([]NodeConfig, error) {
 	out := make([]NodeConfig, 0, len(raw))
 	for i, entry := range raw {
 		parts := strings.Split(strings.TrimSpace(entry), "|")
+		// Error text must never echo the full entry: everything after the
+		// first '|' is potentially a bearer token, so only the name portion
+		// (parts[0]) and the entry index are ever included.
 		if len(parts) != 2 {
-			return nil, fmt.Errorf("NODES entry %d (%q): want exactly 'name|token'", i+1, entry)
+			return nil, fmt.Errorf("NODES entry %d (%q): want exactly 'name|token'", i+1, parts[0])
 		}
 		name := strings.TrimSpace(parts[0])
 		token := strings.TrimSpace(parts[1])
 		if name == "" || token == "" {
-			return nil, fmt.Errorf("NODES entry %d (%q): name and token must be non-empty", i+1, entry)
+			return nil, fmt.Errorf("NODES entry %d (%q): name and token must be non-empty", i+1, parts[0])
 		}
 		if seenName[name] {
 			return nil, fmt.Errorf("NODES entry %d: duplicate node name %q", i+1, name)
