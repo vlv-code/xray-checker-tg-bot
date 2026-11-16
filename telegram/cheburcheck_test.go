@@ -132,14 +132,17 @@ func TestHandleCheburcheckCommand_NoScanners_GracefulMessage(t *testing.T) {
 }
 
 // TestCheburcheckMenuButton_CallbackDataWithin64Bytes pins the hard Telegram
-// constraint: the sibling Cheburcheck button callback_data must stay within
+// constraint: the Cheburcheck submenu button callback_data must stay within
 // 64 bytes even for the longest possible stableID (16 hex chars).
+// Wave D: the per-proxy Cheburcheck button moved from the Check-Host list
+// (sibling) into its own CheburMenuMarkup submenu — construction source
+// updated accordingly, the ≤64-byte pin itself survives unchanged.
 func TestCheburcheckMenuButton_CallbackDataWithin64Bytes(t *testing.T) {
 	longest := strings.Repeat("a", 16) // max models.GenerateStableID length
 	proxies := []metrics.ProxyMetric{
 		{Name: "Proxy One", StableID: longest, Address: "1.1.1.1:443", Protocol: "vless"},
 	}
-	markup := CheckHostMenuMarkup(proxies)
+	markup := CheburMenuMarkup(proxies)
 	if markup == nil {
 		t.Fatal("nil markup")
 	}
@@ -155,6 +158,6 @@ func TestCheburcheckMenuButton_CallbackDataWithin64Bytes(t *testing.T) {
 		}
 	}
 	if !foundChebur {
-		t.Fatalf("expected a sibling menu:chebur:%s button in the per-proxy menu", longest)
+		t.Fatalf("expected a menu:chebur:%s button in the Cheburcheck submenu", longest)
 	}
 }

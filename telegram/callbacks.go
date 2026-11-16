@@ -209,6 +209,12 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:checkhost":
 		snapshot := b.source.MetricsSnapshot()
 		b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(), CheckHostMenuMarkup(snapshot))
+	case "menu:chebur":
+		// EXACT match only (order invariant): the per-proxy probe route is the
+		// "menu:chebur:" prefix branch in the default clause below — a prefix
+		// rule without the trailing colon here would swallow menu:chebur:<id>.
+		snapshot := b.source.MetricsSnapshot()
+		b.editWithMarkup(chatID, msgID, b.getCheburMenuText(), CheburMenuMarkup(snapshot))
 	case "menu:checkhost_cfg":
 		b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
 	case "menu:checkhost:toggle_bg":
@@ -698,6 +704,10 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			stableID := strings.TrimPrefix(cb.Data, "menu:checkhost:run:")
 			go b.handleCheckHostProxy(chatID, msgID, stableID)
 		} else if strings.HasPrefix(cb.Data, "menu:chebur:") {
+			// Order invariant: this prefix branch (with the trailing colon) is
+			// the per-proxy probe route; the submenu-open rule for the bare
+			// "menu:chebur" is an exact-match switch case and can never match
+			// here — keep both rules distinct if this routing is reworked.
 			stableID := strings.TrimPrefix(cb.Data, "menu:chebur:")
 			go b.handleCheburcheckProxy(chatID, msgID, stableID)
 		} else if strings.HasPrefix(cb.Data, "menu:interval:set:") {

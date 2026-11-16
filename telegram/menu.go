@@ -56,6 +56,9 @@ func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("🌐 Проверка Check-Host.net", "menu:checkhost"),
 		),
 		tu.InlineKeyboardRow(
+			btn("🇷🇺 Cheburcheck РФ", "menu:chebur"),
+		),
+		tu.InlineKeyboardRow(
 			btn("🖥 Ноды", "menu:nodes"),
 		),
 		tu.InlineKeyboardRow(
@@ -614,9 +617,6 @@ func IntervalMenuMarkup(currentInterval int) *telego.InlineKeyboardMarkup {
 }
 
 // CheckHostMenuMarkup returns keyboard for selecting a proxy to test with Check-Host.
-// Each proxy gets a row with two sibling actions: the worldwide Check-Host
-// audit and the Cheburcheck active RF probe (menu:chebur:<stableID>, which
-// stays within Telegram's 64-byte callback_data limit — test-pinned).
 func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
 	limit := len(proxies)
@@ -624,11 +624,17 @@ func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMa
 		limit = 20
 	}
 
-	for i := 0; i < limit; i++ {
-		rows = append(rows, tu.InlineKeyboardRow(
-			btn(truncateButtonText(proxies[i].Name, 24), "menu:checkhost:run:"+proxies[i].StableID),
-			btn("🇷🇺 Cheburcheck", "menu:chebur:"+proxies[i].StableID),
-		))
+	for i := 0; i < limit; i += 2 {
+		if i+1 < limit {
+			rows = append(rows, tu.InlineKeyboardRow(
+				btn(truncateButtonText(proxies[i].Name, 24), "menu:checkhost:run:"+proxies[i].StableID),
+				btn(truncateButtonText(proxies[i+1].Name, 24), "menu:checkhost:run:"+proxies[i+1].StableID),
+			))
+		} else {
+			rows = append(rows, tu.InlineKeyboardRow(
+				btn(truncateButtonText(proxies[i].Name, 24), "menu:checkhost:run:"+proxies[i].StableID),
+			))
+		}
 	}
 
 	if len(proxies) > 20 {
@@ -639,6 +645,36 @@ func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMa
 
 	rows = append(rows, tu.InlineKeyboardRow(
 		btn("🔙 Главное меню", "menu:main"),
+	))
+
+	return tu.InlineKeyboard(rows...)
+}
+
+// CheburMenuMarkup returns keyboard for selecting a proxy for the active
+// RF blocking probe (Cheburcheck). Layout mirrors the original Check-Host
+// list: two proxies per row, disabled proxies skipped, navigation row last.
+// Buttons carry menu:chebur:<stableID> (12 + stableID ≤ 64-byte
+// callback_data limit — test-pinned).
+func CheburMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+	var currentRow []telego.InlineKeyboardButton
+	for i := range proxies {
+		if proxies[i].Disabled {
+			continue
+		}
+		currentRow = append(currentRow,
+			btn(truncateButtonText(proxies[i].Name, 24), "menu:chebur:"+proxies[i].StableID))
+		if len(currentRow) == 2 {
+			rows = append(rows, currentRow)
+			currentRow = nil
+		}
+	}
+	if len(currentRow) > 0 {
+		rows = append(rows, currentRow)
+	}
+
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("⬅️ Назад", "menu:main"),
 	))
 
 	return tu.InlineKeyboard(rows...)
