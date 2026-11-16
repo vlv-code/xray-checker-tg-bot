@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -240,7 +241,9 @@ func (c *CheckHostClient) checkInternal(ctx context.Context, checkType, host str
 	}
 
 	var initResp checkInitResponse
-	if err := json.NewDecoder(resp.Body).Decode(&initResp); err != nil {
+	// Cap the decode at 64KB: the API response is small JSON, and a corrupt or
+	// hostile endpoint must not be able to stream unbounded data into memory.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&initResp); err != nil {
 		return nil, fmt.Errorf("failed to parse init response: %w", err)
 	}
 	if initResp.Ok != 1 || initResp.RequestID == "" {
@@ -311,7 +314,7 @@ func (c *CheckHostClient) checkInternal(ctx context.Context, checkType, host str
 			}
 
 			var resultMap map[string]interface{}
-			err = json.NewDecoder(resResp.Body).Decode(&resultMap)
+			err = json.NewDecoder(io.LimitReader(resResp.Body, 64<<10)).Decode(&resultMap)
 			resResp.Body.Close()
 			if err != nil {
 				continue

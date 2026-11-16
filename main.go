@@ -75,6 +75,17 @@ func safeGo(label string, fn func()) {
 	go safeGoBody(label, fn)
 }
 
+// masterReportSecurityNote returns the startup warning for the plaintext
+// node-report fallback, or "" when no warning is needed. With
+// MASTER_PUBLIC_URL unset, /nodeadd instructions fall back to
+// http://<host-ip>:2112, so node tokens would ride cleartext.
+func masterReportSecurityNote(masterPublicURL string) string {
+	if masterPublicURL != "" {
+		return ""
+	}
+	return "MASTER_PUBLIC_URL is not set: nodes will be instructed to report over plaintext http://<host-ip>:2112 — consider TLS fronting"
+}
+
 func main() {
 	config.Parse(version)
 	config.SetupNetworkEnvironment(config.CLIConfig.Report.URL)
@@ -167,6 +178,9 @@ func main() {
 		}
 		logger.Info("Remote nodes configured: %d (static %d, dynamic %d)",
 			len(nodeRegistry.HealthSnapshot()), len(nodeCfgs), dynCount)
+		if note := masterReportSecurityNote(config.CLIConfig.Nodes.MasterPublicURL); note != "" {
+			logger.Warn("%s", note)
+		}
 	}
 
 	configFile := "xray_config.json"

@@ -3,6 +3,7 @@ package checker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -408,5 +409,43 @@ func TestFormatCheckHostReport_PingLabel(t *testing.T) {
 	}
 	if strings.Contains(report, "(TCP)") {
 		t.Errorf("did not expect (TCP) label for ping-kind summary, got: %s", report)
+	}
+}
+
+// TestCheckHostClient_InitOversizedBodyParseError pins the bounded
+// init-response read: the body is a single VALID JSON object larger than the
+// 64KB read cap, so an unbounded decoder would accept it and proceed to the
+// poll loop (deadlining the context), while the bounded decoder truncates
+// mid-object and must surface a clean parse error immediately.
+func TestCheckHostClient_InitOversizedBodyParseError(t *testing.T) {
+	nodes := make([]string, 0, 3000)
+	for i := 0; i < 3000; i++ {
+		nodes = append(nodes, fmt.Sprintf(
+			`"node-%04d.node.check-host.net":["ru","Russia","City","10.%d.%d.%d","AS123"]`,
+			i, i/65536%256, i/256%256, i%256))
+	}
+	body := `{"ok":1,"request_id":"oversize1234","permanent_link":"https://check-host.net/check-report/oversize1234","nodes":{` +
+		strings.Join(nodes, ",") + `}}`
+	if len(body) <= 64*1024 {
+		t.Fatalf("fixture must exceed the 64KB cap, got %d bytes", len(body))
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	client := NewCheckHostClient(ts.URL, 20*time.Millisecond)
+	client.HTTPClient = ts.Client()
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+
+	_, err := client.CheckTCP(ctx, "1.1.1.1:443", []string{"ru2.node.check-host.net"})
+	if err == nil {
+		t.Fatal("expected clean parse error for oversized init response, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to parse init response") {
+		t.Errorf("expected clean init parse error, got: %v", err)
 	}
 }

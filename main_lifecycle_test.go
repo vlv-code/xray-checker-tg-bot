@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -112,5 +113,37 @@ func TestCurrentCheckIntervalNeedsOnlyRuntimeMu(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("interval read blocked on checkSchedulerMu — shutdown deadlock regression")
+	}
+}
+
+// TestMasterReportSecurityNote pins the operator warning text for the
+// plaintext node-report fallback: with MASTER_PUBLIC_URL unset, /nodeadd
+// instructions tell nodes to report to http://<host-ip>:2112 — tokens ride
+// cleartext, so the master must log a TLS-fronting hint at startup. A
+// configured URL silences the note. Only the pure note function is pinned
+// here; the logging call site itself is not tested.
+func TestMasterReportSecurityNote(t *testing.T) {
+	cases := []struct {
+		name         string
+		masterURL    string
+		wantContains string // "" means the note must be empty
+	}{
+		{"unset URL returns plaintext warning", "", "MASTER_PUBLIC_URL is not set"},
+		{"configured URL returns empty note", "https://master.example.com/api/v1/nodes/report", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := masterReportSecurityNote(tc.masterURL)
+			if tc.wantContains == "" {
+				if got != "" {
+					t.Fatalf("expected empty note for url %q, got %q", tc.masterURL, got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.wantContains) {
+				t.Fatalf("expected note containing %q for url %q, got %q", tc.wantContains, tc.masterURL, got)
+			}
+		})
 	}
 }

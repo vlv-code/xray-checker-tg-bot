@@ -1,6 +1,7 @@
 package checker
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -524,4 +525,114 @@ func TestSetRuntimeCheckSettings(t *testing.T) {
 
 	// Empty runtime struct changes nothing.
 	pc.SetRuntimeCheckSettings(RuntimeCheckSettings{})
+}
+
+// streamOversizedBody writes 512KB of non-IP garbage in 4KB chunks, pausing
+// 50ms between chunks (~6.4s for the full body). A bounded reader stops after
+// the first 64KB (~0.8s); an unbounded io.ReadAll blocks until the whole body
+// has arrived. DisableKeepAlives makes the client drop the TCP connection as
+// soon as it is done, so the handler's r.Context() is cancelled promptly and
+// the test server can shut down without waiting out the stream.
+func startOversizedIPBodyServer() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		chunk := bytes.Repeat([]byte("x"), 4*1024)
+		for i := 0; i < 128; i++ {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}))
+}
+
+// TestGetCurrentIP_BoundedReadOnOversizedBody pins the bounded-response-read
+// fix: the IP-echo response rides the UNTRUSTED proxy transport, so a hostile
+// proxy must not be able to stream arbitrary data into memory. The read must
+// be capped and surface a clean invalid-IP error instead of hanging.
+func TestGetCurrentIP_BoundedReadOnOversizedBody(t *testing.T) {
+	ts := startOversizedIPBodyServer()
+	defer ts.Close()
+
+	pc := &ProxyChecker{
+		ipCheck: ts.URL,
+		httpClient: &http.Client{
+			Transport: &http.Transport{DisableKeepAlives: true},
+		},
+	}
+
+	type res struct {
+		ip  string
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		ip, err := pc.GetCurrentIP()
+		ch <- res{ip, err}
+	}()
+
+	select {
+	case r := <-ch:
+		if r.err == nil {
+			t.Fatalf("expected error for oversized non-IP body, got ip %q", r.ip)
+		}
+		if !strings.Contains(r.err.Error(), "invalid IP") {
+			t.Errorf("expected clean invalid-IP error, got: %v", r.err)
+		}
+		if pc.ipInitialized {
+			t.Errorf("expected nothing cached after a failed fetch")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("GetCurrentIP did not return within 3s: response read is not bounded")
+	}
+}
+
+// TestCheckByIP_BoundedReadOnOversizedBody pins the same bounded read for the
+// per-proxy checkByIP path, whose response body also arrives over the
+// untrusted proxy transport.
+func TestCheckByIP_BoundedReadOnOversizedBody(t *testing.T) {
+	ts := startOversizedIPBodyServer()
+	defer ts.Close()
+
+	pc := &ProxyChecker{
+		currentIP: "198.51.100.1",
+	}
+	client := &http.Client{
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
+
+	type res struct {
+		outcome checkOutcome
+	}
+	ch := make(chan res, 1)
+	go func() {
+		ch <- res{outcome: pc.checkByIP(client, ts.URL)}
+	}()
+
+	select {
+	case r := <-ch:
+		o := r.outcome
+		if o.err == nil {
+			t.Fatalf("expected error for oversized non-IP body, got outcome %+v", o)
+		}
+		if !strings.Contains(o.err.Error(), "invalid IP") {
+			t.Errorf("expected clean invalid-IP error, got: %v", o.err)
+		}
+		if o.success || o.canTransfer {
+			t.Errorf("expected failed outcome for oversized non-IP body, got %+v", o)
+		}
+		if !o.canConnect {
+			t.Errorf("expected canConnect=true (response headers arrived), got %+v", o)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("checkByIP did not return within 3s: response read is not bounded")
+	}
 }

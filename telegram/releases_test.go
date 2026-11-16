@@ -150,6 +150,33 @@ func TestFormatReleaseNotification(t *testing.T) {
 	}
 }
 
+// TestFetchLatestReleaseFromURL_BoundedReadOversizedBody pins the bounded
+// release-JSON read: the body is a single VALID JSON object larger than the
+// 64KB read cap, so an unbounded decoder would accept it, while the bounded
+// decoder truncates mid-object and must surface a clean decode error.
+func TestFetchLatestReleaseFromURL_BoundedReadOversizedBody(t *testing.T) {
+	mockJSON := `{"tag_name": "v2.4.0", "name": "v2.4.0: Oversized Fixture", ` +
+		`"html_url": "https://github.com/vlv-code/xray-checker-tg-bot/releases/tag/v2.4.0", ` +
+		`"body": "` + strings.Repeat("A", 80*1024) + `"}`
+	if len(mockJSON) <= 64*1024 {
+		t.Fatalf("fixture must exceed the 64KB cap, got %d bytes", len(mockJSON))
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(mockJSON))
+	}))
+	defer srv.Close()
+
+	_, err := fetchLatestReleaseFromURL(srv.Client(), srv.URL)
+	if err == nil {
+		t.Fatal("expected decode error for oversized release JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "decoding release JSON") {
+		t.Errorf("expected clean decode error, got: %v", err)
+	}
+}
+
 func TestReleaseNotificationDeduplication(t *testing.T) {
 	cfgDir := t.TempDir()
 	cfgPath := cfgDir + "/bot_config.json"

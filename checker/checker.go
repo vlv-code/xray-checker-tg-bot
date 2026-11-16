@@ -247,7 +247,9 @@ func (pc *ProxyChecker) GetCurrentIP() (string, error) {
 		return "", fmt.Errorf("error getting current IP: unexpected HTTP status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	// The response arrives over the UNTRUSTED proxy transport path; the read
+	// is capped so a hostile endpoint cannot stream arbitrary data into memory.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {
 		return "", fmt.Errorf("error reading response: %v", err)
 	}
@@ -478,7 +480,8 @@ func (pc *ProxyChecker) checkByIP(client *http.Client, ipCheckURL string) checkO
 		}
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	// This body also arrives over the untrusted proxy transport: cap the read.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {
 		return checkOutcome{
 			canConnect:     true,

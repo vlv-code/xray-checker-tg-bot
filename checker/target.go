@@ -93,6 +93,14 @@ func (tm *TargetManager) GetTargets() []string {
 	return out
 }
 
+// nat64WellKnownPrefix is 64:ff9b::/96 (RFC 6052): the well-known NAT64
+// prefix under which an IPv4 address is embedded in the final 32 bits — an
+// IPv6 transition path that can reach private/reserved IPv4 space.
+var nat64WellKnownPrefix = net.IPNet{
+	IP:   net.ParseIP("64:ff9b::").To16(),
+	Mask: net.CIDRMask(96, 128),
+}
+
 func isBlockedTargetIP(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -107,11 +115,29 @@ func isBlockedTargetIP(ip net.IP) bool {
 		if ip4[0] == 100 && (ip4[1]&0xc0) == 64 {
 			return true
 		}
+		// 198.18.0.0/15: RFC 2544 benchmarking range; 240.0.0.0/4: reserved
+		// (former class E). Neither is routable public space. v4-mapped IPv6
+		// (::ffff:a.b.c.d) already lands here via To4().
+		if (ip4[0] == 198 && ip4[1] == 18) || ip4[0] >= 240 {
+			return true
+		}
 		return false
 	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	return nat64WellKnownPrefix.Contains(ip)
 }
 
+// validateTargetURL enforces the SSRF guard for check-target URLs. Hostname
+// checks cover literal IPs and the localhost/.local suffix families only:
+// DNS is deliberately NOT resolved here, because targets are always dialed
+// VIA the proxy transport (see RunDiagnostics), so a DNS name pointing at
+// private space never routes from this host — and resolving it at config
+// time would add a network dependency to validation (graceful degradation
+// over crash-loops). The range blocks in isBlockedTargetIP close the
+// non-routable IP literal surface (loopback, private, CGNAT, link-local,
+// benchmark, reserved, NAT64).
 func validateTargetURL(rawURL string) (*url.URL, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {

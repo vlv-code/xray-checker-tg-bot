@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -167,7 +168,9 @@ func fetchLatestReleaseFromURL(client *http.Client, url string) (*ReleaseInfo, e
 	}
 
 	var rel ReleaseInfo
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+	// Cap the decode at 64KB: release JSON is small, and a corrupt or hostile
+	// endpoint must not be able to stream unbounded data into memory.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&rel); err != nil {
 		return nil, fmt.Errorf("decoding release JSON: %w", err)
 	}
 

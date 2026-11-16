@@ -259,6 +259,9 @@ func TestTargetManager_SSRF_Protection(t *testing.T) {
 		"http://224.0.0.1/multicast",
 		"http://0.0.0.0/test",
 		"http://[::1]/status",
+		"http://198.18.1.1/benchmark",     // 198.18.0.0/15 benchmark range
+		"http://240.1.1.1/reserved",       // 240.0.0.0/4 reserved range
+		"http://[64:ff9b::1.2.3.4]/nat64", // NAT64 IPv6 transition prefix
 	}
 
 	for _, target := range blockedTargets {
