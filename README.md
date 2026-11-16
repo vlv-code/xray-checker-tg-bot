@@ -53,10 +53,10 @@ All features are accessible via the interactive **`/menu`** or direct chat comma
 | `/status` | Real-time status summary of all configured proxies (online/offline, latency) |
 | `/diag` | Detailed multi-stage diagnostics (DNS, TCP RTT, TLS, Targets + Check-Host) |
 | `/settings` | Bot settings, interval, alert mode, and node disabling |
-| `/togglenode <name|ID>` | Enable or disable checking for a specific proxy node |
+| `/togglenode <name\|ID>` | Enable or disable checking for a specific proxy node |
 | `/togglehost <host>` | Enable or disable checking for all proxies sharing a specific host |
 | `/checkhost <host[:port]>` | Global reachability audit of any host/IP across worldwide Check-Host nodes |
-| `/checkhost_bg [on|off|1h|run]` | Manage background Check-Host auditing and RU reachability alerts |
+| `/checkhost_bg [on\|off\|1h\|run]` | Manage background Check-Host auditing and RU reachability alerts |
 | `/cheburcheck <host>` | Active RF blocking probe via Cheburcheck scanners (per-scanner tokens, no API key) |
 | `/interval [seconds]` | View or change proxy check interval dynamically (e.g. `/interval 60`) |
 | `/tz [timezone]` | View or set bot timezone for quiet hours and digests (e.g. `/tz Europe/Moscow`) |
