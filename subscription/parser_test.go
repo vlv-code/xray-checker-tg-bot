@@ -337,3 +337,45 @@ func TestParse_PlainAndBase64ShareLinks(t *testing.T) {
 		t.Fatalf("expected vmess config or a non-JSON error, got none")
 	}
 }
+
+// Regression (P2): panels frequently emit subscriptions prefixed with a UTF-8
+// byte-order mark. U+FEFF is not whitespace, so TrimSpace keeps it and format
+// detection plus base64 decoding both fail. A leading BOM must be stripped
+// before format detection.
+func TestParse_BOMPrefixedPayloads(t *testing.T) {
+	p := NewParser()
+	jsonArr := `[{"remarks":"Panel","outbounds":[
+		{"protocol":"socks","tag":"s1","settings":{"address":"1.2.3.4","port":1080}}
+	]}]`
+	b64 := base64.StdEncoding.EncodeToString([]byte(jsonArr))
+	jsonObj := `{"remarks":"Single","outbounds":[
+		{"protocol":"socks","tag":"s2","settings":{"address":"5.6.7.8","port":1080}}
+	]}`
+
+	t.Run("raw BOM bytes + base64 json", func(t *testing.T) {
+		// "\xEF\xBB\xBF" is the raw UTF-8 encoding of U+FEFF at data start.
+		res, err := p.Parse("\xEF\xBB\xBF" + b64)
+		if err != nil {
+			t.Fatalf("BOM-prefixed base64 subscription should parse, got: %v", err)
+		}
+		if len(res.Configs) != 1 {
+			t.Fatalf("expected 1 config, got %d", len(res.Configs))
+		}
+		if res.Configs[0].Server != "1.2.3.4" || res.Configs[0].Port != 1080 {
+			t.Errorf("unexpected config %s:%d", res.Configs[0].Server, res.Configs[0].Port)
+		}
+	})
+
+	t.Run("BOM + json object with configs", func(t *testing.T) {
+		res, err := p.Parse("\uFEFF" + jsonObj)
+		if err != nil {
+			t.Fatalf("BOM-prefixed JSON subscription should parse, got: %v", err)
+		}
+		if len(res.Configs) != 1 {
+			t.Fatalf("expected 1 config, got %d", len(res.Configs))
+		}
+		if res.Configs[0].Server != "5.6.7.8" || res.Configs[0].Port != 1080 {
+			t.Errorf("unexpected config %s:%d", res.Configs[0].Server, res.Configs[0].Port)
+		}
+	})
+}

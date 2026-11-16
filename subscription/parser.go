@@ -1,6 +1,7 @@
 package subscription
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -61,6 +62,7 @@ func (p *Parser) Parse(subscriptionData string) (*ParseResult, error) {
 		rawData = []byte(subscriptionData)
 	}
 
+	rawData = stripBOM(rawData)
 	trimmedData := strings.TrimSpace(string(rawData))
 
 	// A common panel format is a base64-encoded JSON array. The JSON prefix
@@ -337,6 +339,14 @@ func (p *Parser) detectSourceType(source string) string {
 		return "base64"
 	}
 	return "raw"
+}
+
+// stripBOM removes a leading UTF-8 byte-order mark (raw bytes 0xEF 0xBB 0xBF,
+// i.e. U+FEFF) from subscription content. Panels frequently emit BOM-prefixed
+// base64 or JSON payloads; U+FEFF is not whitespace, so without this the BOM
+// survives TrimSpace, breaks format detection and fails base64 decoding.
+func stripBOM(data []byte) []byte {
+	return bytes.TrimPrefix(data, []byte("\uFEFF"))
 }
 
 func (p *Parser) tryDecodeBase64(data []byte) []byte {

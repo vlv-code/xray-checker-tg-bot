@@ -377,7 +377,12 @@ func (p *Parser) convertOutbound(raw json.RawMessage, index int, originalData ma
 		return nil, fmt.Errorf("failed to parse server/port")
 	}
 
-	if pc.Port == 0 || pc.Port == 1 {
+	// Port 1 is silently dropped (nil, nil): a legacy upstream heuristic
+	// (introduced as "Skipping port" in the original share-link parser) that
+	// treats port 1 as an implausible/garbage value produced by malformed
+	// links. Preserved deliberately — do not confuse with the Port==0 error
+	// above, which must stay a hard error.
+	if pc.Port == 1 {
 		return nil, nil
 	}
 
