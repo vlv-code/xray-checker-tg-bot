@@ -80,11 +80,18 @@ func IndexHandler(version string, proxyChecker *checker.ProxyChecker) http.Handl
 			}
 		}
 
+		// RuntimeMu read-guard: both intervals are runtime-mutated fields
+		// (config/runtime_lock.go).
+		config.RuntimeMu.RLock()
+		checkInterval := config.CLIConfig.Proxy.CheckInterval
+		updateInterval := config.CLIConfig.Subscription.UpdateInterval
+		config.RuntimeMu.RUnlock()
+
 		data := PageData{
 			Version:                    version,
 			Host:                       config.CLIConfig.Metrics.Host,
 			Port:                       config.CLIConfig.Metrics.Port,
-			CheckInterval:              config.CLIConfig.Proxy.CheckInterval,
+			CheckInterval:              checkInterval,
 			IPCheckUrl:                 config.CLIConfig.Proxy.IpCheckUrl,
 			CheckMethod:                config.CLIConfig.Proxy.CheckMethod,
 			StatusCheckUrl:             config.CLIConfig.Proxy.StatusCheckUrl,
@@ -92,7 +99,7 @@ func IndexHandler(version string, proxyChecker *checker.ProxyChecker) http.Handl
 			SimulateLatency:            config.CLIConfig.Proxy.SimulateLatency,
 			Timeout:                    config.CLIConfig.Proxy.Timeout,
 			SubscriptionUpdate:         config.CLIConfig.Subscription.Update,
-			SubscriptionUpdateInterval: config.CLIConfig.Subscription.UpdateInterval,
+			SubscriptionUpdateInterval: updateInterval,
 			StartPort:                  config.CLIConfig.Xray.StartPort,
 			Instance:                   config.CLIConfig.Metrics.Instance,
 			PushUrl:                    metrics.GetPushURL(config.CLIConfig.Metrics.PushURL),

@@ -228,8 +228,12 @@ func (pc *ProxyChecker) GetCurrentIP() (string, error) {
 
 	pc.mu.RLock()
 	checkURL := pc.ipCheck
+	// Snapshot the client pointer too: SetRuntimeCheckSettings swaps
+	// pc.httpClient concurrently (timeout change), and the bare read raced the
+	// swap. The fetch itself stays outside pc.mu by design (see above).
+	client := pc.httpClient
 	pc.mu.RUnlock()
-	resp, err := pc.httpClient.Get(checkURL)
+	resp, err := client.Get(checkURL)
 	if err != nil {
 		return "", fmt.Errorf("error getting current IP: %v", err)
 	}
@@ -833,13 +837,15 @@ func (pc *ProxyChecker) MetricsSnapshot() []metrics.ProxyMetric {
 func (pc *ProxyChecker) CheckAllProxies() {
 	if _, err := pc.GetCurrentIP(); err != nil {
 		logger.Warn("Error getting current IP: %v", err)
-		if pc.checkMethod == "ip" {
-			pc.mu.RLock()
-			hasIP := pc.currentIP != ""
-			pc.mu.RUnlock()
-			if !hasIP {
-				return
-			}
+		// Single RLock critical section: checkMethod and currentIP are both
+		// written by SetRuntimeCheckSettings on other goroutines, so neither
+		// may be read bare here.
+		pc.mu.RLock()
+		isIPMethod := pc.checkMethod == "ip"
+		hasIP := pc.currentIP != ""
+		pc.mu.RUnlock()
+		if isIPMethod && !hasIP {
+			return
 		}
 	}
 
@@ -849,7 +855,7 @@ func (pc *ProxyChecker) CheckAllProxies() {
 	checkConcurrency := pc.checkConcurrency
 	pc.mu.RUnlock()
 
-	runBoundedChecks(proxiesToCheck, checkConcurrency, pc.checkProxyInternal)
+	runBoundedChecks(proxiesToCheck, checkConcurrency, pc.checkProxyInternal, pc.markPanicResult)
 }
 
 // runBoundedChecks runs check(p) for every proxy concurrently. concurrency == 0
@@ -857,7 +863,11 @@ func (pc *ProxyChecker) CheckAllProxies() {
 // simultaneously via a semaphore, so large subscriptions don't open thousands of
 // connections in one burst. Local socks ports are unchanged — each check still
 // dials its own fixed port; this only throttles how many run at a time.
-func runBoundedChecks(proxies []*models.ProxyConfig, concurrency int, check func(*models.ProxyConfig)) {
+//
+// The optional onPanic[0] hook is invoked when a check panics (see the recover
+// below); runBoundedChecks itself stays a free function, so result recording is
+// delegated to the caller.
+func runBoundedChecks(proxies []*models.ProxyConfig, concurrency int, check func(*models.ProxyConfig), onPanic ...func(*models.ProxyConfig, any)) {
 	var sem chan struct{}
 	if concurrency > 0 {
 		sem = make(chan struct{}, concurrency)
@@ -868,6 +878,17 @@ func runBoundedChecks(proxies []*models.ProxyConfig, concurrency int, check func
 		wg.Add(1)
 		go func(p *models.ProxyConfig) {
 			defer wg.Done()
+			defer func() {
+				// Panic isolation: one broken check path must not kill the
+				// whole daemon — log it, mark that proxy failed via the
+				// caller's hook, and let the remaining proxies finish.
+				if r := recover(); r != nil {
+					logger.Error("panic in proxy check for %s: %v", p.Name, r)
+					if len(onPanic) > 0 && onPanic[0] != nil {
+						onPanic[0](p, r)
+					}
+				}
+			}()
 			if sem != nil {
 				sem <- struct{}{}
 				defer func() { <-sem }()
@@ -876,6 +897,19 @@ func runBoundedChecks(proxies []*models.ProxyConfig, concurrency int, check func
 		}(proxy)
 	}
 	wg.Wait()
+}
+
+// markPanicResult records a generic failed outcome for a proxy whose check
+// panicked: CatUnknown is the taxonomy's generic failure category, and the
+// stored fields mirror the failure path of checkProxyInternal — so the proxy
+// keeps a fresh failed series instead of a stale or missing one.
+func (pc *ProxyChecker) markPanicResult(p *models.ProxyConfig, r any) {
+	pc.results.Store(proxyMetricKey(p), proxyResult{
+		status:            false,
+		lastCheck:         time.Now(),
+		lastErrorCategory: CatUnknown,
+		lastErrorMsg:      fmt.Sprintf("panic in proxy check: %v", r),
+	})
 }
 
 // GetProxyResultByStableID returns the latest check outcome for the proxy with the

@@ -153,6 +153,12 @@ func (c *CLI) Validate() error {
 	if (c.Report.URL == "") != (c.Report.Token == "") {
 		return fmt.Errorf("REPORT_URL and REPORT_TOKEN must be set together")
 	}
+	if c.Proxy.CheckInterval <= 0 {
+		return fmt.Errorf("invalid proxy-check-interval / PROXY_CHECK_INTERVAL %d: must be positive (recommended: at least 10)", c.Proxy.CheckInterval)
+	}
+	if c.Subscription.UpdateInterval <= 0 {
+		return fmt.Errorf("invalid subscription-update-interval / SUBSCRIPTION_UPDATE_INTERVAL %d: must be positive", c.Subscription.UpdateInterval)
+	}
 	return nil
 }
 

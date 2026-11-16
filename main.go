@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,44 @@ var (
 	version   = "unknown"
 	startTime = time.Now()
 )
+
+// checkSchedulerMu guards the check scheduler's reschedule path and is held by
+// the shutdown stop-defer while gocron Stop() drains the running singleton
+// job. Package-level (not a main() local) so lifecycle tests can pin the
+// deadlock contract: code running INSIDE the check job must never acquire it.
+var checkSchedulerMu sync.Mutex
+
+// currentCheckInterval reads the runtime-mutated CheckInterval under RuntimeMu
+// ONLY. It must never acquire checkSchedulerMu: it runs inside the check job,
+// while the shutdown stop-defer holds checkSchedulerMu and gocron Stop() waits
+// for this very job — taking it here is a circular wait that hangs the whole
+// LIFO shutdown chain (Guardian P0-2, 2026-11-16). rescheduleChecks writers
+// pair on RuntimeMu (held inside checkSchedulerMu), so this read is fully
+// synchronized.
+func currentCheckInterval() int {
+	config.RuntimeMu.RLock()
+	defer config.RuntimeMu.RUnlock()
+	return config.CLIConfig.Proxy.CheckInterval
+}
+
+// safeGoBody is the synchronous core of safeGo: it runs fn and recovers any
+// panic so a failing worker cannot take the whole process down. Kept
+// separate from safeGo so tests can exercise the recover path synchronously.
+func safeGoBody(label string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("panic in %s: %v\n%s", label, r, debug.Stack())
+		}
+	}()
+	fn()
+}
+
+// safeGo launches fn in a panic-isolated goroutine: a panic in fn is logged
+// with a stack trace instead of crashing the instance (graceful degradation
+// over crash-loops).
+func safeGo(label string, fn func()) {
+	go safeGoBody(label, fn)
+}
 
 func main() {
 	config.Parse(version)
@@ -209,7 +248,6 @@ func main() {
 	// reloadSubscriptions, which itself calls runCheckIteration.
 	var tgBot atomic.Pointer[telegram.Bot]
 	var checkScheduler *gocron.Scheduler
-	var checkSchedulerMu sync.Mutex
 
 	// updateScheduler drives periodic subscription reloads on this instance
 	// (master or node); rescheduleSubscriptionUpdates re-applies the master's
@@ -273,7 +311,11 @@ func main() {
 		if seconds < 10 {
 			seconds = 10
 		}
+		// RuntimeMu write-guard: CheckInterval is a runtime-mutated field read
+		// concurrently by config-sync/web/report readers (config/runtime_lock.go).
+		config.RuntimeMu.Lock()
 		config.CLIConfig.Proxy.CheckInterval = seconds
+		config.RuntimeMu.Unlock()
 
 		if checkScheduler != nil {
 			checkScheduler.Clear()
@@ -342,9 +384,14 @@ func main() {
 						NodeStaleTimeoutSec:    cfg.NodeStaleTimeoutSec,
 					}
 				}
+				// RuntimeMu read-guard: CheckInterval is a runtime-mutated
+				// field (config/runtime_lock.go).
+				config.RuntimeMu.RLock()
+				checkInterval := config.CLIConfig.Proxy.CheckInterval
+				config.RuntimeMu.RUnlock()
 				return &nodes.NodeConfigSync{
 					SyncEnabled:         true,
-					CheckIntervalSec:    config.CLIConfig.Proxy.CheckInterval,
+					CheckIntervalSec:    checkInterval,
 					TargetURLs:          config.CLIConfig.Telegram.TargetURLs,
 					QuietHoursEnabled:   config.CLIConfig.Telegram.QuietHoursEnabled,
 					AlertMode:           config.CLIConfig.Telegram.AlertMode,
@@ -364,7 +411,11 @@ func main() {
 			base.DownloadTimeoutSec = config.CLIConfig.Proxy.DownloadTimeout
 			base.DownloadMinSize = config.CLIConfig.Proxy.DownloadMinSize
 			base.CheckConcurrency = config.CLIConfig.Proxy.CheckConcurrency
+			// RuntimeMu read-guard: UpdateInterval is a runtime-mutated
+			// field (config/runtime_lock.go).
+			config.RuntimeMu.RLock()
 			base.SubsUpdateIntervalSec = config.CLIConfig.Subscription.UpdateInterval
+			config.RuntimeMu.RUnlock()
 
 			// Per-node overrides win over the master's base values.
 			if nodesStore != nil {
@@ -394,10 +445,7 @@ func main() {
 
 		emitSnapshot()
 
-		var interval int
-		checkSchedulerMu.Lock()
-		interval = config.CLIConfig.Proxy.CheckInterval
-		checkSchedulerMu.Unlock()
+		interval := currentCheckInterval()
 		if interval > 0 && elapsed > time.Duration(interval)*time.Second {
 			// When a concurrency cap is set, raising it (or the interval) helps. When
 			// unlimited (0), the cycle is already as parallel as it gets, so the only
@@ -424,99 +472,129 @@ func main() {
 		}
 
 		if reporter != nil {
-			if reporterRunning.CompareAndSwap(false, true) {
-				go func() {
-					released := false
-					defer func() {
-						if !released {
-							reporterRunning.Store(false)
-						}
-					}()
-					hostIP, err := proxyChecker.GetCurrentIP()
-					if err != nil {
-						hostIP = ""
-					}
-					checkSchedulerMu.Lock()
-					interval := config.CLIConfig.Proxy.CheckInterval
-					checkSchedulerMu.Unlock()
-					targets := []string{
-						"https://cp.cloudflare.com/generate_204",
-						"https://www.gstatic.com/generate_204",
-					}
-					if tm := proxyChecker.GetTargetManager(); tm != nil && len(tm.GetTargets()) > 0 {
-						targets = tm.GetTargets()
-					}
-					checkRunnerMu.RLock()
-					diagReports := proxyChecker.RunDiagnostics(targets)
-					metricsSnap := proxyChecker.MetricsSnapshot()
-					checkRunnerMu.RUnlock()
+			// buildReportPayload assembles the node report payload. It is
+			// shared by the daemon's fire-and-forget goroutine and the
+			// --run-once synchronous path so both build identical payloads.
+			buildReportPayload := func() nodes.ReportPayload {
+				hostIP, err := proxyChecker.GetCurrentIP()
+				if err != nil {
+					hostIP = ""
+				}
+				checkSchedulerMu.Lock()
+				// RuntimeMu read-guard: CheckInterval is a runtime-mutated
+				// field (config/runtime_lock.go).
+				config.RuntimeMu.RLock()
+				interval := config.CLIConfig.Proxy.CheckInterval
+				config.RuntimeMu.RUnlock()
+				checkSchedulerMu.Unlock()
+				targets := []string{
+					"https://cp.cloudflare.com/generate_204",
+					"https://www.gstatic.com/generate_204",
+				}
+				if tm := proxyChecker.GetTargetManager(); tm != nil && len(tm.GetTargets()) > 0 {
+					targets = tm.GetTargets()
+				}
+				checkRunnerMu.RLock()
+				diagReports := proxyChecker.RunDiagnostics(targets)
+				metricsSnap := proxyChecker.MetricsSnapshot()
+				checkRunnerMu.RUnlock()
 
-					payload := nodes.BuildReportFromDiagWithMetrics(
-						diagReports, metricsSnap, version, interval,
-						config.CLIConfig.Proxy.CheckMethod, hostIP,
-					)
-					if nodeAuditor != nil {
-						payload.CheckHostAudits = nodeAuditor.Results()
-					}
-					desired, err := reporter.SendWithRetry(payload, nodes.DefaultReportBackoffs)
-					reporterRunning.Store(false)
-					released = true
-					if err != nil {
-						logger.Warn("Report to master failed (next cycle will retry): %v", err)
-						return
-					}
-					if desired != nil {
-						if reconcileDesired != nil && len(desired.ManagedSubs) > 0 {
-							if err := reconcileDesired(desired.ManagedSubs); err != nil {
-								logger.Error("Reconciling managed subscriptions failed: %v", err)
-							}
-						}
-						if desired.ConfigSync != nil && desired.ConfigSync.SyncEnabled {
-							cs := desired.ConfigSync
-							// Full resolved check settings from the master: the
-							// payload is the complete configuration, including
-							// meaningful zeros (concurrency 0 = unlimited).
-							proxyChecker.SetRuntimeCheckSettings(nodes.SyncToRuntimeSettings(*cs))
-							if cs.CheckIntervalSec > 0 {
-								checkSchedulerMu.Lock()
-								curInterval := config.CLIConfig.Proxy.CheckInterval
-								checkSchedulerMu.Unlock()
-								if curInterval != cs.CheckIntervalSec {
-									logger.Info("Agent check interval updated by master: %ds", cs.CheckIntervalSec)
-									rescheduleChecks(cs.CheckIntervalSec)
-								}
-							}
-							// Resolved target list: empty means the master wants
-							// the node back on built-in defaults.
-							if tm := proxyChecker.GetTargetManager(); tm != nil {
-								tm.SetTargets(cs.TargetURLs)
-							}
-							if cs.SubsUpdateIntervalSec > 0 && rescheduleSubscriptionUpdates != nil {
-								rescheduleSubscriptionUpdates(cs.SubsUpdateIntervalSec)
-							}
-							if nodeAuditor != nil {
-								nodeAuditor.SetSchedule(cs.CheckHostBgEnabled, cs.CheckHostIntervalHours)
-							}
-							if len(cs.DisabledHosts) > 0 || len(cs.DisabledProxies) > 0 {
-								disHosts := cs.DisabledHosts
-								disProxies := cs.DisabledProxies
-								proxyChecker.SetDisabledFilter(func(server, stableID string) bool {
-									for _, h := range disHosts {
-										if strings.EqualFold(h, server) {
-											return true
-										}
-									}
-									for _, id := range disProxies {
-										if id == stableID {
-											return true
-										}
-									}
-									return false
-								})
-							}
-						}
+				payload := nodes.BuildReportFromDiagWithMetrics(
+					diagReports, metricsSnap, version, interval,
+					config.CLIConfig.Proxy.CheckMethod, hostIP,
+				)
+				if nodeAuditor != nil {
+					payload.CheckHostAudits = nodeAuditor.Results()
+				}
+				return payload
+			}
+
+			// deliver sends the report and applies the master's desired
+			// state. Daemon mode runs it as a fire-and-forget goroutine;
+			// --run-once calls it synchronously: the process returns right
+			// after the check iteration, so an async push would be killed
+			// mid-send (SendWithRetry can take ~52s) and lose the run's
+			// only report.
+			deliver := func() {
+				released := false
+				defer func() {
+					if !released {
+						reporterRunning.Store(false)
 					}
 				}()
+				desired, err := flushReporterOnce(reporter, buildReportPayload())
+				reporterRunning.Store(false)
+				released = true
+				if err != nil {
+					logger.Warn("Report to master failed (next cycle will retry): %v", err)
+					return
+				}
+				if desired != nil {
+					if reconcileDesired != nil && len(desired.ManagedSubs) > 0 {
+						if err := reconcileDesired(desired.ManagedSubs); err != nil {
+							logger.Error("Reconciling managed subscriptions failed: %v", err)
+						}
+					}
+					if desired.ConfigSync != nil && desired.ConfigSync.SyncEnabled {
+						cs := desired.ConfigSync
+						// Full resolved check settings from the master: the
+						// payload is the complete configuration, including
+						// meaningful zeros (concurrency 0 = unlimited).
+						proxyChecker.SetRuntimeCheckSettings(nodes.SyncToRuntimeSettings(*cs))
+						if cs.CheckIntervalSec > 0 {
+							checkSchedulerMu.Lock()
+							// RuntimeMu read-guard: runtime-mutated field
+							// (config/runtime_lock.go).
+							config.RuntimeMu.RLock()
+							curInterval := config.CLIConfig.Proxy.CheckInterval
+							config.RuntimeMu.RUnlock()
+							checkSchedulerMu.Unlock()
+							if curInterval != cs.CheckIntervalSec {
+								logger.Info("Agent check interval updated by master: %ds", cs.CheckIntervalSec)
+								rescheduleChecks(cs.CheckIntervalSec)
+							}
+						}
+						// Resolved target list: empty means the master wants
+						// the node back on built-in defaults.
+						if tm := proxyChecker.GetTargetManager(); tm != nil {
+							tm.SetTargets(cs.TargetURLs)
+						}
+						if cs.SubsUpdateIntervalSec > 0 && rescheduleSubscriptionUpdates != nil {
+							rescheduleSubscriptionUpdates(cs.SubsUpdateIntervalSec)
+						}
+						if nodeAuditor != nil {
+							nodeAuditor.SetSchedule(cs.CheckHostBgEnabled, cs.CheckHostIntervalHours)
+						}
+						if len(cs.DisabledHosts) > 0 || len(cs.DisabledProxies) > 0 {
+							disHosts := cs.DisabledHosts
+							disProxies := cs.DisabledProxies
+							proxyChecker.SetDisabledFilter(func(server, stableID string) bool {
+								for _, h := range disHosts {
+									if strings.EqualFold(h, server) {
+										return true
+									}
+								}
+								for _, id := range disProxies {
+									if id == stableID {
+										return true
+									}
+								}
+								return false
+							})
+						}
+					}
+				}
+			}
+
+			if config.CLIConfig.RunOnce {
+				// deliver() re-enters checkRunnerMu.RLock() while this
+				// iteration already holds it: safe here because --run-once
+				// has no schedulers, no bot and exits before the degraded
+				// retry goroutine starts, so no updateConfiguration writer
+				// can block between the two read locks.
+				deliver()
+			} else if reporterRunning.CompareAndSwap(false, true) {
+				safeGo("node report push", deliver)
 			} else {
 				logger.Debug("Previous report to master still in flight, skipping overlapping push")
 			}
@@ -602,7 +680,11 @@ func main() {
 		if updateScheduler == nil {
 			return
 		}
+		// RuntimeMu write-guard: UpdateInterval is a runtime-mutated field read
+		// concurrently by config-sync/web readers (config/runtime_lock.go).
+		config.RuntimeMu.Lock()
 		config.CLIConfig.Subscription.UpdateInterval = seconds
+		config.RuntimeMu.Unlock()
 		logger.Info("Rescheduling subscription updates with interval %ds (set by master)", seconds)
 		updateScheduler.Clear()
 		updateScheduler.Every(seconds).Seconds().WaitForSchedule().Do(func() {
@@ -670,11 +752,17 @@ func main() {
 				savedCfg := botCfgMgr.Get()
 				if len(savedCfg.TargetURLs) > 0 {
 					for _, t := range savedCfg.TargetURLs {
-						_ = targetMgr.AddTarget(t)
+						if err := targetMgr.AddTarget(t); err != nil {
+							logger.Warn("Failed to restore persisted target %s: %v", t, err)
+						}
 					}
 				}
 				if savedCfg.CheckIntervalSec > 0 {
+					// RuntimeMu write-guard: CheckInterval is a runtime-mutated
+					// field (config/runtime_lock.go).
+					config.RuntimeMu.Lock()
 					config.CLIConfig.Proxy.CheckInterval = savedCfg.CheckIntervalSec
+					config.RuntimeMu.Unlock()
 				}
 			}
 
@@ -798,8 +886,21 @@ func main() {
 	checkScheduler.StartAsync()
 	checkSchedulerMu.Unlock()
 
+	// Shutdown ordering: this defer is registered after the xray runner's
+	// Stop defer (top of main), so LIFO unwinding stops this scheduler
+	// BEFORE the xray runner closes — no check job can start a new iteration
+	// against a closed instance. gocron v1.37.0 has no Shutdown(); Stop() is
+	// its shutdown call.
+	defer func() {
+		checkSchedulerMu.Lock()
+		defer checkSchedulerMu.Unlock()
+		if checkScheduler != nil {
+			checkScheduler.Stop()
+		}
+	}()
+
 	// Initial check on startup: runs immediately without waiting for the first scheduled interval.
-	go runCheckIteration()
+	safeGo("initial check iteration", runCheckIteration)
 
 	if config.CLIConfig.Subscription.Update {
 		updateSchedulerMu.Lock()
@@ -818,16 +919,31 @@ func main() {
 		updateScheduler.StartAsync()
 		updateSchedulerMu.Unlock()
 
+		// Registered after the check-scheduler defer: LIFO stops the update
+		// scheduler before the check scheduler, and both before xray.
+		defer func() {
+			updateSchedulerMu.Lock()
+			defer updateSchedulerMu.Unlock()
+			if updateScheduler != nil {
+				updateScheduler.Stop()
+			}
+		}()
+
 		geoScheduler := gocron.NewScheduler(time.UTC)
 		geoScheduler.Every(24).Hours().Do(func() {
 			logger.Info("Checking geo databases for updates...")
 			geoManager.UpdateGeoFiles()
 		})
 		geoScheduler.StartAsync()
+		defer func() {
+			if geoScheduler != nil {
+				geoScheduler.Stop()
+			}
+		}()
 	}
 
 	if isDegraded && len(subURLStore.All()) > 0 && !config.CLIConfig.RunOnce {
-		go func() {
+		safeGo("background subscription retry", func() {
 			logger.Info("Background subscription retry active: retrying every 20s until reachable...")
 			ticker := time.NewTicker(20 * time.Second)
 			defer ticker.Stop()
@@ -845,7 +961,7 @@ func main() {
 					logger.Warn("Background subscription retry failed: %v. Next attempt in 20s...", err)
 				}
 			}
-		}()
+		})
 	}
 
 	if nodeRegistry != nil {
@@ -863,6 +979,13 @@ func main() {
 			}
 		})
 		sweepScheduler.StartAsync()
+		// Registered last: LIFO stops the sweep scheduler first at shutdown,
+		// before the other schedulers and before the xray runner closes.
+		defer func() {
+			if sweepScheduler != nil {
+				sweepScheduler.Stop()
+			}
+		}()
 	}
 
 	mux, err := web.NewPrefixServeMux(config.CLIConfig.Metrics.BasePath)
@@ -960,12 +1083,12 @@ func main() {
 			}
 
 			serverErr := make(chan error, 1)
-			go func() {
+			safeGo("http server", func() {
 				logger.Info("Server listening on %s%s", addr, config.CLIConfig.Metrics.BasePath)
 				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 					serverErr <- err
 				}
-			}()
+			})
 
 			select {
 			case sig := <-sigChan:
@@ -1042,6 +1165,16 @@ func startWithRetry(start func() error, backoffs []time.Duration) error {
 
 func startXrayWithRetry(runner interface{ Start() error }) error {
 	return startWithRetry(runner.Start, defaultXrayStartBackoffs)
+}
+
+// flushReporterOnce synchronously delivers one node report to the master,
+// retrying transient failures with nodes.DefaultReportBackoffs. In
+// --run-once mode the process exits right after the check iteration, so the
+// report must be delivered before return — the fire-and-forget goroutine
+// used in daemon mode would be killed mid-send (SendWithRetry can retry for
+// ~52s) and the node's report for that run would be lost.
+func flushReporterOnce(reporter *nodes.Reporter, payload nodes.ReportPayload) (*nodes.IngestResponse, error) {
+	return reporter.SendWithRetry(payload, nodes.DefaultReportBackoffs)
 }
 
 func resolveInitialConfigs(configFile, cachePath string, initFetcher func() (*[]*models.ProxyConfig, error)) (*[]*models.ProxyConfig, bool, error) {
@@ -1121,7 +1254,7 @@ func startTelegramBotWithRetry(
 	}
 
 	logger.Warn("Failed to initialize Telegram bot: %v. Retrying in background every %v...", err, retryInterval)
-	go func() {
+	safeGo("telegram bot retry", func() {
 		ticker := time.NewTicker(retryInterval)
 		defer ticker.Stop()
 		for {
@@ -1142,5 +1275,5 @@ func startTelegramBotWithRetry(
 				logger.Warn("Background Telegram bot retry failed: %v. Next attempt in %v...", err, retryInterval)
 			}
 		}
-	}()
+	})
 }

@@ -20,6 +20,8 @@ func TestCLIValidate(t *testing.T) {
 		cli.Metrics.Port = "2112"
 		cli.Metrics.Protected = true
 		cli.Metrics.Password = "secret123"
+		cli.Proxy.CheckInterval = 300
+		cli.Subscription.UpdateInterval = 300
 		if err := cli.Validate(); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -30,6 +32,8 @@ func TestCLIValidate(t *testing.T) {
 		cli.Metrics.Port = "0"
 		cli.Metrics.Protected = true
 		cli.Metrics.Password = ""
+		cli.Proxy.CheckInterval = 300
+		cli.Subscription.UpdateInterval = 300
 		if err := cli.Validate(); err != nil {
 			t.Errorf("unexpected error when port is 0: %v", err)
 		}
@@ -47,6 +51,8 @@ func TestCLIValidate(t *testing.T) {
 		for _, m := range []string{"ip", "status", "download"} {
 			var cli CLI
 			cli.Proxy.CheckMethod = m
+			cli.Proxy.CheckInterval = 300
+			cli.Subscription.UpdateInterval = 300
 			if err := cli.Validate(); err != nil {
 				t.Errorf("expected %s to be valid, got %v", m, err)
 			}
@@ -59,6 +65,8 @@ func TestValidateNodesAndReport(t *testing.T) {
 		var cli CLI
 		cli.Nodes.List = []string{"n1|tok"}
 		cli.Metrics.Port = "2112"
+		cli.Proxy.CheckInterval = 300
+		cli.Subscription.UpdateInterval = 300
 		if err := cli.Validate(); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -101,8 +109,57 @@ func TestValidateNodesAndReport(t *testing.T) {
 	t.Run("empty nodes and report stay valid", func(t *testing.T) {
 		var cli CLI
 		cli.Metrics.Port = "0"
+		cli.Proxy.CheckInterval = 300
+		cli.Subscription.UpdateInterval = 300
 		if err := cli.Validate(); err != nil {
 			t.Errorf("feature must stay fully off with empty NODES/REPORT_URL: %v", err)
+		}
+	})
+}
+
+func TestValidateIntervals(t *testing.T) {
+	t.Run("fails when proxy check interval is 0", func(t *testing.T) {
+		var cli CLI
+		cli.Proxy.CheckInterval = 0
+		cli.Subscription.UpdateInterval = 300
+		if err := cli.Validate(); err == nil {
+			t.Error("expected error for PROXY_CHECK_INTERVAL=0, got nil")
+		}
+	})
+
+	t.Run("fails when proxy check interval is negative", func(t *testing.T) {
+		var cli CLI
+		cli.Proxy.CheckInterval = -5
+		cli.Subscription.UpdateInterval = 300
+		if err := cli.Validate(); err == nil {
+			t.Error("expected error for PROXY_CHECK_INTERVAL=-5, got nil")
+		}
+	})
+
+	t.Run("fails when subscription update interval is 0", func(t *testing.T) {
+		var cli CLI
+		cli.Proxy.CheckInterval = 300
+		cli.Subscription.UpdateInterval = 0
+		if err := cli.Validate(); err == nil {
+			t.Error("expected error for SUBSCRIPTION_UPDATE_INTERVAL=0, got nil")
+		}
+	})
+
+	t.Run("fails when subscription update interval is negative", func(t *testing.T) {
+		var cli CLI
+		cli.Proxy.CheckInterval = 300
+		cli.Subscription.UpdateInterval = -1
+		if err := cli.Validate(); err == nil {
+			t.Error("expected error for SUBSCRIPTION_UPDATE_INTERVAL=-1, got nil")
+		}
+	})
+
+	t.Run("passes for valid positive intervals", func(t *testing.T) {
+		var cli CLI
+		cli.Proxy.CheckInterval = 10
+		cli.Subscription.UpdateInterval = 300
+		if err := cli.Validate(); err != nil {
+			t.Errorf("unexpected error: %v", err)
 		}
 	})
 }

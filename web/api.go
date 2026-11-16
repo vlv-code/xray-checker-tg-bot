@@ -334,14 +334,20 @@ func APIStatusHandler(proxyChecker *checker.ProxyChecker) http.HandlerFunc {
 // @Router /api/v1/config [get]
 func APIConfigHandler(proxyChecker *checker.ProxyChecker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// RuntimeMu read-guard: both intervals are runtime-mutated fields
+		// (config/runtime_lock.go).
+		config.RuntimeMu.RLock()
+		checkInterval := config.CLIConfig.Proxy.CheckInterval
+		updateInterval := config.CLIConfig.Subscription.UpdateInterval
+		config.RuntimeMu.RUnlock()
 		subNames := CollectSubscriptionNames(proxyChecker.GetProxies())
 		writeJSON(w, ConfigResponse{
-			CheckInterval:              config.CLIConfig.Proxy.CheckInterval,
+			CheckInterval:              checkInterval,
 			CheckMethod:                config.CLIConfig.Proxy.CheckMethod,
 			Timeout:                    config.CLIConfig.Proxy.Timeout,
 			StartPort:                  config.CLIConfig.Xray.StartPort,
 			SubscriptionUpdate:         config.CLIConfig.Subscription.Update,
-			SubscriptionUpdateInterval: config.CLIConfig.Subscription.UpdateInterval,
+			SubscriptionUpdateInterval: updateInterval,
 			SimulateLatency:            config.CLIConfig.Proxy.SimulateLatency,
 			SubscriptionNames:          subNames,
 		})

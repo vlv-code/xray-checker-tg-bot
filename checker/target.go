@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"xray-checker/logger"
 	"xray-checker/models"
 )
 
@@ -66,7 +67,11 @@ func NewTargetManager(initialTargets []string) *TargetManager {
 		targets: make([]string, 0),
 	}
 	for _, t := range initialTargets {
-		_ = tm.AddTarget(t)
+		// A dropped persisted target is silently lost otherwise — surface the
+		// target and the validation reason so operators can fix the stored list.
+		if err := tm.AddTarget(t); err != nil {
+			logger.Warn("Dropping invalid initial target %q: %v", t, err)
+		}
 	}
 	if len(tm.targets) == 0 {
 		tm.targets = []string{

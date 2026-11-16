@@ -425,3 +425,29 @@ func TestRunDiagnostics_CheckHostDeduplication(t *testing.T) {
 		t.Errorf("expected exactly 1 call to check-host API due to deduplication, got %d", checkCalls.Load())
 	}
 }
+
+// TestNewTargetManager_InvalidInitialTargetsDropped pins the behavior of the
+// persisted-initial-targets path: entries that fail validation must be dropped
+// (with a warning logged — the pre-fix code swallowed the error silently) and
+// must never enter the target list; a fully invalid list falls back to the
+// built-in defaults.
+func TestNewTargetManager_InvalidInitialTargetsDropped(t *testing.T) {
+	valid := "https://cp.cloudflare.com/generate_204"
+	tm := NewTargetManager([]string{
+		"http://127.0.0.1:8080/echo", // SSRF: loopback blocked
+		"not-a-url",                  // not http/https with a host
+		valid,
+	})
+
+	got := tm.GetTargets()
+	if len(got) != 1 || got[0] != valid {
+		t.Errorf("expected only the valid target to survive, got %v", got)
+	}
+
+	// All-invalid initial list falls back to the built-in defaults.
+	tm2 := NewTargetManager([]string{"not-a-url", "ftp://x.example/file"})
+	defaults := tm2.GetTargets()
+	if len(defaults) != 2 {
+		t.Errorf("expected fallback to 2 default targets, got %v", defaults)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"xray-checker/logger"
 
@@ -32,6 +33,12 @@ func init() {
 }
 
 type Runner struct {
+	// mu guards instance: Start (write) and Stop (read/clear) can race when
+	// the deferred shutdown Stop overlaps a scheduler-driven restart in
+	// updateConfiguration. Callers' external locks (e.g. checkRunnerMu in
+	// main.go) are never acquired inside Runner methods, so taking mu here
+	// cannot invert lock order.
+	mu         sync.Mutex
 	instance   *core.Instance
 	configFile string
 }
@@ -43,6 +50,9 @@ func NewRunner(configFile string) *Runner {
 }
 
 func (r *Runner) Start() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	configBytes, err := os.ReadFile(r.configFile)
 	if err != nil {
 		return fmt.Errorf("error reading config file: %v", err)
@@ -78,6 +88,9 @@ func (r *Runner) Start() error {
 }
 
 func (r *Runner) Stop() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if r.instance != nil {
 		err := r.instance.Close()
 		r.instance = nil

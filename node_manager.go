@@ -305,7 +305,12 @@ func settingOverrideValue(ns *nodes.NodeSettings, sk *nodeSettingKey) (string, b
 // baseSettingValues returns the master's effective base values (the
 // inheritance base for every node), mirroring the SetConfigSource logic.
 func (a *nodeManagerAdapter) baseSettingValues() map[string]string {
+	// RuntimeMu read-guard: CheckInterval and UpdateInterval are
+	// runtime-mutated fields (config/runtime_lock.go).
+	config.RuntimeMu.RLock()
 	interval := config.CLIConfig.Proxy.CheckInterval
+	subsUpdateInterval := config.CLIConfig.Subscription.UpdateInterval
+	config.RuntimeMu.RUnlock()
 	targets := config.CLIConfig.Telegram.TargetURLs
 	if a.botCfg != nil {
 		if cfg := a.botCfg(); cfg.CheckIntervalSec > 0 {
@@ -325,7 +330,7 @@ func (a *nodeManagerAdapter) baseSettingValues() map[string]string {
 		"download_timeout":     strconv.Itoa(config.CLIConfig.Proxy.DownloadTimeout),
 		"download_min_size":    strconv.FormatInt(config.CLIConfig.Proxy.DownloadMinSize, 10),
 		"check_concurrency":    strconv.Itoa(config.CLIConfig.Proxy.CheckConcurrency),
-		"subs_update_interval": strconv.Itoa(config.CLIConfig.Subscription.UpdateInterval),
+		"subs_update_interval": strconv.Itoa(subsUpdateInterval),
 		"target_urls":          strings.Join(targets, ","),
 	}
 }
