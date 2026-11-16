@@ -1257,7 +1257,7 @@ func (b *Bot) getNodesSettingsView() string {
 		proxyAlertsStr = "📝 Только в журнал инцидентов"
 	}
 
-	return fmt.Sprintf("⚙️ <b>Настройки нод</b>\n\n"+
+	return fmt.Sprintf("⚙️ <b>Глобальные настройки нод</b>\n\n"+
 		"• Передача настроек нодам: <b>%s</b>\n"+
 		"• Алерты доступности нод: <b>%s</b>\n"+
 		"• Алерты по прокси от нод: <b>%s</b>\n"+

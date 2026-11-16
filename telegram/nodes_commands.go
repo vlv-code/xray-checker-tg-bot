@@ -280,7 +280,7 @@ func (b *Bot) handleNodeAddSubURL(msg *telego.Message, node string, rawURL strin
 		),
 		tu.InlineKeyboardRow(
 			btn("🔙 К списку нод", "menu:nodes:subs"),
-			btn("⚙️ Настройки нод", "menu:nodes:settings"),
+			btn("⚙️ Глобальные настройки нод", "menu:nodes:settings"),
 		),
 	)
 	t := targetFromMessage(msg)

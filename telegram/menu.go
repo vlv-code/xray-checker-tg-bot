@@ -80,7 +80,10 @@ func NodesMainMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("🩺 Проверка связи и статуса", "menu:nodes:health"),
 		),
 		tu.InlineKeyboardRow(
-			btn("⚙️ Настройки нод", "menu:nodes:settings"),
+			btn("⚙️ Глобальные настройки нод", "menu:nodes:settings"),
+		),
+		tu.InlineKeyboardRow(
+			btn("⚙️ Настройки нод", "menu:nodes:cfg"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🔄 Обновить", "menu:nodes:refresh"),
@@ -165,7 +168,7 @@ func NodesSubsListMarkup(nodes []NodeSubListItem) *telego.InlineKeyboardMarkup {
 	}
 	rows = append(rows,
 		tu.InlineKeyboardRow(
-			btn("🔙 К настройкам нод", "menu:nodes:settings"),
+			btn("🔙 К глобальным настройкам", "menu:nodes:settings"),
 			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
@@ -186,7 +189,7 @@ func NodeSubsManageMarkup(node string, subs []ManagedSubInfo) *telego.InlineKeyb
 		),
 		tu.InlineKeyboardRow(
 			btn("🔙 К списку нод", "menu:nodes:subs"),
-			btn("⚙️ Настройки нод", "menu:nodes:settings"),
+			btn("⚙️ Глобальные настройки нод", "menu:nodes:settings"),
 		),
 	)
 	return tu.InlineKeyboard(rows...)

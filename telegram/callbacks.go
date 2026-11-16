@@ -36,6 +36,8 @@ func isMutatingCallback(data string) bool {
 		return true
 	}
 	return strings.HasPrefix(data, "menu:nodes:delsub:") ||
+		strings.HasPrefix(data, "menu:nodes:ncfg:") ||
+		strings.HasPrefix(data, "menu:nodes:nreset:") ||
 		strings.HasPrefix(data, "menu:tz:") ||
 		strings.HasPrefix(data, "menu:checkhost:int:") ||
 		strings.HasPrefix(data, "menu:toggle_proxy:") ||
@@ -88,6 +90,8 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	// Acknowledge callback immediately to dismiss spinner, EXCEPT for callbacks that return their own custom toast.
 	isToastCallback := strings.HasPrefix(cb.Data, "menu:toggle_proxy:") ||
 		strings.HasPrefix(cb.Data, "menu:toggle_host:") ||
+		strings.HasPrefix(cb.Data, "menu:nodes:ncfg:") ||
+		strings.HasPrefix(cb.Data, "menu:nodes:nreset:") ||
 		cb.Data == "menu:checkhost:run_now"
 
 	if !isToastCallback && b.api != nil {
@@ -296,6 +300,14 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		b.editWithMarkup(chatID, msgID, b.getNodesHealthView(), NodesHealthMarkup())
 	case "menu:nodes:settings":
 		b.editWithMarkup(chatID, msgID, b.getNodesSettingsView(), NodesSettingsMarkup(b.GetConfig()))
+	case "menu:nodes:cfg":
+		// EXACT match only (order invariant, mirrors menu:chebur): the
+		// per-node screen route is the "menu:nodes:cfg:" prefix branch in the
+		// default clause below — a prefixed node name must never be swallowed
+		// by this picker rule, and the bare picker must never reach the
+		// prefix branch. Keep both rules distinct if this routing is reworked.
+		text, markup := b.getNodesCfgListView()
+		b.editWithMarkup(chatID, msgID, text, markup)
 	case "menu:nodes:subs":
 		b.waitingNodeAddMu.Lock()
 		if b.waitingNodeSub != nil {
@@ -364,6 +376,52 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 					}
 				}
 				text, markup := b.getNodeSubsManageView(nodeName)
+				b.editWithMarkup(chatID, msgID, text, markup)
+			}
+		} else if strings.HasPrefix(cb.Data, "menu:nodes:cfg:") {
+			// Order invariant (mirrors menu:chebur): this prefix branch is the
+			// per-node settings screen; the bare "menu:nodes:cfg" picker rule
+			// is an exact-match switch case above and can never match here.
+			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:cfg:")
+			text, markup := b.getNodeCfgScreen(nodeName)
+			b.editWithMarkup(chatID, msgID, text, markup)
+		} else if strings.HasPrefix(cb.Data, "menu:nodes:excl:") {
+			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:excl:")
+			text, markup := b.getNodeExclusionsView(nodeName)
+			b.editWithMarkup(chatID, msgID, text, markup)
+		} else if strings.HasPrefix(cb.Data, "menu:nodes:ncfg:") {
+			// Mutating (admin-gated via isMutatingCallback): apply one setting
+			// override through nodeMgr — the only settings writer — then
+			// re-render the same screen.
+			rest := strings.TrimPrefix(cb.Data, "menu:nodes:ncfg:")
+			parts := strings.SplitN(rest, ":", 3)
+			if len(parts) == 3 && b.nodeMgr != nil {
+				nodeName, key, value := parts[0], parts[1], parts[2]
+				if err := b.nodeMgr.SetNodeSetting(nodeName, key, value); err != nil {
+					logger.Warn("Telegram: node cfg apply failed for %s (%s=%s): %v", nodeName, key, value, err)
+					if b.api != nil {
+						_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("❌ "+err.Error()))
+					}
+				} else if b.api != nil {
+					_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("✅ Применится при следующем отчёте ноды"))
+				}
+				text, markup := b.getNodeCfgScreen(nodeName)
+				b.editWithMarkup(chatID, msgID, text, markup)
+			}
+		} else if strings.HasPrefix(cb.Data, "menu:nodes:nreset:") {
+			// Mutating (admin-gated via isMutatingCallback): clear all of the
+			// node's overrides through nodeMgr, then re-render the screen.
+			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:nreset:")
+			if b.nodeMgr != nil {
+				if err := b.nodeMgr.ResetNodeSetting(nodeName, ""); err != nil {
+					logger.Warn("Telegram: node cfg reset failed for %s: %v", nodeName, err)
+					if b.api != nil {
+						_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("❌ "+err.Error()))
+					}
+				} else if b.api != nil {
+					_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("↩️ Переопределения сброшены — применится при следующем отчёте ноды"))
+				}
+				text, markup := b.getNodeCfgScreen(nodeName)
 				b.editWithMarkup(chatID, msgID, text, markup)
 			}
 		} else if strings.HasPrefix(cb.Data, "menu:tz:") {
