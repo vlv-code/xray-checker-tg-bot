@@ -709,7 +709,7 @@ func (b *Bot) getStatsOverviewText() string {
 			}
 			protoStr := ""
 			if pm.Protocol != "" {
-				protoStr = fmt.Sprintf(" <i>(%s)</i>", strings.ToUpper(pm.Protocol))
+				protoStr = fmt.Sprintf(" <i>(%s)</i>", escapeHTML(strings.ToUpper(pm.Protocol)))
 			}
 			fmt.Fprintf(&sb, "• <b>%s</b>%s%s\n  24ч: %.1f%% | 7д: %.1f%% | P50: %s | P95: %s | Σ: %.0f | ПАД.: %d\n",
 				escapeHTML(pm.Name), protoStr, flapWarning, u24, u7d, p50Str, p95Str, jitter, flaps)
@@ -907,7 +907,7 @@ func (b *Bot) getIncidentsTextFiltered(filterNode string) string {
 		if filterNode == "local" {
 			filterLabel = " (🏠 Мастер)"
 		} else if filterNode != "" && filterNode != "all" {
-			filterLabel = fmt.Sprintf(" (🖥 %s)", filterNode)
+			filterLabel = fmt.Sprintf(" (🖥 %s)", escapeHTML(filterNode))
 		}
 		return fmt.Sprintf("<b>📋 Журнал инцидентов%s</b>\n\nЗафиксированных инцидентов нет — все прокси-хосты работают стабильно!\n\n", filterLabel) +
 			"<b>ℹ️ Справка:</b>\n" +

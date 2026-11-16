@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -89,5 +90,73 @@ func TestEventBuffer(t *testing.T) {
 	// Should be empty after drain
 	if len(buf.Drain()) != 0 {
 		t.Fatalf("expected buffer to be empty after drain")
+	}
+}
+
+// TestEventBuffer_CapDropsOldest (FIX: unbounded EventBuffer): Add beyond the
+// hard cap must keep exactly maxBufferedEvents events, dropping the OLDEST
+// ones, and count every dropped event.
+func TestEventBuffer_CapDropsOldest(t *testing.T) {
+	buf := NewEventBuffer()
+
+	total := maxBufferedEvents + 50
+	for i := 0; i < total; i++ {
+		buf.Add(BufferedEvent{Type: "down", ProxyName: fmt.Sprintf("p%d", i)})
+	}
+
+	events := buf.Drain()
+	if len(events) != maxBufferedEvents {
+		t.Fatalf("buffer must be capped at %d events, got %d", maxBufferedEvents, len(events))
+	}
+	if events[0].ProxyName != "p50" {
+		t.Fatalf("oldest events must be dropped first, expected first kept event p50, got %s", events[0].ProxyName)
+	}
+	if last := events[len(events)-1].ProxyName; last != fmt.Sprintf("p%d", total-1) {
+		t.Fatalf("newest event must be kept, expected p%d, got %s", total-1, last)
+	}
+}
+
+// TestEventBuffer_DrainResetsDroppedCounter (FIX: unbounded EventBuffer):
+// DroppedCount reports the overflow since the last drain and Drain resets it.
+func TestEventBuffer_DrainResetsDroppedCounter(t *testing.T) {
+	buf := NewEventBuffer()
+
+	if got := buf.DroppedCount(); got != 0 {
+		t.Fatalf("fresh buffer must report 0 dropped events, got %d", got)
+	}
+
+	for i := 0; i < maxBufferedEvents+10; i++ {
+		buf.Add(BufferedEvent{Type: "down", ProxyName: fmt.Sprintf("p%d", i)})
+	}
+	if got := buf.DroppedCount(); got != 10 {
+		t.Fatalf("expected 10 dropped events, got %d", got)
+	}
+
+	buf.Drain()
+	if got := buf.DroppedCount(); got != 0 {
+		t.Fatalf("Drain must reset the dropped counter, got %d", got)
+	}
+}
+
+// TestEventBuffer_NoDropUnderCap (FIX: unbounded EventBuffer): below the cap
+// nothing is dropped and ordering is preserved.
+func TestEventBuffer_NoDropUnderCap(t *testing.T) {
+	buf := NewEventBuffer()
+
+	for i := 0; i < 5; i++ {
+		buf.Add(BufferedEvent{Type: "up", ProxyName: fmt.Sprintf("p%d", i)})
+	}
+
+	events := buf.Drain()
+	if len(events) != 5 {
+		t.Fatalf("expected 5 events, got %d", len(events))
+	}
+	for i, e := range events {
+		if e.ProxyName != fmt.Sprintf("p%d", i) {
+			t.Fatalf("event order must be preserved, position %d holds %s", i, e.ProxyName)
+		}
+	}
+	if got := buf.DroppedCount(); got != 0 {
+		t.Fatalf("under-cap Adds must not drop events, got %d dropped", got)
 	}
 }

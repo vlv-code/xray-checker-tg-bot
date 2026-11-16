@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"fmt"
+	"html"
 	"net/url"
 	"strings"
 	"time"
@@ -192,7 +193,11 @@ func openTagsPrefix(tags []string) string {
 	return sb.String()
 }
 
+// escapeHTML escapes all five HTML-significant characters (& < > " ') so the
+// result is safe in BOTH text contexts (<b>%s</b>) and attribute contexts
+// (<a href="%s">) of Telegram HTML parse mode. Quotes must be escaped because
+// several call sites interpolate runtime values (e.g. GitHub release URLs)
+// into double-quoted href attributes.
 func escapeHTML(s string) string {
-	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
-	return r.Replace(s)
+	return html.EscapeString(s)
 }

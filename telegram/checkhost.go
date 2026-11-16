@@ -182,8 +182,20 @@ func (b *Bot) handleCheckHostBgCommand(msg *telego.Message) {
 	}
 }
 
-// RunCheckHostAudit checks all unique active proxy hosts via Check-Host and alerts if unreachable from Russia.
+// RunCheckHostAudit checks all unique active proxy hosts via Check-Host and alerts
+// if unreachable from Russia. Respects the background-audit gate (CheckHostBgEnabled):
+// used by the scheduler and the /checkhost_bg run command.
 func (b *Bot) RunCheckHostAudit() {
+	if !b.GetConfig().CheckHostBgEnabled {
+		return
+	}
+	b.runAuditNow()
+}
+
+// runAuditNow performs the Check-Host audit unconditionally. Explicit
+// user-triggered runs (menu:checkhost:run_now button) must bypass the
+// background-enabled gate so the button never silently no-ops.
+func (b *Bot) runAuditNow() {
 	b.checkHostMu.Lock()
 	if b.checkHostRunning {
 		b.checkHostMu.Unlock()
@@ -199,9 +211,6 @@ func (b *Bot) RunCheckHostAudit() {
 	}()
 
 	cfg := b.GetConfig()
-	if !cfg.CheckHostBgEnabled {
-		return
-	}
 
 	snapshot := b.source.MetricsSnapshot()
 	if len(snapshot) == 0 {

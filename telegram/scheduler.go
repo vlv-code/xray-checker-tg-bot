@@ -18,10 +18,17 @@ type BufferedEvent struct {
 	Downtime  time.Duration
 }
 
+// maxBufferedEvents caps the digest event buffer: when quiet hours (or a
+// snooze) run long, transitions would otherwise accumulate forever and get
+// delivered days later. On overflow the OLDEST events are dropped and counted
+// so the digest can tell how much was lost.
+const maxBufferedEvents = 500
+
 // EventBuffer buffers events for digests.
 type EventBuffer struct {
-	mu     sync.Mutex
-	events []BufferedEvent
+	mu      sync.Mutex
+	events  []BufferedEvent
+	dropped int
 }
 
 // NewEventBuffer creates an empty EventBuffer.
@@ -31,20 +38,37 @@ func NewEventBuffer() *EventBuffer {
 	}
 }
 
-// Add appends an event to the buffer.
+// Add appends an event to the buffer, dropping the oldest ones beyond the
+// hard cap of maxBufferedEvents.
 func (eb *EventBuffer) Add(e BufferedEvent) {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 	eb.events = append(eb.events, e)
+	if overflow := len(eb.events) - maxBufferedEvents; overflow > 0 {
+		kept := make([]BufferedEvent, maxBufferedEvents)
+		copy(kept, eb.events[overflow:])
+		eb.events = kept
+		eb.dropped += overflow
+	}
 }
 
-// Drain retrieves all buffered events and empties the buffer.
+// DroppedCount reports how many events have been dropped by the cap since the
+// last Drain. Read it BEFORE draining, since Drain resets the counter.
+func (eb *EventBuffer) DroppedCount() int {
+	eb.mu.Lock()
+	defer eb.mu.Unlock()
+	return eb.dropped
+}
+
+// Drain retrieves all buffered events and empties the buffer, resetting the
+// dropped-events counter.
 func (eb *EventBuffer) Drain() []BufferedEvent {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
 	out := eb.events
 	eb.events = make([]BufferedEvent, 0)
+	eb.dropped = 0
 	return out
 }
 

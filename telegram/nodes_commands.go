@@ -188,7 +188,29 @@ func (b *Bot) handleNodeAdd(msg *telego.Message, rawName string) {
 	}
 
 	reportURL := b.getMasterReportURL()
-	text := fmt.Sprintf("✅ <b>Нода %s успешно зарегистрирована!</b>\n\n"+
+	text := buildNodeRegisteredText(name, token, reportURL)
+
+	markup := tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("🩺 Проверить связь", "menu:nodes:health"),
+			btn("📋 Подписки нод", "menu:nodes:subs"),
+		),
+		tu.InlineKeyboardRow(
+			btn("🔙 К списку нод", "menu:nodes"),
+			btn("🏠 Главное меню", "menu:main"),
+		),
+	)
+
+	t := targetFromMessage(msg)
+	b.sendOrUpdateMenu(t, text, markup)
+}
+
+// buildNodeRegisteredText renders the one-time /nodeadd success reply. The
+// generated token and the operator-configured report URL (REPORT_URL /
+// MASTER_PUBLIC_URL) are escaped for Telegram HTML: a raw & in a URL query
+// string would break delivery of the <pre> blocks.
+func buildNodeRegisteredText(name, token, reportURL string) string {
+	return fmt.Sprintf("✅ <b>Нода %s успешно зарегистрирована!</b>\n\n"+
 		"🔑 <b>Токен ноды:</b>\n<code>%s</code>\n\n"+
 		"🌐 <b>URL для отправки отчётов:</b>\n<code>%s</code>\n\n"+
 		"📋 <b>Способ 1: через Docker Compose (рекомендуется):</b>\n"+
@@ -208,23 +230,9 @@ func (b *Bot) handleNodeAdd(msg *telego.Message, rawName string) {
 		"  ghcr.io/vlv-code/xray-checker-tg-bot:latest</pre>\n"+
 		"<i>(Если образ ещё не скачан: <code>docker build -t xray-checker-node https://github.com/vlv-code/xray-checker-tg-bot.git#main</code>)</i>\n\n"+
 		"<i>После запуска на удалённом сервере нода автоматически подключится к мастеру и появится в списке.</i>",
-		escapeHTML(name), token, reportURL,
-		escapeHTML(name), escapeHTML(name), reportURL, token,
-		escapeHTML(name), reportURL, token)
-
-	markup := tu.InlineKeyboard(
-		tu.InlineKeyboardRow(
-			btn("🩺 Проверить связь", "menu:nodes:health"),
-			btn("📋 Подписки нод", "menu:nodes:subs"),
-		),
-		tu.InlineKeyboardRow(
-			btn("🔙 К списку нод", "menu:nodes"),
-			btn("🏠 Главное меню", "menu:main"),
-		),
-	)
-
-	t := targetFromMessage(msg)
-	b.sendOrUpdateMenu(t, text, markup)
+		escapeHTML(name), escapeHTML(token), escapeHTML(reportURL),
+		escapeHTML(name), escapeHTML(name), escapeHTML(reportURL), escapeHTML(token),
+		escapeHTML(name), escapeHTML(reportURL), escapeHTML(token))
 }
 
 func (b *Bot) handleNodeDel(msg *telego.Message, rawName string) {

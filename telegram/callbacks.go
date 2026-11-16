@@ -13,12 +13,53 @@ import (
 	"xray-checker/logger"
 )
 
+// isMutatingCallback reports whether the callback route mutates persisted
+// configuration or state and therefore requires admin authorization
+// (mirrors the mutating-command gate in handleMessage). Informational routes
+// (menu views, diagnostics, per-proxy check runs) stay open to allowed chats.
+func isMutatingCallback(data string) bool {
+	switch data {
+	case "menu:quiet:toggle",
+		"menu:quiet:snooze:1h",
+		"menu:quiet:snooze:4h",
+		"menu:quiet:snooze:morning",
+		"menu:quiet:unsnooze",
+		"menu:alert_mode:live",
+		"menu:alert_mode:clean",
+		"menu:checkhost:toggle_bg",
+		"menu:checkhost:toggle_alert",
+		"menu:checkhost:run_now",
+		"menu:checkupdate",
+		"menu:nodes:toggle_sync",
+		"menu:nodes:toggle_alerts",
+		"menu:nodes:toggle_proxy_alerts":
+		return true
+	}
+	return strings.HasPrefix(data, "menu:nodes:delsub:") ||
+		strings.HasPrefix(data, "menu:tz:") ||
+		strings.HasPrefix(data, "menu:checkhost:int:") ||
+		strings.HasPrefix(data, "menu:toggle_proxy:") ||
+		strings.HasPrefix(data, "menu:toggle_host:") ||
+		strings.HasPrefix(data, "menu:interval:set:")
+}
+
 func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	if cb.Message == nil {
 		return
 	}
 	chatID := cb.Message.GetChat().ID
 	if !b.allowedChatIDs[chatID] {
+		return
+	}
+
+	// Admin gate: mutating callback routes require elevated rights when the
+	// admin list is non-empty (mirrors the mutating-command gate in handleMessage).
+	if isMutatingCallback(cb.Data) && !b.isAuthorizedMutating(cb.From.ID) {
+		if b.api != nil {
+			_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("⛔ Эта операция доступна только администраторам бота."))
+		}
+		logger.Warn("Telegram: user %d (%s) denied mutating callback %q in chat %d",
+			cb.From.ID, cb.From.Username, cb.Data, chatID)
 		return
 	}
 
@@ -180,9 +221,10 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			c.CheckHostAlertEnabled = !c.CheckHostAlertEnabled
 		})
 		b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
-	case "menu:checkhost:run":
+	case "menu:checkhost:run_now":
+		// Explicit user-triggered run: bypasses the CheckHostBgEnabled gate.
 		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🚀 Запуск фоновой проверки Check-Host..."))
-		go b.RunCheckHostAudit()
+		go b.runAuditNow()
 	case "menu:checkupdate":
 		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🔍 Проверяю релизы на GitHub..."))
 		go func() {
@@ -212,7 +254,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				"• Текущая версия: <code>%s</code>\n"+
 				"• Последний релиз: <a href=\"%s\">%s</a>\n\n"+
 				"Обновлений не требуется.",
-				escapeHTML(currentDisplay), rel.HTMLURL, escapeHTML(rel.TagName))
+				escapeHTML(currentDisplay), escapeHTML(rel.HTMLURL), escapeHTML(rel.TagName))
 			markup := tu.InlineKeyboard(
 				tu.InlineKeyboardRow(
 					btnURL("🔗 Все релизы на GitHub", "https://github.com/vlv-code/xray-checker-tg-bot/releases"),
@@ -464,24 +506,39 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				page = 1
 			}
 
-			var reports []checker.ProxyDiagReport
-			if target == "local" || target == "" {
-				reports = b.getCachedDiagnosticsReports()
-				if len(reports) == 0 {
-					reports = b.getDiagnosticsReports(false)
+			renderDetails := func(reports []checker.ProxyDiagReport) {
+				tabs := b.getNodeTabs(target)
+				if b.isRichMode() {
+					rich, totalPages := b.buildDiagnosticsDetailsRichMessageWithTarget(reports, target, page)
+					b.showRichReport(ct, msgID, rich, DiagnosticsPaginationMarkupWithTabs(target, page, totalPages, tabs))
+				} else {
+					pageText, totalPages := b.getDiagnosticsPageTextWithTarget(reports, target, page)
+					b.editWithMarkup(chatID, msgID, pageText, DiagnosticsPaginationMarkupWithTabs(target, page, totalPages, tabs))
 				}
-			} else {
-				reports = b.getNodeDiagnosticsReports(target)
 			}
 
-			tabs := b.getNodeTabs(target)
-			if b.isRichMode() {
-				rich, totalPages := b.buildDiagnosticsDetailsRichMessageWithTarget(reports, target, page)
-				b.showRichReport(ct, msgID, rich, DiagnosticsPaginationMarkupWithTabs(target, page, totalPages, tabs))
-			} else {
-				pageText, totalPages := b.getDiagnosticsPageTextWithTarget(reports, target, page)
-				b.editWithMarkup(chatID, msgID, pageText, DiagnosticsPaginationMarkupWithTabs(target, page, totalPages, tabs))
+			if target == "local" || target == "" {
+				// Fast path: fresh cache — render immediately, no network.
+				if cached := b.getCachedDiagnosticsReports(); len(cached) > 0 {
+					renderDetails(cached)
+					return
+				}
+				// Cold cache: a full probe sweep takes tens of seconds, so run
+				// it in the background like menu:diag instead of blocking the
+				// single update-processing goroutine for all chats.
+				seq := b.nextMsgSeq(chatID, msgID)
+				b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование детального отчёта...</b>", BackToMenuMarkup())
+				go b.runUpdateSafely(func() {
+					reports := b.getDiagnosticsReports(false)
+					if !b.isMsgSeqValid(chatID, msgID, seq) {
+						return
+					}
+					renderDetails(reports)
+				})
+				return
 			}
+			// Remote node reports come from memory (no probe sweep).
+			renderDetails(b.getNodeDiagnosticsReports(target))
 		} else if strings.HasPrefix(cb.Data, "menu:stats:incidents:") {
 			filter := strings.TrimPrefix(cb.Data, "menu:stats:incidents:")
 			tabs := b.getNodeTabs("")
@@ -505,34 +562,48 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				page = 1
 			}
 
-			var reports []checker.ProxyDiagReport
-			if target == "local" || target == "" {
-				reports = b.getCachedDiagnosticsReports()
-				if len(reports) == 0 {
-					reports = b.getDiagnosticsReports(false)
+			renderPickDeep := func(reports []checker.ProxyDiagReport) {
+				pageSize := diagPageSize
+				if b.isRichMode() {
+					pageSize = diagRichDetailsPageSize
 				}
-			} else {
-				reports = b.getNodeDiagnosticsReports(target)
+				start := (page - 1) * pageSize
+				end := start + pageSize
+				if start > len(reports) {
+					start = len(reports)
+				}
+				if end > len(reports) {
+					end = len(reports)
+				}
+				pageReports := reports[start:end]
+				text := "🔬 <b>Углубленная проверка соединения</b>\n\n" +
+					"Выберите прокси-хост для глубокого тестирования сетевых этапов (DNS, TCP, TLS, HTTP-мишени, Check-Host):"
+				tabs := b.getNodeTabs(target)
+				markup := PickDeepDiagnosticsMarkupWithTabs(target, tabs, pageReports, page)
+				b.editWithMarkup(chatID, msgID, text, markup)
 			}
 
-			pageSize := diagPageSize
-			if b.isRichMode() {
-				pageSize = diagRichDetailsPageSize
+			if target == "local" || target == "" {
+				// Fast path: fresh cache — render immediately, no network.
+				if cached := b.getCachedDiagnosticsReports(); len(cached) > 0 {
+					renderPickDeep(cached)
+					return
+				}
+				// Cold cache: run the probe sweep in the background like
+				// menu:diag instead of blocking the update goroutine.
+				seq := b.nextMsgSeq(chatID, msgID)
+				b.editWithMarkup(chatID, msgID, "⏳ <b>Подготовка углубленной проверки...</b>", BackToMenuMarkup())
+				go b.runUpdateSafely(func() {
+					reports := b.getDiagnosticsReports(false)
+					if !b.isMsgSeqValid(chatID, msgID, seq) {
+						return
+					}
+					renderPickDeep(reports)
+				})
+				return
 			}
-			start := (page - 1) * pageSize
-			end := start + pageSize
-			if start > len(reports) {
-				start = len(reports)
-			}
-			if end > len(reports) {
-				end = len(reports)
-			}
-			pageReports := reports[start:end]
-			text := "🔬 <b>Углубленная проверка соединения</b>\n\n" +
-				"Выберите прокси-хост для глубокого тестирования сетевых этапов (DNS, TCP, TLS, HTTP-мишени, Check-Host):"
-			tabs := b.getNodeTabs(target)
-			markup := PickDeepDiagnosticsMarkupWithTabs(target, tabs, pageReports, page)
-			b.editWithMarkup(chatID, msgID, text, markup)
+			// Remote node reports come from memory (no probe sweep).
+			renderPickDeep(b.getNodeDiagnosticsReports(target))
 		} else if strings.HasPrefix(cb.Data, "menu:diag:deep:") {
 			rest := strings.TrimPrefix(cb.Data, "menu:diag:deep:")
 			parts := strings.Split(rest, ":")

@@ -196,7 +196,7 @@ func formatReleaseNotification(currentVersion string, rel *ReleaseInfo) string {
 	if title == "" {
 		title = rel.TagName
 	}
-	sb.WriteString(fmt.Sprintf("📦 <b>Релиз:</b> <a href=\"%s\">%s</a>\n", rel.HTMLURL, escapeHTML(title)))
+	sb.WriteString(fmt.Sprintf("📦 <b>Релиз:</b> <a href=\"%s\">%s</a>\n", escapeHTML(rel.HTMLURL), escapeHTML(title)))
 
 	body := strings.TrimSpace(rel.Body)
 	if body != "" {

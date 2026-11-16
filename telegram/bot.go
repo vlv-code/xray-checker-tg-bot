@@ -6,13 +6,16 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/mymmrac/telego"
+	telegoapi "github.com/mymmrac/telego/telegoapi"
 	tu "github.com/mymmrac/telego/telegoutil"
 
 	"xray-checker/checker"
@@ -97,6 +100,10 @@ type Bot struct {
 	lastReleaseCheck   time.Time
 
 	nowFunc func() time.Time
+
+	// rateLimitMaxWait caps a single 429 retry sleep; test seam, zero means
+	// the production maxRateLimitWait.
+	rateLimitMaxWait time.Duration
 }
 
 // New creates a Bot and verifies the token against the Telegram API.
@@ -283,7 +290,10 @@ func (b *Bot) CheckAndNotifyRelease(force bool) (*ReleaseInfo, bool, error) {
 			if quiet {
 				params = params.WithDisableNotification()
 			}
-			if _, err := b.api.SendMessage(b.ctx, params); err != nil {
+			if err := b.callWithRateLimitRetry(t.ChatID, "send release notification", func() error {
+				_, sendErr := b.api.SendMessage(b.ctx, params)
+				return sendErr
+			}); err != nil {
 				logger.Error("Telegram: failed to send release notification to %s: %v", t.targetKey(), err)
 			}
 		}
@@ -420,13 +430,35 @@ func (b *Bot) StartCommands() {
 
 	go func() {
 		for update := range updates {
-			if update.Message != nil {
-				b.handleMessage(update.Message)
-			} else if update.CallbackQuery != nil {
-				b.handleCallbackQuery(update.CallbackQuery)
-			}
+			b.handleUpdateSafely(update)
 		}
 	}()
+}
+
+// handleUpdateSafely dispatches a single update to its handler, converting any
+// handler panic into a log record so that one malformed update or handler bug
+// cannot kill the whole polling loop (and with it the process).
+func (b *Bot) handleUpdateSafely(update telego.Update) {
+	b.runUpdateSafely(func() { b.dispatchUpdate(update) })
+}
+
+// dispatchUpdate routes one update to its concrete handler.
+func (b *Bot) dispatchUpdate(update telego.Update) {
+	if update.Message != nil {
+		b.handleMessage(update.Message)
+	} else if update.CallbackQuery != nil {
+		b.handleCallbackQuery(update.CallbackQuery)
+	}
+}
+
+// runUpdateSafely runs fn converting any panic into a log record.
+func (b *Bot) runUpdateSafely(fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("Telegram: panic handling update: %v\n%s", r, debug.Stack())
+		}
+	}()
+	fn()
 }
 
 // Stop halts long-polling and scheduled routines and flushes stats to disk.
@@ -557,7 +589,9 @@ func (b *Bot) checkSchedules(now time.Time) {
 
 	// Periodically persist stats to disk
 	if b.statsStore != nil && now.Minute()%5 == 0 {
-		_ = b.statsStore.Save()
+		if err := b.statsStore.Save(); err != nil {
+			logger.Warn("Telegram: periodic stats save failed: %v", err)
+		}
 	}
 }
 
@@ -570,6 +604,73 @@ func (b *Bot) now() time.Time {
 		return b.nowFunc().In(b.loc())
 	}
 	return time.Now().In(b.loc())
+}
+
+// Rate-limit retry policy for outgoing sends/edits: without it a Telegram 429
+// silently loses the alert, digest or menu update for that cycle.
+const (
+	// maxRateLimitRetries is how many times a 429-throttled call is retried.
+	maxRateLimitRetries = 2
+	// maxRateLimitWait caps a single retry sleep no matter what retry_after says.
+	maxRateLimitWait = 10 * time.Second
+	// defaultRateLimitWait is used when the 429 carries no usable retry_after.
+	defaultRateLimitWait = 3 * time.Second
+)
+
+// rateLimitWait reports whether err is a Telegram flood-control (429) error
+// and how long to wait before retrying: min(retry_after, maxRateLimitWait),
+// falling back to defaultRateLimitWait when retry_after is missing or
+// non-positive. Any other error is not retryable.
+func rateLimitWait(err error) (time.Duration, bool) {
+	var apiErr *telegoapi.Error
+	if !errors.As(err, &apiErr) || apiErr.ErrorCode != http.StatusTooManyRequests {
+		return 0, false
+	}
+	if apiErr.Parameters == nil || apiErr.Parameters.RetryAfter <= 0 {
+		return defaultRateLimitWait, true
+	}
+	wait := time.Duration(apiErr.Parameters.RetryAfter) * time.Second
+	if wait > maxRateLimitWait {
+		wait = maxRateLimitWait
+	}
+	return wait, true
+}
+
+// callWithRateLimitRetry runs call, retrying the SAME request up to
+// maxRateLimitRetries times when Telegram answers 429; other errors are
+// returned unchanged. It sleeps between attempts, so callers must not hold
+// b.mu (or any lock guarding message state) across it — no current send/edit
+// path does (alerts.go releases b.mu before network calls, ProcessNodesHealth
+// releases nodeHealthMu, sendOrUpdateMenu releases lastMenuMu).
+func (b *Bot) callWithRateLimitRetry(chatID int64, what string, call func() error) error {
+	var err error
+	for attempt := 0; ; attempt++ {
+		err = call()
+		if err == nil {
+			return nil
+		}
+		wait, retryable := rateLimitWait(err)
+		if !retryable || attempt >= maxRateLimitRetries {
+			return err
+		}
+		if b.rateLimitMaxWait > 0 && wait > b.rateLimitMaxWait {
+			wait = b.rateLimitMaxWait
+		}
+		logger.Warn("Telegram: %s to chat %d hit rate limit, retrying in %s (attempt %d/%d)", what, chatID, wait, attempt+1, maxRateLimitRetries)
+		if b.ctx == nil {
+			time.Sleep(wait)
+			continue
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-b.ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return err
+		case <-timer.C:
+		}
+	}
 }
 
 func (b *Bot) broadcast(text string) {
@@ -587,7 +688,10 @@ func (b *Bot) send(t ChatTarget, text string) {
 		if t.ThreadID > 0 {
 			params = params.WithMessageThreadID(t.ThreadID)
 		}
-		if _, err := b.api.SendMessage(b.ctx, params); err != nil {
+		if err := b.callWithRateLimitRetry(t.ChatID, "send message", func() error {
+			_, sendErr := b.api.SendMessage(b.ctx, params)
+			return sendErr
+		}); err != nil {
 			logger.Error("Telegram: failed to send message to %s: %v", t.targetKey(), err)
 		}
 	}
@@ -601,8 +705,12 @@ func (b *Bot) sendAndReturn(t ChatTarget, text string) (*telego.Message, error) 
 	if t.ThreadID > 0 {
 		params = params.WithMessageThreadID(t.ThreadID)
 	}
-	sent, err := b.api.SendMessage(b.ctx, params)
-	if err != nil {
+	var sent *telego.Message
+	if err := b.callWithRateLimitRetry(t.ChatID, "send message", func() error {
+		var sendErr error
+		sent, sendErr = b.api.SendMessage(b.ctx, params)
+		return sendErr
+	}); err != nil {
 		logger.Error("Telegram: failed to send message to %s: %v", t.targetKey(), err)
 		return nil, err
 	}
@@ -622,8 +730,12 @@ func (b *Bot) sendWithMarkup(t ChatTarget, text string, markup *telego.InlineKey
 		if t.ThreadID > 0 {
 			params = params.WithMessageThreadID(t.ThreadID)
 		}
-		sent, err := b.api.SendMessage(b.ctx, params)
-		if err != nil {
+		var sent *telego.Message
+		if err := b.callWithRateLimitRetry(t.ChatID, "send message", func() error {
+			var sendErr error
+			sent, sendErr = b.api.SendMessage(b.ctx, params)
+			return sendErr
+		}); err != nil {
 			logger.Error("Telegram: failed to send message to %s: %v", t.targetKey(), err)
 			return nil, err
 		}
@@ -635,7 +747,10 @@ func (b *Bot) sendWithMarkup(t ChatTarget, text string, markup *telego.InlineKey
 		if t.ThreadID > 0 {
 			params = params.WithMessageThreadID(t.ThreadID)
 		}
-		if _, err := b.api.SendMessage(b.ctx, params); err != nil {
+		if err := b.callWithRateLimitRetry(t.ChatID, "send chunk", func() error {
+			_, sendErr := b.api.SendMessage(b.ctx, params)
+			return sendErr
+		}); err != nil {
 			logger.Error("Telegram: failed to send chunk to %s: %v", t.targetKey(), err)
 		}
 	}
@@ -644,8 +759,12 @@ func (b *Bot) sendWithMarkup(t ChatTarget, text string, markup *telego.InlineKey
 	if t.ThreadID > 0 {
 		params = params.WithMessageThreadID(t.ThreadID)
 	}
-	sent, err := b.api.SendMessage(b.ctx, params)
-	if err != nil {
+	var sent *telego.Message
+	if err := b.callWithRateLimitRetry(t.ChatID, "send final chunk with markup", func() error {
+		var sendErr error
+		sent, sendErr = b.api.SendMessage(b.ctx, params)
+		return sendErr
+	}); err != nil {
 		logger.Error("Telegram: failed to send final chunk with markup to %s: %v", t.targetKey(), err)
 		return nil, err
 	}
@@ -694,6 +813,17 @@ func (b *Bot) sendOrUpdateMenu(t ChatTarget, text string, markup *telego.InlineK
 	oldMsgID, hasOld := b.lastMenuMsg[key]
 	b.lastMenuMu.Unlock()
 
+	// Send first: if sending fails, the previous menu message stays visible
+	// and its cached id remains valid, so the user never loses the menu.
+	sent, err := b.sendWithMarkup(t, text, markup)
+	if err != nil {
+		logger.Error("Telegram: failed to send menu to %s, keeping previous menu: %v", t.targetKey(), err)
+		return
+	}
+	if sent == nil || sent.GetMessageID() <= 0 {
+		return
+	}
+
 	if hasOld && oldMsgID > 0 && b.api != nil {
 		_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
 			ChatID:    tu.ID(t.ChatID),
@@ -701,12 +831,9 @@ func (b *Bot) sendOrUpdateMenu(t ChatTarget, text string, markup *telego.InlineK
 		})
 	}
 
-	sent, _ := b.sendWithMarkup(t, text, markup)
-	if sent != nil && sent.GetMessageID() > 0 {
-		b.lastMenuMu.Lock()
-		b.lastMenuMsg[key] = sent.GetMessageID()
-		b.lastMenuMu.Unlock()
-	}
+	b.lastMenuMu.Lock()
+	b.lastMenuMsg[key] = sent.GetMessageID()
+	b.lastMenuMu.Unlock()
 }
 
 func (b *Bot) edit(chatID int64, messageID int, text string) {
@@ -724,7 +851,10 @@ func (b *Bot) editWithMarkup(chatID int64, messageID int, text string, markup *t
 		ParseMode:   telego.ModeHTML,
 		ReplyMarkup: markup,
 	}
-	if _, err := b.api.EditMessageText(b.ctx, params); err != nil {
+	if err := b.callWithRateLimitRetry(chatID, "edit message", func() error {
+		_, editErr := b.api.EditMessageText(b.ctx, params)
+		return editErr
+	}); err != nil {
 		if strings.Contains(err.Error(), "message is not modified") {
 			return
 		}
@@ -736,12 +866,32 @@ func (b *Bot) editWithMarkup(chatID int64, messageID int, text string, markup *t
 				ParseMode:   telego.ModeHTML,
 				ReplyMarkup: markup,
 			}
-			_, _ = b.api.EditMessageText(b.ctx, fallbackParams)
-			b.send(ChatTarget{ChatID: chatID}, text)
+			_ = b.callWithRateLimitRetry(chatID, "edit message", func() error {
+				_, editErr := b.api.EditMessageText(b.ctx, fallbackParams)
+				return editErr
+			})
+			b.send(b.targetForChat(chatID), text)
 			return
 		}
 		logger.Error("Telegram: failed to edit message %d in chat %d: %v", messageID, chatID, err)
 	}
+}
+
+// targetForChat returns the configured send target for a chat, preferring an
+// entry bound to a forum topic so follow-up sends stay inside the same topic.
+// Falls back to a whole-chat target when the chat is not configured.
+func (b *Bot) targetForChat(chatID int64) ChatTarget {
+	for _, t := range b.targets {
+		if t.ChatID == chatID && t.ThreadID > 0 {
+			return t
+		}
+	}
+	for _, t := range b.targets {
+		if t.ChatID == chatID {
+			return t
+		}
+	}
+	return ChatTarget{ChatID: chatID}
 }
 
 func (b *Bot) editWithRichMarkup(chatID int64, messageID int, rich *telego.InputRichMessage, markup *telego.InlineKeyboardMarkup) error {
@@ -751,7 +901,10 @@ func (b *Bot) editWithRichMarkup(chatID int64, messageID int, rich *telego.Input
 		RichMessage: rich,
 		ReplyMarkup: markup,
 	}
-	_, err := b.api.EditMessageText(b.ctx, params)
+	err := b.callWithRateLimitRetry(chatID, "edit rich message", func() error {
+		_, editErr := b.api.EditMessageText(b.ctx, params)
+		return editErr
+	})
 	if err != nil {
 		if strings.Contains(err.Error(), "message is not modified") {
 			return nil
@@ -773,8 +926,12 @@ func (b *Bot) sendRich(t ChatTarget, rich *telego.InputRichMessage, markup *tele
 	if t.ThreadID > 0 {
 		params.MessageThreadID = t.ThreadID
 	}
-	sent, err := b.api.SendRichMessage(b.ctx, params)
-	if err != nil {
+	var sent *telego.Message
+	if err := b.callWithRateLimitRetry(t.ChatID, "send rich message", func() error {
+		var sendErr error
+		sent, sendErr = b.api.SendRichMessage(b.ctx, params)
+		return sendErr
+	}); err != nil {
 		logger.Error("Telegram: failed to send rich message to %s: %v", t.targetKey(), err)
 		return nil, err
 	}

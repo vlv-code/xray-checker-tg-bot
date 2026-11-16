@@ -266,7 +266,7 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 	}
 
 	if rep.Disabled || rep.Status == "disabled" {
-		fmt.Fprintf(sb, "⏸️ <b>%s</b> <i>(%s)</i> — <i>проверка отключена</i>\n\n", escapeHTML(rep.ProxyName), proto)
+		fmt.Fprintf(sb, "⏸️ <b>%s</b> <i>(%s)</i> — <i>проверка отключена</i>\n\n", escapeHTML(rep.ProxyName), escapeHTML(proto))
 		return
 	}
 
@@ -283,7 +283,7 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 		flappingSuffix = " ⚠️ флап"
 	}
 
-	fmt.Fprintf(sb, "%s <b>%s</b> <i>(%s)</i>%s\n", icon, escapeHTML(rep.ProxyName), proto, flappingSuffix)
+	fmt.Fprintf(sb, "%s <b>%s</b> <i>(%s)</i>%s\n", icon, escapeHTML(rep.ProxyName), escapeHTML(proto), flappingSuffix)
 
 	// Status line with soft hint or latency percentiles
 	if rep.Status == "offline" {
@@ -351,9 +351,9 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 		fmt.Fprintf(sb, "  • DNS: ❌ %s\n", escapeHTML(rep.NodeHealth.DNSErr))
 	} else if rep.NodeHealth.ResolvedIP != "" {
 		if rep.NodeHealth.DNSLatency > 0 {
-			fmt.Fprintf(sb, "  • DNS: ✅ <code>%s</code> (%.0f ms)\n", rep.NodeHealth.ResolvedIP, float64(rep.NodeHealth.DNSLatency.Milliseconds()))
+			fmt.Fprintf(sb, "  • DNS: ✅ <code>%s</code> (%.0f ms)\n", escapeHTML(rep.NodeHealth.ResolvedIP), float64(rep.NodeHealth.DNSLatency.Milliseconds()))
 		} else {
-			fmt.Fprintf(sb, "  • DNS: ✅ <code>%s</code>\n", rep.NodeHealth.ResolvedIP)
+			fmt.Fprintf(sb, "  • DNS: ✅ <code>%s</code>\n", escapeHTML(rep.NodeHealth.ResolvedIP))
 		}
 	}
 
@@ -393,13 +393,13 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 	for _, tr := range rep.Targets {
 		siteName := simplifyTargetName(tr.URL)
 		if tr.Success {
-			fmt.Fprintf(sb, "  • %s: ✅ %.0f ms\n", siteName, float64(tr.Latency.Milliseconds()))
+			fmt.Fprintf(sb, "  • %s: ✅ %.0f ms\n", escapeHTML(siteName), float64(tr.Latency.Milliseconds()))
 		} else {
 			errText := tr.Error
 			if (rep.Status == "online" || rep.Status == "degraded") && !strings.Contains(errText, "Туннель не поднят") {
 				errText = formatTargetErrorInsideTunnel(errText, tr.StatusCode)
 			}
-			fmt.Fprintf(sb, "  • %s: ❌ %s\n", siteName, escapeHTML(errText))
+			fmt.Fprintf(sb, "  • %s: ❌ %s\n", escapeHTML(siteName), escapeHTML(errText))
 		}
 	}
 
@@ -550,7 +550,7 @@ func (b *Bot) getDiagnosticsSummaryTextWithTarget(reports []checker.ProxyDiagRep
 			proto = "PROXY"
 		}
 
-		fmt.Fprintf(&sb, "%s <b>%s</b> (%s) — %s\n", icon, escapeHTML(rep.ProxyName), proto, statusDesc)
+		fmt.Fprintf(&sb, "%s <b>%s</b> (%s) — %s\n", icon, escapeHTML(rep.ProxyName), escapeHTML(proto), statusDesc)
 	}
 
 	fmt.Fprintf(&sb, "\n💡 <i>В сети: %d | Сбоев: %d", onlineCount, offlineCount)
@@ -629,7 +629,7 @@ func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeH
 		}
 		fmt.Fprintf(&sb, "<b>УЗЕЛ:</b>      %s\n", escapeHTML(nodeInfo))
 	}
-	fmt.Fprintf(&sb, "<b>ПРОТОКОЛ:</b>  %s\n", proto)
+	fmt.Fprintf(&sb, "<b>ПРОТОКОЛ:</b>  %s\n", escapeHTML(proto))
 	fmt.Fprintf(&sb, "<b>ТРАНСПОРТ:</b> %s\n", transport)
 	fmt.Fprintf(&sb, "<b>АДРЕС:</b>     %s\n\n", escapeHTML(pm.Address))
 
@@ -642,7 +642,7 @@ func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeH
 		if health.DNSLatency > 0 {
 			fmt.Fprintf(&sb, "  1. DNS-резолв ........... %.0f мс  ✅\n", float64(health.DNSLatency.Milliseconds()))
 		} else {
-			fmt.Fprintf(&sb, "  1. DNS-резолв ........... ✅ (%s)\n", health.ResolvedIP)
+			fmt.Fprintf(&sb, "  1. DNS-резолв ........... ✅ (%s)\n", escapeHTML(health.ResolvedIP))
 		}
 	} else {
 		sb.WriteString("  1. DNS-резолв ........... —      (не требуется)\n")

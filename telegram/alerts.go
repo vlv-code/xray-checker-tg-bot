@@ -25,6 +25,15 @@ type recoveryAction struct {
 	alertMode string
 }
 
+// quietCleanup is one alert-message edit/delete for a quiet-hours recovery:
+// params are built while b.mu is held and executed after the lock is
+// released, so callWithRateLimitRetry may sleep on 429 without the lock.
+type quietCleanup struct {
+	chatID int64
+	edit   *telego.EditMessageTextParams
+	del    *telego.DeleteMessageParams
+}
+
 // ProcessSnapshot compares the current proxy snapshot against the last known
 // state and handles transitions with smart alert lifecycle and stats tracking.
 func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
@@ -66,6 +75,7 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 	var disabledDeletions []deleteAction
 	var outages []metrics.ProxyMetric
 	var recoveries []recoveryAction
+	var quietCleanups []quietCleanup
 
 	seenNow := make(map[string]bool, len(snapshot))
 	for _, pm := range snapshot {
@@ -155,19 +165,19 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 							downtime = now.Sub(alert.DownAt)
 						}
 						if cfg.AlertMode == AlertModeClean && b.api != nil {
-							_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+							quietCleanups = append(quietCleanups, quietCleanup{chatID: t.ChatID, del: &telego.DeleteMessageParams{
 								ChatID:    tu.ID(t.ChatID),
 								MessageID: alert.MessageID,
-							})
+							}})
 						} else if cfg.AlertMode == AlertModeLive && b.api != nil {
 							liveText := fmt.Sprintf("✅ <b>%s</b> восстановлен — %.0f ms (простой: %s)%s",
 								escapeHTML(pm.Name), pm.LatencyMs, FormatDowntime(downtime), nodeLineFor(pm))
-							_, _ = b.api.EditMessageText(b.ctx, &telego.EditMessageTextParams{
+							quietCleanups = append(quietCleanups, quietCleanup{chatID: t.ChatID, edit: &telego.EditMessageTextParams{
 								ChatID:    tu.ID(t.ChatID),
 								MessageID: alert.MessageID,
 								Text:      liveText,
 								ParseMode: telego.ModeHTML,
-							})
+							}})
 						}
 					}
 				}
@@ -197,9 +207,17 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 		}
 	}
 
-	// Drop state for removed proxies
+	// Drop state for removed proxies: resolve any still-active alert so the
+	// outage message is cleaned up (mirrors disabled-proxy cleanup) instead of
+	// lingering forever in Clean/Live mode.
+	var removedDeletions []deleteAction
 	for id := range b.lastSeen {
 		if !seenNow[id] {
+			for _, t := range b.targets {
+				if alert, hadAlert := b.tracker.Resolve(t.ChatID, t.ThreadID, id); hadAlert {
+					removedDeletions = append(removedDeletions, deleteAction{chatID: t.ChatID, messageID: alert.MessageID})
+				}
+			}
 			delete(b.lastSeen, id)
 			delete(b.lastFlapAlert, id)
 		}
@@ -211,8 +229,37 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 	// Release lock BEFORE executing network calls
 	b.mu.Unlock()
 
+	// 0. Quiet-hours recovery edits/deletes: collected while b.mu was held,
+	// executed via callWithRateLimitRetry now that the lock is released (the
+	// helper sleeps on 429 and must never run under b.mu).
+	for _, qc := range quietCleanups {
+		if b.api == nil {
+			continue
+		}
+		if qc.edit != nil {
+			_ = b.callWithRateLimitRetry(qc.chatID, "quiet-hours recovery edit", func() error {
+				_, err := b.api.EditMessageText(b.ctx, qc.edit)
+				return err
+			})
+		} else if qc.del != nil {
+			_ = b.callWithRateLimitRetry(qc.chatID, "quiet-hours recovery delete", func() error {
+				return b.api.DeleteMessage(b.ctx, qc.del)
+			})
+		}
+	}
+
 	// 1. Process deletions for disabled proxies
 	for _, del := range disabledDeletions {
+		if b.api != nil {
+			_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+				ChatID:    tu.ID(del.chatID),
+				MessageID: del.messageID,
+			})
+		}
+	}
+
+	// 1b. Process deletions for proxies removed from the snapshot
+	for _, del := range removedDeletions {
 		if b.api != nil {
 			_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
 				ChatID:    tu.ID(del.chatID),
@@ -292,6 +339,9 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				}
 			}
 		} else { // AlertModeLive
+			// Recovery is reported only when an outage alert was actually
+			// shown (same rule as Clean mode): flap-suppressed or
+			// quiet-buffered downs must not produce orphan recovery messages.
 			if rec.hadAlert && b.api != nil {
 				liveText := fmt.Sprintf("✅ <b>%s</b> восстановлен — %.0f ms (простой: %s)%s",
 					escapeHTML(rec.pm.Name), rec.pm.LatencyMs, FormatDowntime(rec.downtime), nodeLineFor(rec.pm))
@@ -302,9 +352,6 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 					ParseMode: telego.ModeHTML,
 				}
 				_, _ = b.api.EditMessageText(b.ctx, params)
-			} else if b.notifyOnRecovery {
-				recoveryText := fmt.Sprintf("✅ <b>%s</b> восстановлен — %.0f ms%s", escapeHTML(rec.pm.Name), rec.pm.LatencyMs, nodeLineFor(rec.pm))
-				b.send(rec.target, recoveryText)
 			}
 		}
 	}

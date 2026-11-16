@@ -426,6 +426,7 @@ func (b *Bot) sendMorningDigest(now time.Time) {
 		}
 	}
 
+	dropped := b.eventBuffer.DroppedCount()
 	events := b.eventBuffer.Drain()
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "<b>🌅 Утренняя сводка Xray Checker</b>\n\n"+
@@ -443,6 +444,9 @@ func (b *Bot) sendMorningDigest(now time.Time) {
 			} else {
 				fmt.Fprintf(&sb, "• ✅ %s: <b>%s</b> — восстановлен (простой: %s)\n", tStr, escapeHTML(e.ProxyName), FormatDowntime(e.Downtime))
 			}
+		}
+		if dropped > 0 {
+			fmt.Fprintf(&sb, "\n<i>…и ещё %d более старых событий</i>\n", dropped)
 		}
 	}
 
@@ -472,9 +476,29 @@ func (b *Bot) sendDaytimeDigest(now time.Time) {
 		}
 	}
 
+	// Deliver snooze-buffered events here so they don't wait for the next
+	// morning digest.
+	dropped := b.eventBuffer.DroppedCount()
+	events := b.eventBuffer.Drain()
+
 	text := fmt.Sprintf("<b>📊 Дневная сводка Xray Checker</b>\n\n"+
 		"• Доступность прокси-хостов: <b>%d/%d онлайн</b>\n"+
-		"• Время: <b>%s</b>", online, totalActive, now.In(b.loc()).Format("15:04"))
+		"• Время: <b>%s</b>\n\n", online, totalActive, now.In(b.loc()).Format("15:04"))
+
+	if len(events) > 0 {
+		text += "<b>Инциденты с последней сводки:</b>\n"
+		for _, e := range events {
+			tStr := e.Timestamp.In(b.loc()).Format("15:04")
+			if e.Type == "down" {
+				text += fmt.Sprintf("• 🔴 %s: <b>%s</b> — сбой (%s)\n", tStr, escapeHTML(e.ProxyName), escapeHTML(e.Reason))
+			} else {
+				text += fmt.Sprintf("• ✅ %s: <b>%s</b> — восстановлен (простой: %s)\n", tStr, escapeHTML(e.ProxyName), FormatDowntime(e.Downtime))
+			}
+		}
+		if dropped > 0 {
+			text += fmt.Sprintf("\n<i>…и ещё %d более старых событий</i>\n", dropped)
+		}
+	}
 
 	b.broadcast(text)
 }
@@ -549,7 +573,7 @@ func (b *Bot) handleCheckUpdate(msg *telego.Message) {
 		"• Текущая версия: <code>%s</code>\n"+
 		"• Последний релиз: <a href=\"%s\">%s</a>\n\n"+
 		"Обновлений не требуется.",
-		escapeHTML(currentDisplay), rel.HTMLURL, escapeHTML(rel.TagName))
+		escapeHTML(currentDisplay), escapeHTML(rel.HTMLURL), escapeHTML(rel.TagName))
 
 	markup := tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
