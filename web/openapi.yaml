@@ -122,6 +122,57 @@ paths:
                       data:
                         $ref: '#/components/schemas/ConfigResponse'
 
+  /config/{stableID}:
+    get:
+      summary: Proxy config status endpoint
+      description: >
+        Per-proxy status URL used by the dashboard config badges and external
+        health monitors. Returns plain text "OK" when the proxy is online and
+        "Failed" with HTTP 503 when it is offline. Returns 404 when the
+        stableID is unknown or no check result is available yet. When
+        SIMULATE_LATENCY is enabled the response is delayed by the proxy
+        latency, capped at 2 seconds. No caching headers are set. In protected
+        mode the endpoint is behind basic auth; in --web-public mode it is
+        served without authentication.
+      tags:
+        - Config
+      parameters:
+        - name: stableID
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Proxy Stable ID (16-character hash)
+      responses:
+        '200':
+          description: Proxy is online
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "OK"
+        '400':
+          description: Empty config path
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "Config path is required"
+        '404':
+          description: Proxy not found or status not available yet
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "Config not found"
+        '503':
+          description: Proxy is offline
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "Failed"
+
   /api/v1/system/info:
     get:
       summary: Get system info
@@ -158,6 +209,58 @@ paths:
                 items:
                   $ref: '#/components/schemas/NodeHealth'
 
+  /api/v1/nodes/report:
+    post:
+      tags:
+        - nodes
+      summary: Ingest a node report
+      description: >
+        Endpoint for remote checker nodes to deliver the results of a check
+        cycle to this master. Authenticated by the node's own bearer token
+        (Authorization: Bearer <token>), independent of the dashboard basic
+        auth. The body is limited to 5 MiB; requests exceeding the limit are
+        rejected as 400. A checkIntervalSec of 0 or less is clamped to 300.
+      operationId: reportNode
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportPayload'
+      responses:
+        '200':
+          description: >
+            Report accepted. Returns the full desired list of managed
+            subscription URLs for the node and optional synchronized runtime
+            settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResponse'
+        '400':
+          description: Malformed JSON body or body exceeding 5 MiB
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "bad request"
+        '401':
+          description: Invalid or missing bearer token
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "unauthorized"
+        '405':
+          description: Method not allowed (only POST is accepted)
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "method not allowed"
+
   /api/v1/system/ip:
     get:
       summary: Get current IP
@@ -183,11 +286,61 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIErrorResponse'
 
+  /health:
+    get:
+      summary: Liveness probe
+      description: >
+        Returns "OK" unconditionally. Mounted outside of the basic auth
+        wrapper so container healthchecks and uptime monitors can reach it.
+      tags:
+        - System
+      security: []
+      responses:
+        '200':
+          description: Service is up
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "OK"
+
+  /api/v1/docs:
+    get:
+      summary: Swagger UI
+      description: Serves the Swagger UI page for browsing this API specification.
+      tags:
+        - Docs
+      responses:
+        '200':
+          description: Swagger UI page
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /api/v1/openapi.yaml:
+    get:
+      summary: OpenAPI specification
+      description: Serves this OpenAPI specification in YAML format.
+      tags:
+        - Docs
+      responses:
+        '200':
+          description: OpenAPI specification
+          content:
+            application/yaml:
+              schema:
+                type: string
+
 components:
   securitySchemes:
     basicAuth:
       type: http
       scheme: basic
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "Node reporting token (Authorization: Bearer <token>), used only by the node ingest endpoint."
 
   schemas:
     APIResponse:
@@ -292,6 +445,13 @@ components:
           example:
             location: "Netherlands, Amsterdam"
             hoster: "FreeVDS"
+        generatedConfig:
+          type: object
+          additionalProperties: true
+          description: >
+            Sanitized generated Xray outbound config for the proxy (secret
+            values masked). Omitted unless WEB_SHOW_DETAILS is enabled and,
+            in public mode, WEB_TRUSTED_EXTERNAL_AUTH is additionally set.
 
     StatusResponse:
       type: object
@@ -393,5 +553,286 @@ components:
           type: string
           format: date-time
         checkIntervalSec:
+          type: integer
+
+    ReportPayload:
+      type: object
+      description: Body a node POSTs to the master after each check cycle
+      properties:
+        version:
+          type: string
+          description: Node build version
+          example: "1.0.0"
+        checkIntervalSec:
+          type: integer
+          description: Node's check interval in seconds; values <= 0 are clamped to 300 by the master
+          example: 300
+        checkMethod:
+          type: string
+          enum: [ip, status, download]
+          example: "ip"
+        hostIP:
+          type: string
+          description: Node's public IP as detected by the node itself
+          example: "203.0.113.7"
+        proxies:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReportProxy'
+        checkHostAudits:
+          type: object
+          description: >
+            Optional: node's latest background Check-Host audit results, keyed
+            by target address (bare host for UDP targets)
+          additionalProperties:
+            $ref: '#/components/schemas/CheckHostSummary'
+
+    ReportProxy:
+      type: object
+      description: One proxy result inside a node report
+      properties:
+        stableId:
+          type: string
+          example: "a1b2c3d4e5f67890"
+        name:
+          type: string
+          example: "US-Server-1"
+        subName:
+          type: string
+          description: Subscription name this proxy belongs to
+          example: "Premium VPN"
+        groupName:
+          type: string
+          description: Group name (e.g. a balancer group); empty for ungrouped proxies
+          example: ""
+        protocol:
+          type: string
+          example: "vless"
+        address:
+          type: string
+          description: Server address with port ("host:port")
+          example: "192.168.1.1:443"
+        online:
+          type: boolean
+          example: true
+        disabled:
+          type: boolean
+          example: false
+        latencyMs:
+          type: number
+          format: double
+          description: Latency in milliseconds
+          example: 150
+        lastCheck:
+          type: integer
+          format: int64
+          description: Unix timestamp (seconds) of the last check
+          example: 1751130000
+        lastErrorCategory:
+          type: integer
+          description: Numeric category of the last check error
+          example: 0
+        lastErrorMsg:
+          type: string
+          description: Last error message or verdict text
+        nodeHealth:
+          description: Optional per-proxy node reachability diagnostics
+          allOf:
+            - $ref: '#/components/schemas/ReportNodeHealth'
+        targets:
+          type: array
+          description: Optional per-target diagnostic results
+          items:
+            $ref: '#/components/schemas/TargetDiagResult'
+        verdict:
+          type: string
+          description: Optional aggregated diagnostic verdict
+        checkHost:
+          description: Optional Check-Host.net reachability summary for the proxy host
+          allOf:
+            - $ref: '#/components/schemas/CheckHostSummary'
+
+    ReportNodeHealth:
+      type: object
+      description: Reachability diagnostics for a proxy server node; duration fields are nanoseconds (Go time.Duration JSON encoding)
+      properties:
+        resolved_ip:
+          type: string
+          example: "192.168.1.1"
+        dns_err:
+          type: string
+        dns_latency:
+          type: integer
+          format: int64
+          description: DNS resolution latency in nanoseconds
+        tcp_ping:
+          type: integer
+          format: int64
+          description: TCP ping latency in nanoseconds
+        tcp_err:
+          type: string
+        udp_ping:
+          type: integer
+          format: int64
+          description: UDP ping latency in nanoseconds
+        udp_err:
+          type: string
+        tls_err:
+          type: string
+        tls_latency:
+          type: integer
+          format: int64
+          description: TLS handshake latency in nanoseconds
+
+    TargetDiagResult:
+      type: object
+      description: Check outcome for one target endpoint
+      properties:
+        url:
+          type: string
+          example: "https://www.google.com/generate_204"
+        success:
+          type: boolean
+          example: true
+        status_code:
+          type: integer
+          description: HTTP status code of the target response (0 when the request failed)
+          example: 204
+        latency:
+          type: integer
+          format: int64
+          description: Request latency in nanoseconds (Go time.Duration JSON encoding)
+          example: 150000000
+        error:
+          type: string
+          description: Error message; omitted when the check succeeded
+
+    CheckHostSummary:
+      type: object
+      description: Aggregate Check-Host.net check result for a host
+      properties:
+        host:
+          type: string
+          example: "example.com"
+        request_id:
+          type: string
+        permanent_link:
+          type: string
+          description: Check-Host.net report permalink
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/CheckHostNodeResult'
+        ru_available:
+          type: boolean
+          description: Whether RU-region checks succeeded
+        world_available:
+          type: boolean
+          description: Whether world-region checks succeeded
+        verdict:
+          type: string
+
+    CheckHostNodeResult:
+      type: object
+      description: Check-Host.net result from a single check node; latency is nanoseconds (Go time.Duration JSON encoding)
+      properties:
+        node:
+          type: string
+          example: "ru1.node.check-host.net"
+        country:
+          type: string
+          example: "RU"
+        city:
+          type: string
+          example: "Moscow"
+        ip:
+          type: string
+          example: "203.0.113.7"
+        success:
+          type: boolean
+          example: true
+        latency:
+          type: integer
+          format: int64
+          description: Latency in nanoseconds
+        error:
+          type: string
+
+    IngestResponse:
+      type: object
+      description: Master's reply to an accepted node report
+      properties:
+        managedSubs:
+          type: array
+          description: Full desired list of managed subscription URLs for the reporting node
+          items:
+            type: string
+          example: ["https://example.com/sub1"]
+        configSync:
+          description: Optional synchronized runtime settings for the reporting node; omitted when none
+          allOf:
+            - $ref: '#/components/schemas/NodeConfigSync'
+
+    NodeConfigSync:
+      type: object
+      description: >
+        Runtime settings transmitted from the master to nodes; the fully
+        resolved set (per-node overrides merged in) is sent, so 0 is a
+        meaningful value (e.g. checkConcurrency 0 = unlimited)
+      properties:
+        syncEnabled:
+          type: boolean
+        disabledProxies:
+          type: array
+          description: Stable IDs of proxies disabled on the node
+          items:
+            type: string
+        disabledHosts:
+          type: array
+          description: Hosts disabled on the node
+          items:
+            type: string
+        checkHostBgEnabled:
+          type: boolean
+        checkHostIntervalHours:
+          type: integer
+        checkIntervalSec:
+          type: integer
+        targetUrls:
+          type: array
+          description: Reachability target endpoints to test proxies against
+          items:
+            type: string
+        quietHoursEnabled:
+          type: boolean
+        alertMode:
+          type: string
+        nodeAlertsEnabled:
+          type: boolean
+        nodeProxyAlertsChat:
+          type: boolean
+        nodeStaleTimeoutSec:
+          type: integer
+        checkMethod:
+          type: string
+          enum: [ip, status, download]
+          example: "ip"
+        ipCheckUrl:
+          type: string
+        statusCheckUrl:
+          type: string
+        downloadUrl:
+          type: string
+        proxyTimeoutSec:
+          type: integer
+        downloadTimeoutSec:
+          type: integer
+        downloadMinSize:
+          type: integer
+          format: int64
+        checkConcurrency:
+          type: integer
+          description: Maximum parallel proxy checks; 0 = unlimited
+        subsUpdateIntervalSec:
           type: integer
 

@@ -6,6 +6,13 @@
 [![ru](https://img.shields.io/badge/lang-ru-blue)](README_RU.md)
 [![en](https://img.shields.io/badge/lang-en-red)](README.md)
 
+<!-- META-PROJECT:ENTRY:BEGIN -->
+[![Built with Meta-Project](https://img.shields.io/badge/Built%20with-Meta--Project-blueviolet)](https://github.com/vlv-code/meta-project)
+
+Agent instructions: [AGENTS.md](AGENTS.md) | Policy: [.agents/project_knowledge/boundaries.md](.agents/project_knowledge/boundaries.md)
+*To inspect, configure, or adapt your environment, run `python scripts/inspect_meta_project.py` or invoke the `init-meta-project` skill.*
+<!-- META-PROJECT:ENTRY:END -->
+
 > [!NOTE]
 > **This repository is a fork of the original [kutovoys/xray-checker](https://github.com/kutovoys/xray-checker)** featuring a fully integrated Telegram Bot built on the official `mymmrac/telego` library:
 > - ⚡ **Multi-Stage Connection Diagnostics**: Isolated analysis of DNS resolution, TCP ping (RTT), TLS handshake, Xray SOCKS tunnel, and target endpoints (paginated view + Telegram 10.1 rich format).
@@ -239,7 +246,7 @@ To run a monitoring node on a separate server, different region, or restricted n
      --restart unless-stopped \
      -e REPORT_URL=http://<MASTER_IP>:2112/api/v1/nodes/report \
      -e REPORT_TOKEN=<TOKEN_FROM_BOT> \
-     ghcr.io/vlv-code/xray-checker-tg-bot:v2.5.0
+     ghcr.io/vlv-code/xray-checker-tg-bot:v2.6.0
    ```
 3. Full deployment guide, systemd setup, and network troubleshooting: **[docs/restricted-networks.md](docs/restricted-networks.md)**.
 
@@ -262,8 +269,12 @@ docker compose up -d --build
 |---|---|---|
 | `SUBSCRIPTION_URL` | `""` | Proxy subscription link(s) (Base64/JSON URLs, share links) |
 | `SUBSCRIPTION_STORE_PATH` | `subscriptions.json` | Persistent storage path for `/addsub` subscriptions |
+| `SUBSCRIPTION_CACHE_PATH` | `proxy_cache.json` | Cache of fetched proxy configurations for offline/degraded startup when the subscription upstream is unreachable |
 | `TELEGRAM_BOT_TOKEN` | `""` | Telegram bot token from @BotFather (enables the bot) |
 | `TELEGRAM_CHAT_IDS` | `""` | Comma-separated delivery targets: chat IDs and `chat:topic` forum topics (e.g. `-100987654321:42`) |
+| `TELEGRAM_NOTIFY_ON_RECOVERY` | `true` | Also send a notification when a proxy comes back online (auto-deleted after 2 minutes in `clean` alert mode) |
+| `TELEGRAM_COMMANDS_ENABLED` | `true` | Enable interactive bot commands (`/menu`, `/status`, ...) and the inline menu; turn off for a notification-only bot |
+| `TELEGRAM_MANAGE_SUBSCRIPTIONS` | `true` | Allow chats in `TELEGRAM_CHAT_IDS` to manage subscription URLs via `/addsub`, `/delsub` and `/subs` |
 | `TELEGRAM_ALERT_MODE` | `clean` | Alert mode: `clean` (auto-deletes) or `live` (edits outage alert) |
 | `TELEGRAM_RICH_MODE`  | `false` | Enable Telegram Bot API 10.1 rich messages for diagnostics (table + collapsible details) |
 | `CHECKHOST_BG_ENABLED` | `true` | Periodic background Reachability audit via Check-Host.net |
@@ -274,28 +285,48 @@ docker compose up -d --build
 | `TELEGRAM_QUIET_HOURS_START`  | `23:00` | Start of quiet hours (HH:MM) |
 | `TELEGRAM_QUIET_HOURS_END`    | `08:00` | End of quiet hours (HH:MM) and morning digest trigger |
 | `TELEGRAM_DAY_DIGEST_ENABLED` | `true` | Send periodic daytime health summaries |
+| `TELEGRAM_DAY_DIGEST_INTERVAL_HOURS` | `6` | Interval in hours between daytime digests (0 disables) |
 | `STATS_STORE_PATH` | `stats.json` | Persistent storage path for outage history and stats |
 | `BOT_CONFIG_STORE_PATH` | `bot_config.json` | Persistent storage path for runtime bot settings (including disabled nodes) |
 | `PROXY_CHECK_INTERVAL` | `300` | Check interval in seconds (also tunable via `/interval`) |
 | `PROXY_CHECK_METHOD` | `ip` | Check method: `ip` (IP echo), `status` (HTTP 204), or `download` (file download) |
+| `PROXY_IP_CHECK_URL` | `https://api.ipify.org?format=text` | IP echo service URL for `check-method=ip` (must return a bare IP) |
+| `PROXY_STATUS_CHECK_URL` | `http://cp.cloudflare.com/generate_204` | Status URL for `check-method=status` (any quick 2xx/3xx counts as online) |
+| `PROXY_DOWNLOAD_URL` | `https://proof.ovh.net/files/1Mb.dat` | File to download for `check-method=download` (pick a size your nodes can pull within the timeout) |
+| `PROXY_DOWNLOAD_TIMEOUT` | `60` | Download check timeout in seconds |
+| `PROXY_DOWNLOAD_MIN_SIZE` | `51200` | Minimum bytes that must arrive for the download check to succeed (50 KB) |
 | `PROXY_TIMEOUT` | `30` | Per-proxy check timeout in seconds |
 | `PROXY_CHECK_CONCURRENCY` | `0` | Max proxies checked in parallel per cycle (0 = unlimited) |
 | `PROXY_TARGET_URLS` | Cloudflare/Google 204 | Custom fallback endpoints for checking proxy availability |
+| `PROXY_RESOLVE_DOMAINS` | `false` | Pre-resolve proxy server domains into individual IP proxies at config load (increases the proxy count; for panels giving per-IP nodes) |
 | `SUBSCRIPTION_UPDATE` | `true` | Periodically re-fetch subscriptions and apply changes |
 | `SUBSCRIPTION_UPDATE_INTERVAL` | `300` | Seconds between subscription re-fetches |
+| `SUBSCRIPTION_JSON_FORMAT` | `false` | Request full JSON configs from the panel (sends app-like headers so grouped/balancer nodes are returned individually instead of collapsed share links) |
+| `SUBSCRIPTION_USER_AGENT` | `""` | Custom User-Agent for subscription requests (overrides the default and the JSON-format preset; panels gate their response format by client type) |
+| `SUBSCRIPTION_HEADERS` | `""` | Extra HTTP headers for subscription requests as `Key: Value` pairs (comma-separated; repeatable flag form too) |
 | `WEB_ENABLED` | `true` | Enable web dashboard panel (`false` for headless mode) |
 | `WEB_PUBLIC` | `false` | Public status page mode (requires `METRICS_PROTECTED=true`) |
+| `WEB_PUBLIC_SHOW_PROTOCOL` | `false` | Show protocol badge on status cards in public mode (always shown when not public) |
+| `WEB_TRUSTED_EXTERNAL_AUTH` | `false` | Allow server details in public mode when the dashboard sits behind an external auth proxy (Authelia, oauth2-proxy...) |
+| `WEB_SHOW_DETAILS` | `false` | Show proxy server IPs and ports in the web UI (public status page and JSON API mask them regardless) |
+| `WEB_CUSTOM_ASSETS_PATH` | `""` | Directory with custom web assets overriding the embedded ones (`logo.svg`, `favicon.ico`, `custom.css`, `index.html`) |
+| `METRICS_HOST` | `0.0.0.0` | Bind address for the web dashboard and metrics server |
 | `METRICS_PORT` | `2112` | Web dashboard and Prometheus metrics port |
 | `METRICS_PROTECTED` | `false` | Enable Basic Auth protection for web dashboard |
 | `METRICS_USERNAME` | `metricsUser` | Web UI login username |
 | `METRICS_PASSWORD` | — | Web UI login password |
 | `METRICS_PUSH_URL` | `""` | Push metrics to a Prometheus Pushgateway instead of exposing `/metrics` |
+| `METRICS_BASE_PATH` | `""` | URL base path prefix for the dashboard and metrics, behind a reverse proxy routing a subpath (e.g. `/xray`) |
+| `METRICS_INSTANCE` | `""` | Value of the `instance` label on exported metrics (tell apart several checker instances in one Grafana) |
 | `SIMULATE_LATENCY` | `true` | Add measured latency (capped at 2s) to `/config/{id}` badge responses |
+| `XRAY_START_PORT` | `10000` | Start port for per-proxy local SOCKS5 inbounds (each proxy gets `XRAY_START_PORT + <index>`) |
+| `XRAY_LOG_LEVEL` | `none` | Xray core log level (`debug\|info\|warning\|error\|none`); core lines surface only when `LOG_LEVEL=debug` |
 | `LOG_LEVEL` | `info` | Application log level (`debug\|info\|warn\|error\|none`) |
 | `RUN_ONCE` | `false` | Run a single check cycle and exit (for cron/scheduled jobs) |
 | `NODES` | `""` | Comma-separated remote checker nodes as `name\|token` for master instance |
 | `NODES_STORE_PATH` | `node_subs.json` | Persistent storage for node-assigned desired subscriptions (and sibling `nodes.json`) |
 | `MASTER_PUBLIC_URL` | `""` | Public master ingest URL shown in `/nodeadd` commands (auto-detected if empty) |
+| `MASTER_STALE_TIMEOUT_SEC` | `0` | Master-side cap in seconds on how long a node can go silent before being marked down; 0 (default) = derive from the node's reported check interval (2x + 60s grace) |
 | `REPORT_URL` | `""` | Master ingest endpoint URL for node push reports |
 | `REPORT_TOKEN` | `""` | Bearer token matching node entry in master's `NODES` list |
 | `ASN_DB_URL` | db-ip asn-lite | URL of gzipped ASN mmdb database for node network operator lookup |
@@ -334,9 +365,13 @@ pasted directly.
 Remote subscription URLs are guarded by built-in SSRF protection: targets on `localhost`,
 private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local, CGNAT, IPv6 transition
 (NAT64 / 6to4 / Teredo — addresses that wrap an IPv4 host) and other reserved ranges are
-rejected — both at URL validation time and at connection time, including hostnames
-that resolve to such addresses. There is no opt-out switch, and routing the fetch through
-`HTTP_PROXY` does not bypass it (validation happens before the proxy is consulted).
+rejected. The initial URL is pre-flight validated, and every redirect hop is re-validated
+with the same SSRF rules (custom headers are stripped when a redirect crosses to another
+host); in direct mode a dial-time IP guard additionally blocks connections to such
+addresses, including hostnames that resolve to them — there is no opt-out switch.
+One residual nuance: when the fetch is routed through an outbound proxy (`HTTP_PROXY`),
+DNS resolution is performed by the proxy itself, so proxy-side DNS rebinding cannot be
+detected from the checker process.
 
 Consequence: a panel hosted on your LAN (e.g. Marzban/Remnawave behind `192.168.x.x`)
 cannot be used as a remote subscription source. Either expose the panel on a public
