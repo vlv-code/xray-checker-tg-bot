@@ -58,3 +58,5 @@ invocation_triggers:
 | Date | Initiator | Actor ID | Task / Invocation | Status / Result |
 | :--- | :--- | :--- | :--- | :--- |
 | 2026-11-16 | System / User | vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-intake-dispatcher | Role initialization | Role activated |
+| 2026-11-16 | User | vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-intake-dispatcher | Check-Host API path audit (live probes) + fix wave F1–F6 via flash-worker delegation | 6 defects fixed RED→GREEN, gates green (build/vet/test/gofmt), READMEs synced; uncommitted, routed to Guardian review; /nodes/hosts dynamic fleet resolution deferred as enhancement |
+| 2026-11-16 | User | vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-intake-dispatcher | Cheburcheck active-probe integration (client SSE + 3 surfaces) via flash-worker delegation | 11 new tests RED→GREEN, gates green, arch/weak_spots/READMEs synced; scanners hardcoded-empty by design; uncommitted, routed to Guardian review |

@@ -55,3 +55,8 @@ Update via the `sync-architecture` skill when subsystems change.
 
 ### 5. Deployment flow
 `[Origin: git push] ➔ [GitHub Actions: test.yml (vet+race) → build-publish/docker-ghcr/release] ➔ [Docker multi-stage build: UPX binary, geo dat download, su-exec privilege drop] ➔ [Consumer: docker-compose master + node instances]`
+
+### 6. Cheburcheck active probe flow (2026-11-16, active-only — no scheduler, no passive registry data)
+`[Origin: manual /cheburcheck command | menu:chebur:<stableID> button | deep-diagnostics offline enrichment] ➔ [checker/cheburcheck.go: GET /api/v1/check (id-only decode, passive fields dropped) → per-scanner SSE /probe/{id}?token=<scanner-token> (no API key)] ➔ [aggregate verdicts: ok/uncertain/cdn_block/sni_block/dns_spoofing/tspu_block/whitelist] ➔ [Consumer: Telegram report (FormatCheburcheckReport, escaped) + ProxyDiagReport.Chebur + EnrichVerdictWithChebur]`
+- Scanners hardcoded in code (`DefaultCheburScanners`, EMPTY by default — public repo; tokens pasted at deploy); empty list ⇒ feature fully inactive (ErrCheburInactive, graceful no-op everywhere).
+- Shares the checker package token-bucket limiter (1 rps, burst 2); singleflight per bare host in RunDiagnostics (`chebCache`/`chebMu`); failures degrade to warn+skip, never break diagnostics.
