@@ -74,6 +74,59 @@ func TestGetBootstrapProxy(t *testing.T) {
 	}
 }
 
+func TestRedactProxyURL(t *testing.T) {
+	t.Run("credentials stripped, host kept", func(t *testing.T) {
+		got := redactProxyURL("socks5://u:SecretPass@h:1080")
+		if strings.Contains(got, "SecretPass") {
+			t.Errorf("redacted URL leaks password: %s", got)
+		}
+		if strings.Contains(got, "u:") {
+			t.Errorf("redacted URL leaks username: %s", got)
+		}
+		if !strings.Contains(got, "h:1080") {
+			t.Errorf("redacted URL lost host:port, got: %s", got)
+		}
+	})
+
+	t.Run("no credentials unchanged", func(t *testing.T) {
+		for _, plain := range []string{"http://h:3128", "socks5://10.0.0.1:1080"} {
+			if got := redactProxyURL(plain); got != plain {
+				t.Errorf("expected %q unchanged, got %q", plain, got)
+			}
+		}
+	})
+
+	t.Run("garbage passthrough", func(t *testing.T) {
+		for _, garbage := range []string{"", "://oops", "http://[::1", "%zz", "bad scheme://u:SecretPass@h:1"} {
+			if got := redactProxyURL(garbage); got != garbage {
+				t.Errorf("expected garbage %q passthrough, got %q", garbage, got)
+			}
+		}
+	})
+}
+
+func TestRedactProxyURLConservative(t *testing.T) {
+	// Inputs that fail url.Parse still must not leak userinfo into the
+	// failed-parse warning.
+	t.Run("unparseable URL with credentials", func(t *testing.T) {
+		got := redactProxyURLConservative("bad scheme://u:SecretPass@h:1080")
+		if strings.Contains(got, "SecretPass") || strings.Contains(got, "u:") {
+			t.Errorf("conservative redaction leaks credentials: %s", got)
+		}
+		if !strings.Contains(got, "h:1080") {
+			t.Errorf("conservative redaction lost host:port, got: %s", got)
+		}
+	})
+
+	t.Run("no userinfo unchanged", func(t *testing.T) {
+		for _, plain := range []string{"", "no scheme", "http://[::1", "plain://host:1"} {
+			if got := redactProxyURLConservative(plain); got != plain {
+				t.Errorf("expected %q unchanged, got %q", plain, got)
+			}
+		}
+	})
+}
+
 func TestSetupNetworkEnvironment(t *testing.T) {
 	origNP := os.Getenv("NO_PROXY")
 	origNp := os.Getenv("no_proxy")

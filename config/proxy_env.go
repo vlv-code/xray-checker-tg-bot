@@ -69,6 +69,32 @@ func SanitizeNoProxy(existingNoProxy, reportURL string) string {
 	return strings.Join(result, ",")
 }
 
+// redactProxyURL strips userinfo from a proxy URL so credentials never reach
+// logs. Input that cannot be parsed as a URL is returned unchanged.
+func redactProxyURL(s string) string {
+	u, err := url.Parse(s)
+	if err != nil {
+		return s
+	}
+	u.User = nil
+	return u.String()
+}
+
+// redactProxyURLConservative is a fallback for inputs that failed url.Parse:
+// it blindly strips the text between "://" and the next "@" so credentials
+// cannot leak into failed-parse diagnostics.
+func redactProxyURLConservative(s string) string {
+	sep := strings.Index(s, "://")
+	if sep < 0 {
+		return s
+	}
+	rest := s[sep+len("://"):]
+	if at := strings.Index(rest, "@"); at >= 0 {
+		return s[:sep+len("://")] + rest[at+1:]
+	}
+	return s
+}
+
 // SetupNetworkEnvironment normalizes NO_PROXY and no_proxy environment variables
 // so local traffic and master reporting are never accidentally captured by corporate
 // HTTP_PROXY/HTTPS_PROXY settings.
@@ -94,7 +120,7 @@ func SetupNetworkEnvironment(reportURL string) {
 
 	if httpProxy != "" || httpsProxy != "" || bootstrap != "" {
 		logger.Info("Network environment initialized: HTTP_PROXY=%q HTTPS_PROXY=%q BOOTSTRAP_PROXY=%q NO_PROXY=%q",
-			httpProxy, httpsProxy, bootstrap, sanitized)
+			redactProxyURL(httpProxy), redactProxyURL(httpsProxy), redactProxyURL(bootstrap), sanitized)
 	}
 }
 
@@ -121,7 +147,7 @@ func GetBootstrapTransport() *http.Transport {
 				IdleConnTimeout:       90 * time.Second,
 			}
 		}
-		logger.Warn("Failed to parse BOOTSTRAP_PROXY %q, falling back to environment proxy", proxyStr)
+		logger.Warn("Failed to parse BOOTSTRAP_PROXY %q, falling back to environment proxy", redactProxyURLConservative(proxyStr))
 	}
 	return &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,

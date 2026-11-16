@@ -14,6 +14,9 @@ func TestRedactURL(t *testing.T) {
 		{"not-a-valid-url?token=XYZ", "not-a-valid-url?<redacted>"},
 		{"https://panel.example.com/sub?token=SECRET#MyProfile", "https://panel.example.com/sub?<redacted>"},
 		{"https://panel.example.com/sub#MyProfile", "https://panel.example.com/sub"},
+		// Userinfo credentials must not survive redaction either.
+		{"https://user:pw@panel.example.com/sub?token=SECRET12345", "https://panel.example.com/sub?<redacted>"},
+		{"https://user:pw@panel.example.com/sub", "https://panel.example.com/sub"},
 	}
 
 	for _, c := range cases {

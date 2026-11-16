@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -34,9 +35,56 @@ type fetchResult struct {
 // transport per request stranded idle connections with no IdleConnTimeout until
 // GC finalizers reaped them, and the periodic re-fetch cadence made that leak
 // grow steadily.
+//
+// CheckRedirect re-validates every hop: Go's default redirect handling would
+// otherwise follow up to 10 redirects with no SSRF re-validation and forward
+// all original headers (including panel-auth X-headers) to any host.
+// Residual risk: when an outbound proxy is configured (HTTP_PROXY or
+// --subscription.bootstrap-proxy), the dial-time IP guard only ever sees the
+// proxy address; the redirect-level URL + DNS validation below is the
+// mitigation for that gap, but DNS resolution performed by the proxy itself
+// (proxy-side DNS rebinding) cannot be detected from this process.
 var subscriptionClient = &http.Client{
-	Timeout:   30 * time.Second,
-	Transport: newSafeTransport(),
+	Timeout:       30 * time.Second,
+	Transport:     newSafeTransport(),
+	CheckRedirect: subscriptionRedirectPolicy,
+}
+
+// subscriptionRedirectPolicy applies the same SSRF rules as the initial
+// target to every redirect hop and strips identifying headers on cross-host
+// hops so subscription credentials never leak to a redirected-to host.
+func subscriptionRedirectPolicy(req *http.Request, via []*http.Request) error {
+	// Setting CheckRedirect replaces Go's default, so re-implement its
+	// "stopped after 10 redirects" limit here.
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if err := validateSubscriptionTarget(req.URL.String()); err != nil {
+		return fmt.Errorf("SSRF: redirect to %s blocked: %w", RedactURL(req.URL.String()), err)
+	}
+	// Cross-host hop: keep only non-identifying headers. The header copier in
+	// net/http re-applies the original headers on every hop, but it runs
+	// BEFORE this policy (see net/http.Client.do), so stripping here is
+	// effective for the outgoing request at each hop.
+	for _, prev := range via {
+		if req.URL.Host != prev.URL.Host {
+			stripCrossHostHeaders(req.Header)
+			break
+		}
+	}
+	return nil
+}
+
+// stripCrossHostHeaders reduces h to the headers that are safe to send to a
+// host other than the one the subscription was configured for.
+func stripCrossHostHeaders(h http.Header) {
+	for key := range h {
+		switch http.CanonicalHeaderKey(key) {
+		case "User-Agent", "Accept", "Accept-Encoding":
+		default:
+			delete(h, key)
+		}
+	}
 }
 
 func (p *Parser) fetchURLContent(source string) (*fetchResult, error) {
@@ -83,8 +131,11 @@ func (p *Parser) fetchURLContent(source string) (*fetchResult, error) {
 	}
 
 	client := subscriptionClient
-	resp, err := client.Do(req)
+	resp, err := doSubscriptionRequest(client, req)
 	if err != nil {
+		// Guard MUST stay between the request and the Body-close defer:
+		// on transport failure resp is nil and the deferred Close would
+		// panic the process (Guardian P0-1, 2026-11-16).
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -107,6 +158,18 @@ func (p *Parser) fetchURLContent(source string) (*fetchResult, error) {
 		Content: content,
 		Name:    name,
 	}, nil
+}
+
+// doSubscriptionRequest issues req on the shared subscription client. A raw
+// *url.Error embeds the full request URL — including ?token=... query strings
+// and redirect Location targets that never passed pre-flight validation — so
+// transport failures are redacted before escaping this package.
+func doSubscriptionRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, redactURLError(err)
+	}
+	return resp, nil
 }
 
 func (p *Parser) extractURLFragment(source string) (cleanURL string, name string) {
@@ -251,7 +314,8 @@ func isEnvironmentProxy(host, port string) bool {
 func validateSubscriptionTarget(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("invalid subscription URL: %w", err)
+		// Parse errors embed the raw input URL verbatim; redact it too.
+		return fmt.Errorf("invalid subscription URL: %w", redactURLError(err))
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("invalid subscription scheme %q, only http/https allowed", u.Scheme)
@@ -342,16 +406,41 @@ func newSafeTransport() *http.Transport {
 	}
 }
 
-// RedactURL returns a copy of rawURL with sensitive query parameters (e.g. ?token=...)
-// redacted, suitable for logging and error reporting without token leakage.
+// redactURLError rewrites a *url.Error so that its embedded URL carries no
+// secrets (query parameters such as ?token=..., userinfo credentials) while
+// the operation name and the wrapped cause stay intact — the inner error
+// remains reachable via errors.Is/errors.As.
+func redactURLError(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return &url.Error{
+			Op:  urlErr.Op,
+			URL: RedactURL(urlErr.URL),
+			Err: urlErr.Err,
+		}
+	}
+	return err
+}
+
+// RedactURL returns a copy of rawURL with sensitive parts (query parameters
+// e.g. ?token=..., userinfo credentials, fragments) redacted, suitable for
+// logging and error reporting without credential leakage.
 func RedactURL(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		if idx := strings.IndexByte(rawURL, '?'); idx >= 0 {
-			return rawURL[:idx] + "?<redacted>"
+		// Best-effort redaction for URLs that do not even parse.
+		s := rawURL
+		if idx := strings.IndexByte(s, '?'); idx >= 0 {
+			s = s[:idx] + "?<redacted>"
 		}
-		return rawURL
+		if schemeEnd := strings.Index(s, "://"); schemeEnd >= 0 {
+			if at := strings.IndexByte(s[schemeEnd+3:], '@'); at >= 0 {
+				s = s[:schemeEnd+3] + s[schemeEnd+3+at+1:]
+			}
+		}
+		return s
 	}
+	u.User = nil
 	if u.RawQuery != "" {
 		u.RawQuery = "<redacted>"
 	}
