@@ -16,7 +16,7 @@ Agent instructions: [AGENTS.md](AGENTS.md) | Policy: [.agents/project_knowledge/
 > [!NOTE]
 > **This repository is a fork of the original [kutovoys/xray-checker](https://github.com/kutovoys/xray-checker)** featuring a fully integrated Telegram Bot built on the official `mymmrac/telego` library:
 > - ⚡ **Multi-Stage Connection Diagnostics**: Isolated analysis of DNS resolution, TCP ping (RTT), TLS handshake, Xray SOCKS tunnel, and target endpoints (paginated view + Telegram 10.1 rich format).
-> - 🌐 **Check-Host.net Background Audit**: Periodic reachability checks across all subscription hosts with automated Russian blocking alerts (an alert fires only when a host is reachable from world nodes but not from RU nodes; hosts unreachable from everywhere — e.g. ICMP-filtered — do not raise RU-block alerts) and deduplication.
+> - 🌐 **Check-Host.net Background Audit**: Periodic reachability checks across all subscription hosts with automated Russian blocking alerts (an alert fires only when a host is reachable from world nodes but not from RU nodes; hosts unreachable from everywhere — e.g. ICMP-filtered — do not raise RU-block alerts) and deduplication. UDP-protocol targets are excluded from background audits (the API cannot verify UDP); a manual per-proxy check always sends a TCP check to the subscription host:port, with a warning for UDP protocols that only TCP port reachability is verified.
 > - 🚫 **Individual Node Disabling**: Toggle checks for specific proxy connections directly in the bot menu without modifying subscription files.
 > - ⏱️ **Dynamic Runtime Check Interval**: Change check frequency on the fly (`/interval` or menu) without container restarts.
 > - 🔔 **Smart Alert Lifecycle**: Clean Mode (auto-deletes alerts upon recovery) and Live Mode (updates original outage message with total downtime) with persistent state and anti-flapping.
@@ -33,7 +33,7 @@ Agent instructions: [AGENTS.md](AGENTS.md) | Policy: [.agents/project_knowledge/
 * 🤖 **Telegram Bot on `mymmrac/telego`**: Interactive inline keyboard menu, instant outage and recovery alerts.
 * ⚡ **Multi-Stage Diagnostics (`/diag`)**: Pinpoints exact point of failure (DNS, TCP, TLS, Xray session reset, CDN blocking).
 * 🌐 **Check-Host.net Integration**: Automatic multi-node reachability checks from Russia and worldwide locations during outages.
-* 🇷🇺 **Cheburcheck Active RF Probing**: active blocking probes from Russian scanner nodes (per-scanner tokens configured in code, no API key) via the `/cheburcheck <host>` command, the «🇷🇺 Cheburcheck» menu button, and offline-node diagnostics enrichment.
+* 🇷🇺 **Cheburcheck Active RF Probing**: active blocking probes from Russian scanner nodes (per-scanner tokens configured in code, no API key) via the `/cheburcheck <host>` command, the «🇷🇺 Cheburcheck» menu button, and offline-node diagnostics enrichment. Setting `CHEBURCHECK_API_KEY` switches probing to API-key mode: all public scanners run in one Bearer-authenticated stream and per-scanner tokens are ignored (the key wins).
 * ⏱️ **Runtime Interval Tuning**: `/interval <seconds>` command and interactive menu presets.
 * 🔄 **Auto-Reloading Subscriptions**: Multiple subscription URLs (Base64, JSON, share links) with automated periodic sync.
 * 📊 **Prometheus Metrics**: Exports `/metrics` for Grafana scraping and supports Prometheus Pushgateway.
@@ -282,6 +282,7 @@ docker compose up -d --build
 | `CHECKHOST_BG_ENABLED` | `true` | Periodic background Reachability audit via Check-Host.net |
 | `CHECKHOST_INTERVAL_HOURS` | `1` | Background Check-Host audit interval in hours (1, 2, 4, 6, 12) |
 | `CHECKHOST_ALERT_ENABLED` | `true` | Send Telegram alert if a node is unreachable from Russia |
+| `CHEBURCHECK_API_KEY` | (empty) | Cheburcheck API token (Bearer) for probe streams; empty = per-scanner tokens from `DefaultCheburScanners` (feature inactive by default) |
 | `ALERT_STORE_PATH` | `alerts.json` | Persistent storage path for active alerts (anti-flapping across restarts) |
 | `TELEGRAM_QUIET_HOURS_ENABLED`| `true` | Suppress alert sound pings overnight |
 | `TELEGRAM_QUIET_HOURS_START`  | `23:00` | Start of quiet hours (HH:MM) |

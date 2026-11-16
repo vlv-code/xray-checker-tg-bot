@@ -88,15 +88,19 @@ func (b *Bot) handleCheckHostProxy(chatID int64, msgID int, stableID string) {
 		target = target + ":443"
 	}
 
+	// User decision 2026-11-16: the Check-Host request is ALWAYS a TCP check
+	// of host:port from the proxy's subscription entry — UDP protocols
+	// (hysteria/hysteria2/tuic/wireguard) included, with a warning that only
+	// TCP reachability of the port can be verified (the API has no UDP probe).
 	isUDP := checker.IsUDPProto(targetProxy.Protocol)
 
-	protoNote := ""
+	udpWarning := ""
 	if isUDP {
-		protoNote = " (PING)"
+		udpWarning = fmt.Sprintf("⚠️ <b>UDP-протокол:</b> Check-Host проверит только TCP-доступность порта <code>%s</code>; сам UDP-сервис API не проверяет.\n\n", escapeHTML(target))
 	}
-	b.editWithMarkup(chatID, msgID, fmt.Sprintf("⏳ <b>Запрос отправлен в Check-Host.net...</b>\n"+
-		"Проверяем <b>%s</b> (<code>%s</code>)%s по всемирной сети узлов...\nПожалуйста, подождите 4–6 секунд...",
-		escapeHTML(targetProxy.Name), escapeHTML(target), protoNote), BackToMenuMarkup())
+	b.editWithMarkup(chatID, msgID, udpWarning+fmt.Sprintf("⏳ <b>Запрос отправлен в Check-Host.net...</b>\n"+
+		"Проверяем <b>%s</b> (<code>%s</code>) по всемирной сети узлов...\nПожалуйста, подождите 4–6 секунд...",
+		escapeHTML(targetProxy.Name), escapeHTML(target)), BackToMenuMarkup())
 
 	chClient := b.checkHostClient
 	if chClient == nil {
@@ -105,19 +109,7 @@ func (b *Bot) handleCheckHostProxy(chatID int64, msgID int, stableID string) {
 	ctx, cancel := context.WithTimeout(b.ctx, 15*time.Second)
 	defer cancel()
 
-	var summary *checker.CheckHostSummary
-	var err error
-	if isUDP {
-		// UDP-only protocols (hysteria/hysteria2/tuic/wireguard) have no TCP
-		// listener on the port: probe the bare host with ICMP pings instead.
-		pingHost, _, splitErr := net.SplitHostPort(targetProxy.Address)
-		if splitErr != nil {
-			pingHost = targetProxy.Address
-		}
-		summary, err = chClient.CheckPing(ctx, pingHost, checker.DefaultWorldwideNodes)
-	} else {
-		summary, err = chClient.CheckTCP(ctx, target, checker.DefaultWorldwideNodes)
-	}
+	summary, err := chClient.CheckTCP(ctx, target, checker.DefaultWorldwideNodes)
 	if !b.isMsgSeqValid(chatID, msgID, seq) {
 		return
 	}
@@ -127,6 +119,9 @@ func (b *Bot) handleCheckHostProxy(chatID int64, msgID int, stableID string) {
 	}
 
 	report := checker.FormatCheckHostReport(summary)
+	if isUDP {
+		report = udpWarning + report
+	}
 	b.editWithMarkup(chatID, msgID, report, CheckHostResultMarkup())
 }
 
@@ -240,8 +235,6 @@ func (b *Bot) runAuditNow() {
 
 	type auditTarget struct {
 		targetAddr string
-		host       string
-		isUDP      bool
 		proxyName  string
 		stableID   string
 	}
@@ -263,12 +256,14 @@ func (b *Bot) runAuditNow() {
 			continue
 		}
 
-		isUDP := checker.IsUDPProto(pm.Protocol)
-		dedupKey := pm.Address
-		if isUDP {
-			dedupKey = host
+		// The Check-Host API cannot verify UDP services: UDP-protocol targets
+		// are excluded from passive audits entirely (user decision 2026-11-16).
+		if checker.IsUDPProto(pm.Protocol) {
+			logger.Debug("Check-Host bg audit: skip UDP target %s (API cannot verify UDP)", pm.Address)
+			continue
 		}
 
+		dedupKey := pm.Address
 		if seen[dedupKey] {
 			continue
 		}
@@ -276,8 +271,6 @@ func (b *Bot) runAuditNow() {
 
 		targets = append(targets, auditTarget{
 			targetAddr: pm.Address,
-			host:       host,
-			isUDP:      isUDP,
 			proxyName:  pm.Name,
 			stableID:   pm.StableID,
 		})
@@ -307,14 +300,7 @@ func (b *Bot) runAuditNow() {
 		}
 
 		ctx, cancel := context.WithTimeout(b.ctx, 15*time.Second)
-		var summary *checker.CheckHostSummary
-		var err error
-
-		if target.isUDP {
-			summary, err = chClient.CheckPing(ctx, target.host, fastNodes)
-		} else {
-			summary, err = chClient.CheckTCP(ctx, target.targetAddr, fastNodes)
-		}
+		summary, err := chClient.CheckTCP(ctx, target.targetAddr, fastNodes)
 		cancel()
 		if err != nil || summary == nil {
 			continue

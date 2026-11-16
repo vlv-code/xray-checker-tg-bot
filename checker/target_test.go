@@ -426,6 +426,99 @@ func TestRunDiagnostics_CheckHostDeduplication(t *testing.T) {
 	}
 }
 
+// TestRunDiagnostics_UDPProxyUsesTCPCheck pins the user-authorized Check-Host
+// semantics (2026-11-16): deep diagnostics enrich an offline UDP-protocol
+// proxy with a TCP check of host:port from the subscription entry — exactly
+// like TCP protocols — and the verdict line carries the TCP-only caveat.
+// The old ping:host dedup key and CheckPing call must be gone.
+func TestRunDiagnostics_UDPProxyUsesTCPCheck(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	var tcpHosts []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		if strings.HasPrefix(r.URL.Path, "/check-tcp") {
+			tcpHosts = append(tcpHosts, r.URL.Query().Get("host"))
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/check-tcp") {
+			_, _ = w.Write([]byte(`{"ok":1,"request_id":"udpreq","permanent_link":"https://check-host.net/check-report/udpreq","nodes":{"ru2.node.check-host.net":["ru","Russia","Moscow","1.2.3.4","AS1"]}}`))
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/check-result/udpreq") {
+			_, _ = w.Write([]byte(`{"ru2.node.check-host.net":[{"time":0.02,"address":"1.2.3.4"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	chClient := NewCheckHostClient(server.URL, 10*time.Millisecond)
+	pc := &ProxyChecker{
+		checkHostClient: chClient,
+		ipCheckTimeout:  1,
+		startPort:       10900,
+	}
+	pc.UpdateProxies([]*models.ProxyConfig{
+		{Name: "HysUDP", Protocol: "hysteria2", Server: "192.0.2.10", Port: 5678, StableID: "u1", Index: 0},
+	})
+
+	reports := pc.RunDiagnostics([]string{"http://127.0.0.1:1/nonexistent"})
+	if len(reports) != 1 {
+		t.Fatalf("expected 1 report, got %d", len(reports))
+	}
+	r := reports[0]
+	if r.CheckHost == nil {
+		t.Fatalf("expected CheckHost enrichment for offline UDP proxy, got nil (paths seen: %v)", paths)
+	}
+	if r.CheckHost.PermanentLink != "https://check-host.net/check-report/udpreq" {
+		t.Errorf("unexpected CheckHost summary: %+v", r.CheckHost)
+	}
+	if !strings.Contains(r.Verdict, "TCP до порта; UDP не проверяется") {
+		t.Errorf("UDP enrichment line must carry the TCP-only caveat, got: %s", r.Verdict)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, p := range paths {
+		if strings.HasPrefix(p, "/check-ping") {
+			t.Errorf("UDP proxy must not be ping-checked in deep diagnostics, saw %s", p)
+		}
+	}
+	if len(tcpHosts) != 1 || tcpHosts[0] != "192.0.2.10:5678" {
+		t.Errorf("expected exactly one /check-tcp with host 192.0.2.10:5678, got hosts %v (paths %v)", tcpHosts, paths)
+	}
+}
+
+// TestEnrichVerdictWithCheckHost_UDPNote pins the proto-aware wrapper: for
+// UDP-protocol proxies the enrichment line appends the TCP-only caveat; TCP
+// protocols and nil summaries are unchanged, and the legacy variadic
+// signature keeps working for other callers.
+func TestEnrichVerdictWithCheckHost_UDPNote(t *testing.T) {
+	ch := &CheckHostSummary{RUAvailable: false, WorldAvailable: true}
+
+	got := EnrichVerdictWithCheckHostForProto("Нода не отвечает", ch, "hysteria2", "")
+	if !strings.Contains(got, "недоступен из узлов РФ") || !strings.HasSuffix(got, " (TCP до порта; UDP не проверяется)") {
+		t.Errorf("UDP proxy enrichment must append the TCP-only caveat, got: %s", got)
+	}
+
+	tcp := EnrichVerdictWithCheckHostForProto("Нода не отвечает", ch, "vless", "")
+	if strings.Contains(tcp, "TCP до порта") {
+		t.Errorf("TCP proxy enrichment must not carry the UDP caveat, got: %s", tcp)
+	}
+
+	if got := EnrichVerdictWithCheckHostForProto("Нода не отвечает", nil, "hysteria2", ""); got != "Нода не отвечает" {
+		t.Errorf("nil summary must return the verdict unchanged, got %q", got)
+	}
+
+	if got := EnrichVerdictWithCheckHost("v", nil); got != "v" {
+		t.Errorf("legacy signature must keep working, got %q", got)
+	}
+}
+
 // TestNewTargetManager_InvalidInitialTargetsDropped pins the behavior of the
 // persisted-initial-targets path: entries that fail validation must be dropped
 // (with a warning logged — the pre-fix code swallowed the error silently) and

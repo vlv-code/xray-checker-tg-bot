@@ -41,7 +41,7 @@ func (b *Bot) handleCheburcheckCommand(msg *telego.Message) {
 	}
 
 	chebClient := b.resolveCheburClient()
-	if !chebClient.HasActiveScanners() {
+	if !chebClient.HasCredentials() {
 		b.send(t, "Сканеры Cheburcheck не настроены (DefaultCheburScanners пуст)")
 		return
 	}
@@ -97,7 +97,7 @@ func (b *Bot) handleCheburcheckProxy(chatID int64, msgID int, stableID string) {
 	}
 
 	chebClient := b.resolveCheburClient()
-	if !chebClient.HasActiveScanners() {
+	if !chebClient.HasCredentials() {
 		b.editWithMarkup(chatID, msgID, "Сканеры Cheburcheck не настроены (DefaultCheburScanners пуст)", BackToMenuMarkup())
 		return
 	}

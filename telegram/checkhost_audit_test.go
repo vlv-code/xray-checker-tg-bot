@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -104,6 +105,97 @@ func TestRunAuditNow_UnreachableEverywhereNoAlert(t *testing.T) {
 	bot2.runAuditNow()
 	if !tracker2.HasAlert(12345, 0, "checkhost:1.1.1.1:443") {
 		t.Errorf("RU-block signature (RU down, world up) must raise and track an alert")
+	}
+}
+
+// TestRunAuditNow_SkipsUDPTargets pins the passive-audit UDP exclusion
+// (user decision 2026-11-16): UDP-protocol proxies are NEVER sent to the
+// Check-Host API by background audits — the API cannot verify UDP services —
+// while TCP proxies in the same snapshot are still audited normally.
+func TestRunAuditNow_SkipsUDPTargets(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	var tcpHosts []string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		if strings.HasPrefix(r.URL.Path, "/check-tcp") {
+			tcpHosts = append(tcpHosts, r.URL.Query().Get("host"))
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/check-tcp") {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"ok":             1,
+				"request_id":     "skipreq",
+				"permanent_link": "https://check-host.net/check-report/skipreq",
+				"nodes": map[string]interface{}{
+					"ru2.node.check-host.net": []interface{}{"ru", "Russia", "Moscow", "1.2.3.4", "AS1"},
+					"de1.node.check-host.net": []interface{}{"de", "Germany", "Frankfurt", "5.6.7.8", "AS2"},
+				},
+			})
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/check-result/skipreq") {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"ru2.node.check-host.net": []interface{}{map[string]interface{}{"time": 0.05, "address": "1.1.1.1"}},
+				"de1.node.check-host.net": []interface{}{map[string]interface{}{"time": 0.02, "address": "1.1.1.1"}},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(ts.Close)
+
+	chClient := checker.NewCheckHostClient(ts.URL, 10*time.Millisecond)
+	chClient.HTTPClient = ts.Client()
+
+	tmpDir := t.TempDir()
+	cm, err := NewConfigManager(filepath.Join(tmpDir, "bot_cfg.json"), BotConfig{
+		CheckHostBgEnabled:    true,
+		CheckHostAlertEnabled: true,
+		AlertMode:             AlertModeClean,
+	})
+	if err != nil {
+		t.Fatalf("failed to create config manager: %v", err)
+	}
+
+	bot := &Bot{
+		source: &mockSource{metrics: []metrics.ProxyMetric{
+			{Name: "Hys-Skip", Address: "9.9.9.9:5678", StableID: "udp-1", Protocol: "hysteria2", Online: true},
+			{Name: "Vless-Keep", Address: "1.1.1.1:443", StableID: "tcp-1", Protocol: "vless", Online: true},
+		}},
+		configMgr:       cm,
+		tracker:         NewAlertTracker(),
+		targets:         []ChatTarget{{ChatID: 12345}},
+		checkHostClient: chClient,
+		checkHostNodes:  []string{"ru2.node.check-host.net", "de1.node.check-host.net"},
+		ctx:             context.Background(),
+	}
+
+	bot.runAuditNow()
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, h := range tcpHosts {
+		if strings.Contains(h, "9.9.9.9") {
+			t.Errorf("UDP proxy must never reach the Check-Host API in passive audits, saw host %q", h)
+		}
+	}
+	for _, p := range paths {
+		if strings.HasPrefix(p, "/check-ping") {
+			t.Errorf("UDP proxy must not be ping-checked in passive audits, saw %s", p)
+		}
+	}
+	kept := false
+	for _, h := range tcpHosts {
+		if h == "1.1.1.1:443" {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Errorf("TCP proxy in the same snapshot must still be audited, saw hosts %v (paths %v)", tcpHosts, paths)
 	}
 }
 

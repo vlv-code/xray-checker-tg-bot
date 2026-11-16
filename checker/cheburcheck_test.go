@@ -484,6 +484,223 @@ func TestFormatCheburcheckReport_EscapesExternalData(t *testing.T) {
 	}
 }
 
+// TestCheburcheck_APIKeyModeSingleStreamAllScanners pins the API-key probe
+// mode (CHEBURCHECK_API_KEY): one Bearer-authenticated /probe stream with NO
+// token query param; the server fans the probe out to ALL online public
+// scanners, so MULTIPLE result events in that single stream must each be
+// collected. Scanner credentials present on the client are ignored.
+func TestCheburcheck_APIKeyModeSingleStreamAllScanners(t *testing.T) {
+	var mu sync.Mutex
+	var probeAuths []string
+	var probeTokenParams []string
+	var probeCalls int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/check":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "keyjob"})
+		case r.URL.Path == "/probe/keyjob":
+			probeCalls++
+			probeAuths = append(probeAuths, r.Header.Get("Authorization"))
+			probeTokenParams = append(probeTokenParams, r.URL.Query().Get("token"))
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(
+				cheburSSE("started", `{"id":"keyjob","target":"example.com","online_probes":9}`) +
+					cheburSSE("result", `{"job_id":"j1","probe_id":"pub-1","cached":false,"verdicts":["ok"],"region":"moscow","provider":"prov-1","asn":"AS1000"}`) +
+					cheburSSE("result", `{"job_id":"j2","probe_id":"pub-2","cached":false,"verdicts":["sni_block"],"region":"spb","provider":"prov-2"}`) +
+					cheburSSE("done", `{"id":"keyjob","status":"finished","response_count":2,"online_probes":9}`)))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cl := NewCheburcheckClient(srv.URL, 5*time.Second, []ScannerCred{
+		{Name: "msk-a", Token: "tok-a"},
+		{Name: "msk-b", Token: "tok-b"},
+	})
+	cl.SetAPIKey("test-key")
+	cl.limiter = nil
+
+	s, err := cl.CheckTarget(context.Background(), "example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(s.Results) != 2 {
+		t.Fatalf("expected both public-scanner results from the single key-mode stream, got %d: %+v", len(s.Results), s.Results)
+	}
+	if s.OKCount != 1 || s.BlockedCount != 1 || s.UncertainCount != 0 {
+		t.Errorf("counts wrong: ok=%d blocked=%d uncertain=%d", s.OKCount, s.BlockedCount, s.UncertainCount)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if probeCalls != 1 {
+		t.Fatalf("key mode must issue exactly ONE /probe request, got %d", probeCalls)
+	}
+	if probeAuths[0] != "Bearer test-key" {
+		t.Errorf("expected Authorization header 'Bearer test-key', got %q", probeAuths[0])
+	}
+	if probeTokenParams[0] != "" {
+		t.Errorf("key-mode /probe must NOT carry a token query param, got %q", probeTokenParams[0])
+	}
+}
+
+// TestCheburcheck_APIKeyWinsOverScanners: when BOTH an API key and scanner
+// credentials are configured, the key path wins — a single /probe request
+// with the Bearer header, no per-scanner token requests.
+func TestCheburcheck_APIKeyWinsOverScanners(t *testing.T) {
+	var mu sync.Mutex
+	var probeCalls int
+	var sawAuth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/check":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "winjob"})
+		case r.URL.Path == "/probe/winjob":
+			probeCalls++
+			sawAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(
+				cheburSSE("result", `{"probe_id":"pub","verdicts":["ok"]}`) +
+					cheburSSE("done", `{"id":"winjob","response_count":1}`)))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cl := NewCheburcheckClient(srv.URL, 3*time.Second, []ScannerCred{{Name: "msk-a", Token: "tok-a"}})
+	cl.SetAPIKey("test-key")
+	cl.limiter = nil
+
+	if _, err := cl.CheckTarget(context.Background(), "example.com"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if probeCalls != 1 {
+		t.Fatalf("key-wins mode must issue exactly ONE /probe request, got %d", probeCalls)
+	}
+	if sawAuth != "Bearer test-key" {
+		t.Errorf("single probe must use the API key, got Authorization %q", sawAuth)
+	}
+}
+
+// TestCheburcheck_APIKeyPreStream403: a rejected key (403 {code,info})
+// surfaces as the typed pre-stream error including the API info, and the
+// probe is NOT retried.
+func TestCheburcheck_APIKeyPreStream403(t *testing.T) {
+	var mu sync.Mutex
+	var probeCalls int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/check":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "deny403"})
+		case r.URL.Path == "/probe/deny403":
+			probeCalls++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"code": 403, "info": "invalid api key"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cl := NewCheburcheckClient(srv.URL, 2*time.Second, nil)
+	cl.SetAPIKey("test-key")
+	cl.limiter = nil
+
+	_, err := cl.CheckTarget(context.Background(), "example.com")
+	if err == nil {
+		t.Fatalf("403 key rejection must produce an error")
+	}
+	var httpErr *CheburHTTPError
+	if !errors.As(err, &httpErr) || httpErr.Code != 403 {
+		t.Fatalf("expected typed CheburHTTPError 403, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "invalid api key") {
+		t.Fatalf("error must include the API info, got %q", err.Error())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if probeCalls != 1 {
+		t.Fatalf("probe must not be retried after a 403, got %d calls", probeCalls)
+	}
+}
+
+// TestCheburcheck_HasCredentialsMatrix pins the feature-activation gate:
+// neither key nor scanners -> unconfigured (ErrCheburInactive); key only or
+// scanners only -> configured. HasActiveScanners keeps its scanner-specific
+// meaning (an API key alone is NOT an active scanner).
+func TestCheburcheck_HasCredentialsMatrix(t *testing.T) {
+	empty := NewCheburcheckClient("", time.Second, nil)
+	if empty.HasCredentials() {
+		t.Fatalf("client with no key and no scanners must be unconfigured")
+	}
+	if empty.HasActiveScanners() {
+		t.Fatalf("client with no scanners must report HasActiveScanners=false")
+	}
+	if _, err := empty.CheckTarget(context.Background(), "example.com"); !errors.Is(err, ErrCheburInactive) {
+		t.Fatalf("expected ErrCheburInactive, got %v", err)
+	}
+
+	keyOnly := NewCheburcheckClient("", time.Second, nil)
+	keyOnly.SetAPIKey("test-key")
+	if !keyOnly.HasCredentials() {
+		t.Fatalf("API key alone must count as configured")
+	}
+	if keyOnly.HasActiveScanners() {
+		t.Fatalf("API key must NOT count as an active scanner")
+	}
+
+	scannersOnly := NewCheburcheckClient("", time.Second, []ScannerCred{{Name: "s", Token: "t"}})
+	if !scannersOnly.HasCredentials() || !scannersOnly.HasActiveScanners() {
+		t.Fatalf("scanner credentials must keep reporting configured and HasActiveScanners=true")
+	}
+}
+
+// TestCheburcheck_KeyModeResultLabeling: key-mode results arrive with Name=""
+// (no per-scanner credential) — the report must label them by probe id with
+// region/provider meta, never rendering an empty "()" name pair.
+func TestCheburcheck_KeyModeResultLabeling(t *testing.T) {
+	s := &CheburcheckSummary{
+		Target: "example.com",
+		Results: []CheburProbeResult{
+			{ProbeID: "pub-9", Region: "moscow", Provider: "prov-x", Verdicts: []string{"ok"}},
+			{ProbeID: "pub-3", Verdicts: []string{"dns_spoofing"}},
+		},
+		Verdict: "⛔ блокировка: dns_spoofing — 1 из 2 сканеров",
+	}
+	out := FormatCheburcheckReport(s)
+	if !strings.Contains(out, "probe #pub-9") {
+		t.Errorf("nameless key-mode result must be labeled by probe id, got:\n%s", out)
+	}
+	if !strings.Contains(out, "probe #pub-3") {
+		t.Errorf("result without region/provider must fall back to probe id, got:\n%s", out)
+	}
+	if !strings.Contains(out, "moscow") || !strings.Contains(out, "prov-x") {
+		t.Errorf("report must surface region/provider meta, got:\n%s", out)
+	}
+	if strings.Contains(out, "()") {
+		t.Errorf("report must not contain an empty () label pair, got:\n%s", out)
+	}
+}
+
 // TestEnrichVerdictWithChebur: the offline-verdict enrichment appends a
 // contradiction line for ok-summaries and the block-kind list for blocked ones.
 func TestEnrichVerdictWithChebur(t *testing.T) {

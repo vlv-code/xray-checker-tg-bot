@@ -61,11 +61,14 @@ func (e *CheburHTTPError) Error() string {
 }
 
 // CheburcheckClient probes RF blocking via cheburcheck.ru: one signed-id /check
-// call, then one SSE stream per scanner token. No API key is used — each
-// scanner is addressed by its own token only.
+// call, then the probe phase in one of two modes. API-key mode (an account
+// token set via SetAPIKey) opens ONE Bearer-authenticated SSE stream that the
+// server fans out to ALL online public scanners; scanner mode opens one SSE
+// stream per scanner token. When both are configured the API key wins.
 type CheburcheckClient struct {
 	BaseURL    string
 	HTTPClient *http.Client
+	apiKey     string        // account-level Bearer token; "" = scanner mode
 	scanners   []ScannerCred // active entries only (non-empty Name AND Token)
 	limiter    *rateLimiter
 }
@@ -98,6 +101,23 @@ func NewCheburcheckClient(baseURL string, timeout time.Duration, scanners []Scan
 // HasActiveScanners reports whether at least one scanner credential is usable.
 func (c *CheburcheckClient) HasActiveScanners() bool {
 	return c != nil && len(c.scanners) > 0
+}
+
+// SetAPIKey sets the account-level Cheburcheck API token (Bearer) used for
+// /probe streams. Call it BEFORE the first CheckTarget — the field is
+// deliberately unsynchronized, which is safe only for set-once-before-use
+// wiring (main.go sets it during startup). When set, it wins over any
+// per-scanner tokens.
+func (c *CheburcheckClient) SetAPIKey(key string) {
+	c.apiKey = key
+}
+
+// HasCredentials reports whether the client can probe at all: an API key is
+// set OR at least one scanner credential is usable. Call sites gating
+// "is the Cheburcheck feature configured" must use this (not
+// HasActiveScanners, which stays scanner-specific).
+func (c *CheburcheckClient) HasCredentials() bool {
+	return c != nil && (c.apiKey != "" || len(c.scanners) > 0)
 }
 
 // CheburProbeResult is one scanner's active-probe outcome.
@@ -176,11 +196,13 @@ func parseCheburError(op string, resp *http.Response) error {
 
 // CheckTarget runs the active-probe flow: one unauthenticated /check call to
 // obtain the signed id (passive registry fields are deliberately ignored),
-// then one SSE probe stream per configured scanner, sequentially. Single
-// scanner failures are tolerated (warn + skip); 429 aborts immediately as a
-// typed error; if every scanner fails, the last cause is returned.
+// then the probe phase. API-key mode (key set) uses ONE Bearer stream that
+// carries every online public scanner's result; scanner mode opens one SSE
+// stream per configured scanner, sequentially (key wins when both are set).
+// Single scanner failures in scanner mode are tolerated (warn + skip); 429
+// aborts immediately as a typed error in both modes.
 func (c *CheburcheckClient) CheckTarget(ctx context.Context, host string) (*CheburcheckSummary, error) {
-	if !c.HasActiveScanners() {
+	if !c.HasCredentials() {
 		return nil, ErrCheburInactive
 	}
 
@@ -231,35 +253,82 @@ func (c *CheburcheckClient) CheckTarget(ctx context.Context, host string) (*Cheb
 		return nil, fmt.Errorf("cheburcheck: пустой id")
 	}
 
-	// 2. Per-scanner SSE streams, sequentially.
+	// 2. Probe phase: API-key mode wins over per-scanner tokens.
 	summary := &CheburcheckSummary{Target: host, ID: checkResp.ID}
-	var lastErr error
-	answered := 0
-	for _, sc := range c.scanners {
-		results, err := c.probeScanner(ctx, checkResp.ID, sc)
+	if c.apiKey != "" {
+		// API-key mode: ONE stream, results from ALL online public scanners
+		// (each result event carries its own probe_id; Name stays empty and
+		// report lines fall back to region/provider, then probe id).
+		results, err := c.probeWithAPIKey(ctx, checkResp.ID)
 		if err != nil {
-			var httpErr *CheburHTTPError
-			if errors.As(err, &httpErr) && httpErr.Code == http.StatusTooManyRequests {
-				logger.Warn("cheburcheck: rate limited on scanner %s: %v", sc.Name, err)
-				return nil, err
-			}
-			lastErr = err
-			logger.Warn("cheburcheck: scanner %s failed, skipping: %v", sc.Name, err)
-			continue
+			return nil, err
 		}
-		answered++
+		if len(results) == 0 {
+			return nil, fmt.Errorf("cheburcheck: нет ответов от сканеров")
+		}
 		summary.Results = append(summary.Results, results...)
-	}
-
-	if answered == 0 {
-		if lastErr != nil {
-			return nil, fmt.Errorf("cheburcheck: все сканеры вернули ошибку: %w", lastErr)
+	} else {
+		var lastErr error
+		answered := 0
+		for _, sc := range c.scanners {
+			results, err := c.probeScanner(ctx, checkResp.ID, sc)
+			if err != nil {
+				var httpErr *CheburHTTPError
+				if errors.As(err, &httpErr) && httpErr.Code == http.StatusTooManyRequests {
+					logger.Warn("cheburcheck: rate limited on scanner %s: %v", sc.Name, err)
+					return nil, err
+				}
+				lastErr = err
+				logger.Warn("cheburcheck: scanner %s failed, skipping: %v", sc.Name, err)
+				continue
+			}
+			answered++
+			summary.Results = append(summary.Results, results...)
 		}
-		return nil, fmt.Errorf("cheburcheck: нет ответов от сканеров")
+
+		if answered == 0 {
+			if lastErr != nil {
+				return nil, fmt.Errorf("cheburcheck: все сканеры вернули ошибку: %w", lastErr)
+			}
+			return nil, fmt.Errorf("cheburcheck: нет ответов от сканеров")
+		}
 	}
 
 	c.aggregate(summary)
 	return summary, nil
+}
+
+// probeWithAPIKey consumes the single API-key SSE stream until done, ctx
+// cancellation or server-side close. The server fans the probe out to ALL
+// online public scanners and reports each as its own result event; results
+// keep Name empty (there is no per-scanner credential) — the report formatter
+// labels them by region/provider, falling back to the probe id.
+func (c *CheburcheckClient) probeWithAPIKey(ctx context.Context, id string) ([]CheburProbeResult, error) {
+	probeURL := fmt.Sprintf("%s/probe/%s", c.BaseURL, url.PathEscape(id))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("cheburcheck probe: %w", err)
+	}
+	// Account credential: Bearer header, deliberately NO token query param.
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	if c.limiter != nil {
+		if err := c.limiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+	}
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("cheburcheck probe: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseCheburError("probe", resp)
+	}
+
+	return c.consumeProbeStream(ctx, resp.Body, "api-key")
 }
 
 // probeScanner consumes one scanner's SSE stream until done, ctx cancellation
@@ -287,9 +356,17 @@ func (c *CheburcheckClient) probeScanner(ctx context.Context, id string, sc Scan
 		return nil, parseCheburError("probe", resp)
 	}
 
+	return c.consumeProbeStream(ctx, resp.Body, sc.Name)
+}
+
+// consumeProbeStream parses the SSE event stream from body until done, ctx
+// cancellation or server-side close, mapping result events into
+// CheburProbeResult entries named scannerName (per-scanner credential name,
+// or "" in API-key mode where the stream aggregates all public scanners).
+func (c *CheburcheckClient) consumeProbeStream(ctx context.Context, body io.Reader, scannerName string) ([]CheburProbeResult, error) {
 	var results []CheburProbeResult
 	sawDone := false
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
 	var evName string
@@ -301,11 +378,11 @@ func (c *CheburcheckClient) probeScanner(ctx context.Context, id string, sc Scan
 		}
 		var payload cheburSSEPayload
 		if err := json.Unmarshal([]byte(strings.Join(dataLines, "\n")), &payload); err != nil {
-			logger.Warn("cheburcheck: scanner %s sent malformed %s event: %v", sc.Name, evName, err)
+			logger.Warn("cheburcheck: scanner %s sent malformed %s event: %v", scannerName, evName, err)
 		} else if evName == "result" {
 			results = append(results, CheburProbeResult{
 				ProbeID:  payload.ProbeID,
-				Name:     sc.Name,
+				Name:     scannerName,
 				Region:   payload.Region,
 				Provider: payload.Provider,
 				ASN:      string(payload.ASN),
@@ -336,22 +413,22 @@ func (c *CheburcheckClient) probeScanner(ctx context.Context, id string, sc Scan
 
 	if err := scanner.Err(); err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("сканер %s: %w", sc.Name, ctx.Err())
+			return nil, fmt.Errorf("сканер %s: %w", scannerName, ctx.Err())
 		}
 		// Stream cut mid-flight: collected results are still valid, an
 		// empty collection counts as a scanner failure.
 		if len(results) > 0 {
-			logger.Warn("cheburcheck: scanner %s stream ended without done: %v", sc.Name, err)
+			logger.Warn("cheburcheck: scanner %s stream ended without done: %v", scannerName, err)
 			return results, nil
 		}
-		return nil, fmt.Errorf("сканер %s: поток завершён без результатов: %w", sc.Name, err)
+		return nil, fmt.Errorf("сканер %s: поток завершён без результатов: %w", scannerName, err)
 	}
 
 	if !sawDone && len(results) == 0 {
-		return nil, fmt.Errorf("сканер %s: поток завершён без результатов", sc.Name)
+		return nil, fmt.Errorf("сканер %s: поток завершён без результатов", scannerName)
 	}
 	if !sawDone {
-		logger.Warn("cheburcheck: scanner %s stream ended without done event", sc.Name)
+		logger.Warn("cheburcheck: scanner %s stream ended without done event", scannerName)
 	}
 	return results, nil
 }
@@ -462,7 +539,14 @@ func FormatCheburcheckReport(s *CheburcheckSummary) string {
 			labels = append(labels, html.EscapeString(CheburVerdictLabel(v)))
 		}
 
-		line := fmt.Sprintf("  • %s%s %s %s", html.EscapeString(r.Name), meta, icon, strings.Join(labels, ", "))
+		// API-key mode results carry no per-scanner name: label by probe id,
+		// keeping the region/provider meta; never render an empty "()" pair.
+		label := r.Name
+		if label == "" && r.ProbeID != "" {
+			label = fmt.Sprintf("probe #%s", r.ProbeID)
+		}
+
+		line := fmt.Sprintf("  • %s%s %s %s", html.EscapeString(label), meta, icon, strings.Join(labels, ", "))
 		if r.Cached {
 			line += " (кеш)"
 		}

@@ -491,6 +491,18 @@ func EnrichVerdictWithCheckHost(verdict string, ch *CheckHostSummary, dnsErr ...
 	}
 }
 
+// EnrichVerdictWithCheckHostForProto wraps EnrichVerdictWithCheckHost and,
+// for UDP-protocol proxies, appends the TCP-only caveat: the Check-Host API
+// cannot verify UDP services, so the line reports TCP port reachability only
+// (user decision 2026-11-16).
+func EnrichVerdictWithCheckHostForProto(verdict string, ch *CheckHostSummary, proto, dnsErr string) string {
+	enriched := EnrichVerdictWithCheckHost(verdict, ch, dnsErr)
+	if ch != nil && IsUDPProto(proto) {
+		enriched += " (TCP до порта; UDP не проверяется)"
+	}
+	return enriched
+}
+
 // alignTargetErrorsWithNodeHealth adjusts target error messages when the proxy tunnel
 // could not be established at all (all targets failed due to low-level node DNS/TCP/UDP failure).
 // If at least one target succeeded, the tunnel IS up and functioning, so target errors are preserved!
@@ -660,10 +672,11 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 			// Run Check-Host if the node has connectivity issues.
 			// Deduplicate checks across proxies sharing the same host/port to avoid rate-limiting and timeouts.
 			if status == "offline" && proxy.Server != "" {
+				// UDP-protocol proxies are checked the same way as TCP ones —
+				// TCP to the subscription port: the Check-Host API has no UDP
+				// probe, so port reachability is the best objective signal
+				// available (user decision 2026-11-16).
 				checkKey := fmt.Sprintf("tcp:%s:%d", proxy.Server, proxy.Port)
-				if IsUDPProto(proxy.Protocol) {
-					checkKey = fmt.Sprintf("ping:%s", proxy.Server)
-				}
 
 				var chSummary *CheckHostSummary
 				var chErr error
@@ -688,9 +701,7 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 						fastNodes = append(fastNodes, DefaultFastRUNodes...)
 						fastNodes = append(fastNodes, DefaultFastWorldNodes...)
 
-						if IsUDPProto(proxy.Protocol) {
-							chSummary, chErr = chClient.CheckPing(chCtx, proxy.Server, fastNodes)
-						} else if proxy.Port > 0 {
+						if proxy.Port > 0 {
 							targetHost := fmt.Sprintf("%s:%d", proxy.Server, proxy.Port)
 							chSummary, chErr = chClient.CheckTCP(chCtx, targetHost, fastNodes)
 						}
@@ -702,7 +713,7 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 
 				if chErr == nil && chSummary != nil {
 					checkHostSummary = chSummary
-					verdict = EnrichVerdictWithCheckHost(verdict, chSummary, health.DNSErr)
+					verdict = EnrichVerdictWithCheckHostForProto(verdict, chSummary, proxy.Protocol, health.DNSErr)
 				}
 
 				// Cheburcheck enrichment (active RF blocking probes) follows the
@@ -725,7 +736,7 @@ func (pc *ProxyChecker) RunDiagnostics(targets []string) []ProxyDiagReport {
 						chebSummary, chebErr = entry.summary, entry.err
 					} else {
 						chebClient := pc.GetCheburClient()
-						if chebClient != nil && chebClient.HasActiveScanners() {
+						if chebClient != nil && chebClient.HasCredentials() {
 							chebCtx, chebCancel := context.WithTimeout(context.Background(), 12*time.Second)
 							chebSummary, chebErr = chebClient.CheckTarget(chebCtx, chebKey)
 							chebCancel()

@@ -100,6 +100,7 @@ type CLI struct {
 		CheckHostBgEnabled        bool     `name:"checkhost-bg-enabled" help:"Enable periodic background Check-Host auditing" default:"true" env:"CHECKHOST_BG_ENABLED"`
 		CheckHostIntervalHours    int      `name:"checkhost-interval-hours" help:"Interval in hours between background Check-Host audits" default:"1" env:"CHECKHOST_INTERVAL_HOURS"`
 		CheckHostAlertEnabled     bool     `name:"checkhost-alert-enabled" help:"Send alert when host is unreachable from Russia in background check" default:"true" env:"CHECKHOST_ALERT_ENABLED"`
+		CheburcheckAPIKey         string   `name:"cheburcheck-api-key" help:"Cheburcheck API token (Bearer) for /probe streams; empty = per-scanner tokens from DefaultCheburScanners" default:"" env:"CHEBURCHECK_API_KEY"`
 		ReleaseAlertsEnabled      bool     `name:"telegram-release-alerts" help:"Send Telegram notification when a new xray-checker release is available" default:"true" env:"TELEGRAM_RELEASE_ALERTS"`
 		ReleaseCheckIntervalHours int      `name:"telegram-release-check-interval" help:"Interval in hours between release checks" default:"6" env:"TELEGRAM_RELEASE_CHECK_INTERVAL_HOURS"`
 	} `embed:"" prefix:""`

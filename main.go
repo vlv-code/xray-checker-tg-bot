@@ -236,6 +236,14 @@ func main() {
 	targetMgr := checker.NewTargetManager(config.CLIConfig.Telegram.TargetURLs)
 	proxyChecker.SetTargetManager(targetMgr)
 
+	// One long-lived Cheburcheck client for the whole process (Guardian P2-1):
+	// the diagnostics enrichment below AND the bot's manual probe commands
+	// share a single token bucket. Fully inactive while neither the API key
+	// nor per-scanner tokens are configured (graceful degradation).
+	cheburClient := checker.NewCheburcheckClient("", 0, checker.DefaultCheburScanners)
+	cheburClient.SetAPIKey(config.CLIConfig.Telegram.CheburcheckAPIKey)
+	proxyChecker.SetCheburClient(cheburClient)
+
 	// The collector renders metrics from the checker's current proxy snapshot on
 	// each scrape, so custom metricsLabels (#124) can change across subscription
 	// updates without resetting other series.
@@ -275,11 +283,13 @@ func main() {
 				if proxyChecker.IsProxyDisabled(p) {
 					continue
 				}
-				isUDP := checker.IsUDPProto(p.Protocol)
-				dedupKey := net.JoinHostPort(p.Server, strconv.Itoa(p.Port))
-				if isUDP {
-					dedupKey = p.Server
+				// The Check-Host API cannot verify UDP services: UDP-protocol
+				// proxies are excluded from passive audits entirely (user
+				// decision 2026-11-16).
+				if checker.IsUDPProto(p.Protocol) {
+					continue
 				}
+				dedupKey := net.JoinHostPort(p.Server, strconv.Itoa(p.Port))
 				if seen[dedupKey] {
 					continue
 				}
@@ -287,7 +297,6 @@ func main() {
 				out = append(out, nodes.AuditTarget{
 					Address: dedupKey,
 					Host:    p.Server,
-					IsUDP:   isUDP,
 					Name:    p.Name,
 				})
 			}
@@ -828,6 +837,7 @@ func main() {
 				}
 				bot.SetASNLookup(asnLookup)
 				bot.SetDiagnosticsSource(proxyChecker)
+				bot.SetCheburcheckClient(cheburClient)
 				bot.SetIntervalHandler(rescheduleChecks)
 				bot.SetVersion(version)
 				bot.SetAdminUserIDs(config.CLIConfig.Telegram.AdminUserIDs)

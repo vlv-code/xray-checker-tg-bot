@@ -233,6 +233,13 @@ func (b *Bot) SetAlertTracker(tracker *AlertTracker) {
 	}
 }
 
+// SetCheburcheckClient injects the process-wide Cheburcheck client so the
+// bot's manual probe commands share the same rate-limited instance as the
+// diagnostics enrichment (Guardian P2-1: one long-lived client per process).
+func (b *Bot) SetCheburcheckClient(c *checker.CheburcheckClient) {
+	b.cheburClient = c
+}
+
 // SetVersion sets the current running application version.
 func (b *Bot) SetVersion(v string) {
 	b.version = v
