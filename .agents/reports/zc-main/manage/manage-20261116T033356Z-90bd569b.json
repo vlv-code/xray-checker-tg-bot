@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0.0",
+  "report_type": "manage",
+  "project_id": "vlv-code/xray-checker-tg-bot",
+  "installation_id": "zc-main",
+  "harness_id": "zcode",
+  "actor_id": "vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-intake-dispatcher",
+  "run_id": "manage-20261116T033356Z-90bd569b",
+  "init_run_id": "init-20261116T033339Z-f36d3a58",
+  "created_at": "2026-11-16T03:33:56Z",
+  "status": "completed",
+  "git_state": {
+    "commit_sha": "a191063864b1616af63bf5a390a766c085df425c",
+    "branch": "main",
+    "is_clean": false,
+    "modified_files": [
+      ".gitignore",
+      "README.md",
+      ".agents/",
+      "AGENTS.md",
+      "scripts/check_boundaries.py",
+      "scripts/compact_memory.py",
+      "scripts/inspect_meta_project.py",
+      "scripts/manage_reports.py",
+      "scripts/record_obs.py",
+      "scripts/update_meta_project.py",
+      "scripts/verify_identity.py"
+    ]
+  },
+  "input_fingerprints": {
+    ".agents/meta-project.json": "6485bb71c39aaefae66515b5a2ab14ccdea103ef940c2d347d86ef4177297f15",
+    ".agents/project_knowledge/boundaries.md": "2fff24562a87366688f680c242bfe6d6c518ebc236b2f941b782046bbc97d09e",
+    "AGENTS.md": "14181fb542b4941925ff0f128f7a6aae3e382ce4fd7e02b1160552fae5bc6c16"
+  },
+  "scenario": {},
+  "roles": {
+    "preserved": [],
+    "created": [],
+    "adapted": [],
+    "archived": []
+  },
+  "bindings": {
+    "installation": "zc-main",
+    "harness": "zcode",
+    "all_statuses": "active"
+  },
+  "effective_capabilities": {
+    "team_readiness": "ready"
+  },
+  "checks": [],
+  "remaining_manual_actions": []
+}

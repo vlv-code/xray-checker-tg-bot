@@ -1,0 +1,134 @@
+{
+  "schema_version": "1.0.0",
+  "report_type": "init",
+  "project_id": "vlv-code/xray-checker-tg-bot",
+  "installation_id": "zc-main",
+  "harness_id": "zcode",
+  "actor_id": "vlv-code/xray-checker-tg-bot::zcode::zc-main::human-operator",
+  "run_id": "init-20261116T032333Z-4d8555bf",
+  "created_at": "2026-11-16T03:23:33Z",
+  "status": "completed",
+  "git_state": {
+    "commit_sha": "a191063864b1616af63bf5a390a766c085df425c",
+    "branch": "main",
+    "is_clean": false,
+    "modified_files": [
+      "README.md",
+      ".agents/",
+      "AGENTS.md",
+      "scripts/__pycache__/",
+      "scripts/check_boundaries.py",
+      "scripts/compact_memory.py",
+      "scripts/inspect_meta_project.py",
+      "scripts/manage_reports.py",
+      "scripts/record_obs.py",
+      "scripts/update_meta_project.py",
+      "scripts/verify_identity.py"
+    ]
+  },
+  "input_fingerprints": {
+    ".agents/meta-project.json": "01c657e74724fd5ac322892c4d3b9dea277b185e52f7053bd717415fff12e08f",
+    ".agents/project_knowledge/boundaries.md": "b093e775731d11c02a7e682e4302722310ae41a7547c799aebe4dcf2b75e0265",
+    "AGENTS.md": "ab34ea9cce26245b10f760c172b36b749395b266cd9d03b8c2d078587f672fd0"
+  },
+  "references": {
+    "registry": ".agents/meta-project.json",
+    "passport": "AGENTS.md",
+    "boundaries": ".agents/project_knowledge/boundaries.md"
+  },
+  "scenario": {
+    "profile": "active_development",
+    "deployment_mode": "shared_repo",
+    "collaboration_model": "triad",
+    "collaboration_extension": {
+      "roles_to_add": [
+        "agent-dispatcher"
+      ],
+      "note": "User-approved 4th role (dispatcher/coordination) on top of the canonical triad; to be materialized by manage-meta-project."
+    },
+    "verification_policy": "duo_peer_review",
+    "delegation_level": "controlled",
+    "constraints": [
+      "security_invariants_no_opt_out_ssrf",
+      "token_hashing_at_rest",
+      "telegram_chat_allowlist",
+      "graceful_degradation_no_crash_loops",
+      "persisted_state_atomic_writes",
+      "bilingual_readme_sync_ru_en"
+    ],
+    "unresolved_questions": []
+  },
+  "environment": {
+    "capabilities": {
+      "read_instructions": "available",
+      "local_checks": "available (go build/vet/test -race; python 3.13 stdlib scripts)",
+      "skills": "available (go-*, telegram-bot-builder, docker-expert, github-actions-creator, security-review, remnawave-xray)",
+      "roles": "unavailable (not yet deployed - pending manage-meta-project)",
+      "hooks": "untested"
+    },
+    "constraints": [
+      "windows_dev_host",
+      "go_1_26",
+      "cgo_disabled_build"
+    ]
+  },
+  "components": {
+    "created": [
+      "AGENTS.md",
+      ".agents/meta-project.json",
+      ".agents/project_knowledge/observations.md",
+      ".agents/project_knowledge/boundaries.md",
+      ".agents/project_knowledge/weak_spots.md",
+      ".agents/project_knowledge/architecture.md",
+      ".agents/project_knowledge/tasks.md",
+      ".agents/skills/record-observation/SKILL.md",
+      ".agents/skills/sync-architecture/SKILL.md",
+      ".agents/skills/ground-meta-project/SKILL.md",
+      "scripts/check_boundaries.py",
+      "scripts/verify_identity.py",
+      "scripts/inspect_meta_project.py",
+      "scripts/manage_reports.py",
+      "scripts/record_obs.py",
+      "scripts/compact_memory.py",
+      "scripts/update_meta_project.py"
+    ],
+    "modified": [
+      "README.md (canonical meta-project badge)"
+    ],
+    "preserved": [
+      "all pre-existing sources, tests, .superpowers/ artifacts, docs/"
+    ]
+  },
+  "checks": [
+    {
+      "name": "upstream_scripts_verbatim",
+      "status": "passed",
+      "detail": "7 runtime scripts + 3 skills copied byte-identical from vlv-code/meta-project@main"
+    },
+    {
+      "name": "zero_unmapped_dirs",
+      "status": "passed",
+      "detail": "all top-level dirs mapped in boundaries.md coverage table"
+    },
+    {
+      "name": "deep_code_inspection",
+      "status": "passed",
+      "detail": "storage, fetcher/SSRF, checkhost, telegram callbacks, Dockerfile, entrypoint.sh, CI workflows read"
+    }
+  ],
+  "recommendations_for_manage": {
+    "suggested_roles": [
+      "agent-dev-lead",
+      "agent-quality-guardian",
+      "agent-github-steward",
+      "agent-dispatcher"
+    ],
+    "target_topology": "triad + dispatcher (user-approved extension)",
+    "rationale": "active_development with duo_peer_review: dev-lead implements, quality-guardian peer-verifies, github-steward owns releases/CI, dispatcher coordinates task routing across the trio. agent-dispatcher is a non-standard role and needs explicit binding configuration."
+  },
+  "blockers_and_unresolved": [],
+  "next_step_readiness": {
+    "ready_for_manage": true,
+    "details": "Initialization complete; scenario agreed and recorded; team roles pending manage-meta-project."
+  }
+}

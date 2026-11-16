@@ -1,0 +1,111 @@
+{
+  "schema_version": "1.0.0",
+  "report_type": "init",
+  "project_id": "vlv-code/xray-checker-tg-bot",
+  "installation_id": "zc-main",
+  "harness_id": "zcode",
+  "actor_id": "vlv-code/xray-checker-tg-bot::zcode::zc-main::human-operator",
+  "run_id": "init-20261116T033339Z-f36d3a58",
+  "created_at": "2026-11-16T03:33:39Z",
+  "status": "completed",
+  "git_state": {
+    "commit_sha": "a191063864b1616af63bf5a390a766c085df425c",
+    "branch": "main",
+    "is_clean": false,
+    "modified_files": [
+      ".gitignore",
+      "README.md",
+      ".agents/",
+      "AGENTS.md",
+      "scripts/check_boundaries.py",
+      "scripts/compact_memory.py",
+      "scripts/inspect_meta_project.py",
+      "scripts/manage_reports.py",
+      "scripts/record_obs.py",
+      "scripts/update_meta_project.py",
+      "scripts/verify_identity.py"
+    ]
+  },
+  "input_fingerprints": {
+    ".agents/meta-project.json": "6485bb71c39aaefae66515b5a2ab14ccdea103ef940c2d347d86ef4177297f15",
+    ".agents/project_knowledge/boundaries.md": "2fff24562a87366688f680c242bfe6d6c518ebc236b2f941b782046bbc97d09e",
+    "AGENTS.md": "14181fb542b4941925ff0f128f7a6aae3e382ce4fd7e02b1160552fae5bc6c16"
+  },
+  "references": {
+    "registry": ".agents/meta-project.json",
+    "passport": "AGENTS.md",
+    "boundaries": ".agents/project_knowledge/boundaries.md"
+  },
+  "scenario": {
+    "profile": "active_development",
+    "deployment_mode": "shared_repo",
+    "collaboration_model": "triad",
+    "collaboration_extension": {
+      "roles_to_add": [
+        "agent-intake-dispatcher"
+      ],
+      "note": "User-approved 4th role 'dispatcher' materialized under the canonical catalog id agent-intake-dispatcher on top of the canonical triad."
+    },
+    "verification_policy": "duo_peer_review",
+    "delegation_level": "controlled",
+    "constraints": [
+      "security_invariants_no_opt_out_ssrf",
+      "token_hashing_at_rest",
+      "telegram_chat_allowlist",
+      "graceful_degradation_no_crash_loops",
+      "persisted_state_atomic_writes",
+      "bilingual_readme_sync_ru_en"
+    ],
+    "unresolved_questions": []
+  },
+  "environment": {
+    "capabilities": {
+      "read_instructions": "available",
+      "local_checks": "available (go build/vet/test -race; python stdlib scripts)",
+      "skills": "available (go-*, telegram-bot-builder, docker-expert, github-actions-creator, security-review, remnawave-xray)",
+      "roles": "available (triad + agent-intake-dispatcher materialized; see manage reports)",
+      "hooks": "untested"
+    },
+    "constraints": [
+      "windows_dev_host",
+      "go_1_26",
+      "cgo_disabled_build"
+    ]
+  },
+  "components": {
+    "created": [],
+    "modified": [
+      ".agents/meta-project.json (roles registered)",
+      "AGENTS.md (Section 7 roster)",
+      ".agents/project_knowledge/boundaries.md (.agents/team mapping)",
+      ".agents/project_knowledge/tasks.md"
+    ],
+    "preserved": [
+      "all knowledge slices",
+      "all runtime scripts",
+      "all project sources"
+    ]
+  },
+  "checks": [
+    {
+      "name": "adoption_resurvey",
+      "status": "passed",
+      "detail": "re-survey after team materialization staled previous fingerprints; no re-scaffolding performed"
+    }
+  ],
+  "recommendations_for_manage": {
+    "suggested_roles": [
+      "agent-intake-dispatcher",
+      "agent-dev-lead",
+      "agent-quality-guardian",
+      "agent-github-steward"
+    ],
+    "target_topology": "triad + dispatcher (user-approved extension)",
+    "rationale": "roles already materialized in this manage run; recorded for traceability"
+  },
+  "blockers_and_unresolved": [],
+  "next_step_readiness": {
+    "ready_for_manage": true,
+    "details": "Adoption re-survey complete; fingerprints fresh for manage intake."
+  }
+}

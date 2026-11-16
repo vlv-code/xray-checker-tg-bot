@@ -41,4 +41,10 @@ stats.json
 alerts.json
 data/
 *.log
-*.tmp
+*.tmp
+# Python cache (meta-project runtime scripts)
+__pycache__/
+*.pyc
+
+# Meta-project runtime lock files (not shared state)
+.agents/**/*.lock

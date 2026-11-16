@@ -1,0 +1,73 @@
+{
+  "schema_version": "1.1.0",
+  "project_id": "vlv-code/xray-checker-tg-bot",
+  "scenario": {
+    "profile": "active_development",
+    "deployment_mode": "shared_repo",
+    "collaboration_model": "triad",
+    "collaboration_extension": {
+      "roles_to_add": ["agent-intake-dispatcher"],
+      "note": "User-approved 4th role 'dispatcher' materialized under the canonical catalog id agent-intake-dispatcher on top of the canonical triad."
+    },
+    "verification_policy": "duo_peer_review",
+    "delegation_level": "controlled",
+    "constraints": [
+      "security_invariants_no_opt_out_ssrf",
+      "token_hashing_at_rest",
+      "telegram_chat_allowlist",
+      "graceful_degradation_no_crash_loops",
+      "persisted_state_atomic_writes",
+      "bilingual_readme_sync_ru_en"
+    ],
+    "unresolved_questions": []
+  },
+  "installations": {
+    "zc-main": {
+      "harness_id": "zcode",
+      "status": "active",
+      "description": "Primary ZCode environment (initialized via init-meta-project, state NONE -> Scenario 1)"
+    }
+  },
+  "roles": {
+    "agent-intake-dispatcher": {
+      "description": "Intake Dispatcher: request decomposition, role routing, handoff packets (user-approved 4th role)",
+      "bindings": {
+        "zc-main": {
+          "actor_id": "vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-intake-dispatcher",
+          "status": "active",
+          "profile_path": ".agents/team/agent-intake-dispatcher/profile.md"
+        }
+      }
+    },
+    "agent-dev-lead": {
+      "description": "Lead Developer: Go feature implementation, wiring, TDD across subsystems",
+      "bindings": {
+        "zc-main": {
+          "actor_id": "vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-dev-lead",
+          "status": "active",
+          "profile_path": ".agents/team/agent-dev-lead/profile.md"
+        }
+      }
+    },
+    "agent-quality-guardian": {
+      "description": "Quality & Meta-Architecture Guardian: peer review, race-test verification, boundary audit",
+      "bindings": {
+        "zc-main": {
+          "actor_id": "vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-quality-guardian",
+          "status": "active",
+          "profile_path": ".agents/team/agent-quality-guardian/profile.md"
+        }
+      }
+    },
+    "agent-github-steward": {
+      "description": "GitHub Steward & Release Captain: git hygiene, releases, CI/CD governance",
+      "bindings": {
+        "zc-main": {
+          "actor_id": "vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-github-steward",
+          "status": "active",
+          "profile_path": ".agents/team/agent-github-steward/profile.md"
+        }
+      }
+    }
+  }
+}
