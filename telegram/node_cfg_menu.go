@@ -14,9 +14,9 @@ import (
 // cbNodeCfg composes a namespaced node callback `prefix + name + suffix` and
 // reports whether it fits Telegram's hard 64-byte callback_data limit. Node
 // names are user-defined, so callers must OMIT the button when ok is false
-// and keep the long-name hint («длинное имя ноды — используйте /nodeset»,
-// extended with «; исключения недоступны» when the exclusions button is
-// omitted) in the text
+// and keep the long-name hint («длинное имя ноды — используйте /nodeset;
+// часть кнопок недоступна») in the text. Wave-F B1/B2 reuse the same helper
+// for the diag and node-subs surfaces (full callback incl. page suffix).
 // (Wave-E, test-pinned by TestMenuNodesCfgCallback64ByteGuard).
 func cbNodeCfg(prefix, name string, suffix ...string) (string, bool) {
 	data := prefix + name
@@ -214,15 +214,16 @@ func (b *Bot) getNodeCfgScreen(node string) (string, *telego.InlineKeyboardMarku
 		if e.Overridden {
 			mark = " ✏️"
 		}
-		fmt.Fprintf(&sb, "• %s: <code>%s</code>%s\n", e.Key, escapeHTML(e.Value), mark)
+		fmt.Fprintf(&sb, "• %s: <code>%s</code>%s\n", escapeHTML(e.Key), escapeHTML(e.Value), mark)
 	}
 	fmt.Fprintf(&sb, "\n🚫 Исключено прокси: <b>%d</b>\n", b.nodeExcludedProxyCount(node))
 	sb.WriteString("\n✏️ — переопределено на ноде; «↩️ Сбросить» возвращает к мастеру.\n")
 	sb.WriteString("Точные значения: /nodeset &lt;имя&gt; &lt;ключ&gt; &lt;значение&gt;\n")
-	if _, exclOK := cbNodeCfg("menu:nodes:excl:", node); !exclOK {
-		sb.WriteString("\n(длинное имя ноды — используйте /nodeset; исключения недоступны)\n")
-	} else if !nodeCfgCyclesFit(node, entries) {
-		sb.WriteString("\n(длинное имя ноды — используйте /nodeset)\n")
+	// Wave-F B10: one unified hint wording for BOTH omission branches
+	// (exclusions omitted / cycle buttons omitted).
+	_, exclOK := cbNodeCfg("menu:nodes:excl:", node)
+	if !exclOK || !nodeCfgCyclesFit(node, entries) {
+		sb.WriteString("\n(длинное имя ноды — используйте /nodeset; часть кнопок недоступна)\n")
 	}
 
 	return sb.String(), NodeCfgMarkup(node, entries)

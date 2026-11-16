@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -159,11 +160,25 @@ type NodeSubListItem struct {
 }
 
 // NodesSubsListMarkup returns keyboard with a button for each node and navigation buttons.
+// Wave-F B2: node buttons are composed via cbNodeCfg; a node whose callback
+// would exceed the 64-byte limit is omitted and one routable hint row
+// (menu:noop) points to the /nodesubs command path.
 func NodesSubsListMarkup(nodes []NodeSubListItem) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
+	omitted := 0
 	for _, n := range nodes {
+		cb, ok := cbNodeCfg("menu:nodes:subnode:", n.Name)
+		if !ok {
+			omitted++
+			continue
+		}
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn(fmt.Sprintf("🖥 %s (%d подп.)", n.Name, n.SubCount), fmt.Sprintf("menu:nodes:subnode:%s", n.Name)),
+			btn(fmt.Sprintf("🖥 %s (%d подп.)", n.Name, n.SubCount), cb),
+		))
+	}
+	if omitted > 0 {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("ℹ️ длинное имя ноды — используйте /nodesubs", "menu:noop"),
 		))
 	}
 	rows = append(rows,
@@ -176,17 +191,37 @@ func NodesSubsListMarkup(nodes []NodeSubListItem) *telego.InlineKeyboardMarkup {
 }
 
 // NodeSubsManageMarkup returns keyboard to manage subscriptions for a specific node.
+// Wave-F B2: delsub/addsub callbacks are composed via cbNodeCfg; over-limit
+// buttons are omitted individually and one routable hint row (menu:noop)
+// points to the /nodesubs command path.
 func NodeSubsManageMarkup(node string, subs []ManagedSubInfo) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
+	omitted := 0
 	for i := range subs {
+		cb, ok := cbNodeCfg("menu:nodes:delsub:", node, ":"+strconv.Itoa(i))
+		if !ok {
+			omitted++
+			continue
+		}
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn(fmt.Sprintf("🗑 Удалить: #%d", i+1), fmt.Sprintf("menu:nodes:delsub:%s:%d", node, i)),
+			btn(fmt.Sprintf("🗑 Удалить: #%d", i+1), cb),
+		))
+	}
+	if cb, ok := cbNodeCfg("menu:nodes:addsub:", node); ok {
+		rows = append(rows,
+			tu.InlineKeyboardRow(
+				btn("➕ Назначить подписку", cb),
+			),
+		)
+	} else {
+		omitted++
+	}
+	if omitted > 0 {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("ℹ️ длинное имя ноды — используйте /nodesubs", "menu:noop"),
 		))
 	}
 	rows = append(rows,
-		tu.InlineKeyboardRow(
-			btn("➕ Назначить подписку", fmt.Sprintf("menu:nodes:addsub:%s", node)),
-		),
 		tu.InlineKeyboardRow(
 			btn("🔙 К списку нод", "menu:nodes:subs"),
 			btn("⚙️ Глобальные настройки нод", "menu:nodes:settings"),
@@ -653,17 +688,28 @@ func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMa
 	return tu.InlineKeyboard(rows...)
 }
 
+// cheburMenuProxyCap caps the Cheburcheck proxy list per screen (mirrors the
+// CheckHostMenuMarkup cap of 20).
+const cheburMenuProxyCap = 20
+
 // CheburMenuMarkup returns keyboard for selecting a proxy for the active
 // RF blocking probe (Cheburcheck). Layout mirrors the original Check-Host
 // list: two proxies per row, disabled proxies skipped, navigation row last.
+// Wave-F B4: the list is capped at 20 enabled proxies per screen with an
+// overflow note row (routable menu:noop, same mechanism as CheckHostMenuMarkup).
 // Buttons carry menu:chebur:<stableID> (12 + stableID ≤ 64-byte
 // callback_data limit — test-pinned).
 func CheburMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
 	var currentRow []telego.InlineKeyboardButton
+	enabledTotal := 0
 	for i := range proxies {
 		if proxies[i].Disabled {
 			continue
+		}
+		enabledTotal++
+		if enabledTotal > cheburMenuProxyCap {
+			continue // keep counting, stop emitting buttons
 		}
 		currentRow = append(currentRow,
 			btn(truncateButtonText(proxies[i].Name, 24), "menu:chebur:"+proxies[i].StableID))
@@ -674,6 +720,12 @@ func CheburMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMarku
 	}
 	if len(currentRow) > 0 {
 		rows = append(rows, currentRow)
+	}
+
+	if enabledTotal > cheburMenuProxyCap {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn(fmt.Sprintf("...и ещё %d прокси — используйте /cheburcheck <хост>", enabledTotal-cheburMenuProxyCap), "menu:noop"),
+		))
 	}
 
 	rows = append(rows, tu.InlineKeyboardRow(
@@ -743,6 +795,10 @@ func DiagPaginationMarkup(page, totalPages int, _ ...DiagDeepLink) *telego.Inlin
 }
 
 // DeepDiagnosticsMarkup returns navigation buttons for Level 3 Deep diagnostics.
+// Wave-F B1: both node-name-bearing callbacks (back to details and the deep
+// recheck, the latter carrying the "node/id" stableID form) are composed via
+// cbNodeCfg over the FULL callback incl. the page suffix; a button whose
+// callback would exceed Telegram's 64-byte callback_data limit is omitted.
 func DeepDiagnosticsMarkup(stableID string, page ...int) *telego.InlineKeyboardMarkup {
 	curPage := 1
 	if len(page) > 0 && page[0] > 0 {
@@ -753,18 +809,28 @@ func DeepDiagnosticsMarkup(stableID string, page ...int) *telego.InlineKeyboardM
 		backTarget = strings.Split(stableID, "/")[0]
 	}
 	backCb := fmt.Sprintf("menu:diag:details:%d", curPage)
+	backOK := true
 	if backTarget != "" && backTarget != "local" {
-		backCb = fmt.Sprintf("menu:diag:details:%s:%d", backTarget, curPage)
+		backCb, backOK = cbNodeCfg("menu:diag:details:", backTarget, ":"+strconv.Itoa(curPage))
 	}
-	return tu.InlineKeyboard(
-		tu.InlineKeyboardRow(
-			btn("🔙 К детальному отчёту", backCb),
-			btn("🔄 Перепроверить", fmt.Sprintf("menu:diag:deep:%s:%d", stableID, curPage)),
-		),
-		tu.InlineKeyboardRow(
-			btn("🏠 Главное меню", "menu:main"),
-		),
-	)
+	recheckCb, recheckOK := cbNodeCfg("menu:diag:deep:", stableID, ":"+strconv.Itoa(curPage))
+
+	var firstRow []telego.InlineKeyboardButton
+	if backOK {
+		firstRow = append(firstRow, btn("🔙 К детальному отчёту", backCb))
+	}
+	if recheckOK {
+		firstRow = append(firstRow, btn("🔄 Перепроверить", recheckCb))
+	}
+
+	var rows [][]telego.InlineKeyboardButton
+	if len(firstRow) > 0 {
+		rows = append(rows, firstRow)
+	}
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("🏠 Главное меню", "menu:main"),
+	))
+	return tu.InlineKeyboard(rows...)
 }
 
 // PickDeepDiagnosticsMarkup returns keyboard to select any proxy for deep diagnostics.
@@ -773,11 +839,21 @@ func PickDeepDiagnosticsMarkup(reports []checker.ProxyDiagReport, page int) *tel
 }
 
 // PickDeepDiagnosticsMarkupWithTabs returns keyboard with node tabs to select any proxy for deep diagnostics.
+// Wave-F B1: every node-name-bearing callback (tabs, per-proxy deep rows with
+// the "node/id" stableID form, and the details back button) is composed via
+// cbNodeCfg over the FULL callback incl. the page suffix; over-limit buttons
+// are omitted individually and one routable hint row (menu:noop) replaces them.
 func PickDeepDiagnosticsMarkupWithTabs(target string, tabs []NodeTabItem, reports []checker.ProxyDiagReport, page int) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
+	omitted := 0
 	if len(tabs) > 1 {
 		var tabButtons []telego.InlineKeyboardButton
 		for _, t := range tabs {
+			cb, ok := cbNodeCfg("menu:diag:pick_deep:", t.ID, ":1")
+			if !ok {
+				omitted++
+				continue
+			}
 			title := t.Label
 			if t.Status != "" {
 				title += fmt.Sprintf(" (%s)", t.Status)
@@ -785,9 +861,11 @@ func PickDeepDiagnosticsMarkupWithTabs(target string, tabs []NodeTabItem, report
 			if t.IsActive {
 				title = fmt.Sprintf("• %s •", title)
 			}
-			tabButtons = append(tabButtons, btn(title, fmt.Sprintf("menu:diag:pick_deep:%s:1", t.ID)))
+			tabButtons = append(tabButtons, btn(title, cb))
 		}
-		rows = append(rows, tabButtons)
+		if len(tabButtons) > 0 {
+			rows = append(rows, tabButtons)
+		}
 	}
 
 	for _, rep := range reports {
@@ -800,9 +878,14 @@ func PickDeepDiagnosticsMarkupWithTabs(target string, tabs []NodeTabItem, report
 		case "disabled":
 			icon = "⏸️"
 		}
+		cb, ok := cbNodeCfg("menu:diag:deep:", rep.StableID, ":"+strconv.Itoa(page))
+		if !ok {
+			omitted++
+			continue
+		}
 		btnText := truncateButtonText(fmt.Sprintf("%s %s", icon, rep.ProxyName), 30)
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn(btnText, fmt.Sprintf("menu:diag:deep:%s:%d", rep.StableID, page)),
+			btn(btnText, cb),
 		))
 	}
 
@@ -810,13 +893,22 @@ func PickDeepDiagnosticsMarkupWithTabs(target string, tabs []NodeTabItem, report
 	if backTarget == "" {
 		backTarget = "local"
 	}
-	backCb := fmt.Sprintf("menu:diag:details:%s:%d", backTarget, page)
 	if backTarget == "local" {
-		backCb = fmt.Sprintf("menu:diag:details:%d", page)
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("🔙 К детальному отчёту", fmt.Sprintf("menu:diag:details:%d", page)),
+		))
+	} else if cb, ok := cbNodeCfg("menu:diag:details:", backTarget, ":"+strconv.Itoa(page)); ok {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("🔙 К детальному отчёту", cb),
+		))
+	} else {
+		omitted++
 	}
-	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔙 К детальному отчёту", backCb),
-	))
+	if omitted > 0 {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("ℹ️ длинное имя ноды — используйте /diag", "menu:noop"),
+		))
+	}
 	return tu.InlineKeyboard(rows...)
 }
 
@@ -844,6 +936,10 @@ type NodeTabItem struct {
 }
 
 // RichReportMarkupWithTabs returns buttons under the Level 1 detailed summary report with node tabs.
+// Wave-F B1: node-name-bearing callbacks (tabs, details drill-down, quick deep
+// links with the "node/id" stableID form, refresh) are composed via cbNodeCfg;
+// over-limit buttons are omitted individually (the /diag command remains the
+// universal path for long node names).
 func RichReportMarkupWithTabs(target string, tabs []NodeTabItem, deepLinks ...DiagDeepLink) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
 
@@ -851,6 +947,10 @@ func RichReportMarkupWithTabs(target string, tabs []NodeTabItem, deepLinks ...Di
 	if len(tabs) > 1 {
 		var tabButtons []telego.InlineKeyboardButton
 		for _, t := range tabs {
+			cb, ok := cbNodeCfg("menu:diag:node:", t.ID)
+			if !ok {
+				continue
+			}
 			title := t.Label
 			if t.Status != "" {
 				title += fmt.Sprintf(" (%s)", t.Status)
@@ -858,80 +958,112 @@ func RichReportMarkupWithTabs(target string, tabs []NodeTabItem, deepLinks ...Di
 			if t.IsActive {
 				title = "• " + title + " •"
 			}
-			tabButtons = append(tabButtons, btn(title, fmt.Sprintf("menu:diag:node:%s", t.ID)))
+			tabButtons = append(tabButtons, btn(title, cb))
 		}
-		rows = append(rows, tabButtons)
+		if len(tabButtons) > 0 {
+			rows = append(rows, tabButtons)
+		}
 	}
 
 	// Primary action: Drill down into paginated detailed report for target
-	detailsCallback := fmt.Sprintf("menu:diag:details:%s:1", target)
-	if target == "local" || target == "" {
-		detailsCallback = "menu:diag:details:1"
+	detailsCallback := "menu:diag:details:1"
+	if target != "local" && target != "" {
+		detailsCallback, _ = cbNodeCfg("menu:diag:details:", target, ":1")
 	}
-	rows = append(rows, tu.InlineKeyboardRow(
-		btn("📑 Детальный отчёт", detailsCallback),
-	))
+	if detailsCallback != "" {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("📑 Детальный отчёт", detailsCallback),
+		))
+	}
 
 	// Quick deep links for problematic proxies (only for local target where deep engine runs)
 	if target == "local" || target == "" {
 		for _, dl := range deepLinks {
+			cb, ok := cbNodeCfg("menu:diag:deep:", dl.StableID, ":1")
+			if !ok {
+				continue
+			}
 			rows = append(rows, tu.InlineKeyboardRow(
-				btn(fmt.Sprintf("🔬 Углублённая: %s", truncateButtonText(dl.Name, 24)), fmt.Sprintf("menu:diag:deep:%s:1", dl.StableID)),
+				btn(fmt.Sprintf("🔬 Углублённая: %s", truncateButtonText(dl.Name, 24)), cb),
 			))
 		}
 	}
 
 	// Refresh and navigation
-	refreshCallback := fmt.Sprintf("menu:diag:refresh:%s", target)
-	if target == "local" || target == "" {
-		refreshCallback = "menu:diag:refresh:summary"
+	refreshCallback := "menu:diag:refresh:summary"
+	if target != "local" && target != "" {
+		refreshCallback, _ = cbNodeCfg("menu:diag:refresh:", target)
 	}
-	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔄 Обновить", refreshCallback),
-		btn("🔙 Главное меню", "menu:main"),
-	))
+	refreshRow := []telego.InlineKeyboardButton{}
+	if refreshCallback != "" {
+		refreshRow = append(refreshRow, btn("🔄 Обновить", refreshCallback))
+	}
+	refreshRow = append(refreshRow, btn("🔙 Главное меню", "menu:main"))
+	rows = append(rows, refreshRow)
 
 	return tu.InlineKeyboard(rows...)
 }
 
 // DiagnosticsPaginationMarkupWithTabs returns paginated navigation for detailed report with node tabs.
+// Wave-F B1: node-name-bearing callbacks (tabs, prev/next, pick_deep, back
+// summary, refresh:details) are composed via cbNodeCfg over the FULL callback
+// incl. the page suffix; over-limit buttons are omitted (prev/next fall back
+// to the static «·» noop placeholder) and one routable hint row (menu:noop)
+// is appended when any button was dropped.
 func DiagnosticsPaginationMarkupWithTabs(target string, page, totalPages int, tabs []NodeTabItem) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
+	omitted := 0
 
 	// Tab bar row (if multiple tabs exist)
 	if len(tabs) > 1 {
 		var tabButtons []telego.InlineKeyboardButton
 		for _, t := range tabs {
+			cb, ok := cbNodeCfg("menu:diag:details:", t.ID, ":1")
+			if !ok {
+				omitted++
+				continue
+			}
 			title := t.Label
 			if t.IsActive {
 				title = "• " + title + " •"
 			}
-			cb := fmt.Sprintf("menu:diag:details:%s:1", t.ID)
 			tabButtons = append(tabButtons, btn(title, cb))
 		}
-		rows = append(rows, tabButtons)
+		if len(tabButtons) > 0 {
+			rows = append(rows, tabButtons)
+		}
 	}
 
 	// Pagination row if more than 1 page
 	if totalPages > 1 {
 		var prevBtn telego.InlineKeyboardButton
 		if page > 1 {
-			prevCb := fmt.Sprintf("menu:diag:details:%s:%d", target, page-1)
-			if target == "local" || target == "" {
-				prevCb = fmt.Sprintf("menu:diag:details:%d", page-1)
+			prevCb, ok := fmt.Sprintf("menu:diag:details:%d", page-1), true
+			if target != "local" && target != "" {
+				prevCb, ok = cbNodeCfg("menu:diag:details:", target, ":"+strconv.Itoa(page-1))
 			}
-			prevBtn = btn("⬅️ Пред", prevCb)
+			if ok {
+				prevBtn = btn("⬅️ Пред", prevCb)
+			} else {
+				prevBtn = btn("·", "menu:noop")
+				omitted++
+			}
 		} else {
 			prevBtn = btn("·", "menu:noop")
 		}
 
 		var nextBtn telego.InlineKeyboardButton
 		if page < totalPages {
-			nextCb := fmt.Sprintf("menu:diag:details:%s:%d", target, page+1)
-			if target == "local" || target == "" {
-				nextCb = fmt.Sprintf("menu:diag:details:%d", page+1)
+			nextCb, ok := fmt.Sprintf("menu:diag:details:%d", page+1), true
+			if target != "local" && target != "" {
+				nextCb, ok = cbNodeCfg("menu:diag:details:", target, ":"+strconv.Itoa(page+1))
 			}
-			nextBtn = btn("След ➡️", nextCb)
+			if ok {
+				nextBtn = btn("След ➡️", nextCb)
+			} else {
+				nextBtn = btn("·", "menu:noop")
+				omitted++
+			}
 		} else {
 			nextBtn = btn("·", "menu:noop")
 		}
@@ -944,27 +1076,43 @@ func DiagnosticsPaginationMarkupWithTabs(target string, page, totalPages int, ta
 	}
 
 	// Trigger deep connection diagnostics on any proxy from this page
-	pickDeepCb := fmt.Sprintf("menu:diag:pick_deep:%s:%d", target, page)
-	if target == "local" || target == "" {
-		pickDeepCb = fmt.Sprintf("menu:diag:pick_deep:%d", page)
+	pickDeepCb, pickDeepOK := fmt.Sprintf("menu:diag:pick_deep:%d", page), true
+	if target != "local" && target != "" {
+		pickDeepCb, pickDeepOK = cbNodeCfg("menu:diag:pick_deep:", target, ":"+strconv.Itoa(page))
 	}
-	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔬 Углубленная проверка соединения", pickDeepCb),
-	))
+	if pickDeepOK {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("🔬 Углубленная проверка соединения", pickDeepCb),
+		))
+	} else {
+		omitted++
+	}
 
 	// Action row: Back to Detailed Summary + Refresh current page
+	actionRow := []telego.InlineKeyboardButton{}
 	backSummaryCb := "menu:diag"
 	if target != "local" && target != "" {
-		backSummaryCb = fmt.Sprintf("menu:diag:node:%s", target)
+		backSummaryCb, _ = cbNodeCfg("menu:diag:node:", target)
 	}
-	refreshPageCb := fmt.Sprintf("menu:diag:refresh:details:%s:%d", target, page)
-	if target == "local" || target == "" {
-		refreshPageCb = fmt.Sprintf("menu:diag:refresh:details:%d", page)
+	if backSummaryCb != "" {
+		actionRow = append(actionRow, btn("🔙 К подробной сводке", backSummaryCb))
 	}
-	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔙 К подробной сводке", backSummaryCb),
-		btn("🔄 Обновить", refreshPageCb),
-	))
+	refreshPageCb := fmt.Sprintf("menu:diag:refresh:details:%d", page)
+	if target != "local" && target != "" {
+		refreshPageCb, _ = cbNodeCfg("menu:diag:refresh:details:", target, ":"+strconv.Itoa(page))
+	}
+	if refreshPageCb != "" {
+		actionRow = append(actionRow, btn("🔄 Обновить", refreshPageCb))
+	}
+	if len(actionRow) > 0 {
+		rows = append(rows, actionRow)
+	}
+
+	if omitted > 0 {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("ℹ️ длинное имя ноды — используйте /diag", "menu:noop"),
+		))
+	}
 
 	// Back row
 	rows = append(rows, tu.InlineKeyboardRow(

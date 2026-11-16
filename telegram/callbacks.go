@@ -45,6 +45,19 @@ func isMutatingCallback(data string) bool {
 		strings.HasPrefix(data, "menu:interval:set:")
 }
 
+// isToastCallbackData reports whether the callback route answers with its own
+// custom toast text, so the generic immediate acknowledgement must be skipped.
+// Wave-F B3: menu:checkupdate joins the set — its handler already answers
+// with the «Проверяю релизы на GitHub...» toast.
+func isToastCallbackData(data string) bool {
+	return strings.HasPrefix(data, "menu:toggle_proxy:") ||
+		strings.HasPrefix(data, "menu:toggle_host:") ||
+		strings.HasPrefix(data, "menu:nodes:ncfg:") ||
+		strings.HasPrefix(data, "menu:nodes:nreset:") ||
+		data == "menu:checkhost:run_now" ||
+		data == "menu:checkupdate"
+}
+
 func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	if cb.Message == nil {
 		return
@@ -88,11 +101,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	}
 
 	// Acknowledge callback immediately to dismiss spinner, EXCEPT for callbacks that return their own custom toast.
-	isToastCallback := strings.HasPrefix(cb.Data, "menu:toggle_proxy:") ||
-		strings.HasPrefix(cb.Data, "menu:toggle_host:") ||
-		strings.HasPrefix(cb.Data, "menu:nodes:ncfg:") ||
-		strings.HasPrefix(cb.Data, "menu:nodes:nreset:") ||
-		cb.Data == "menu:checkhost:run_now"
+	isToastCallback := isToastCallbackData(cb.Data)
 
 	if !isToastCallback && b.api != nil {
 		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID))
@@ -218,7 +227,13 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		// "menu:chebur:" prefix branch in the default clause below — a prefix
 		// rule without the trailing colon here would swallow menu:chebur:<id>.
 		snapshot := b.source.MetricsSnapshot()
-		b.editWithMarkup(chatID, msgID, b.getCheburMenuText(), CheburMenuMarkup(snapshot))
+		enabled := 0
+		for i := range snapshot {
+			if !snapshot[i].Disabled {
+				enabled++
+			}
+		}
+		b.editWithMarkup(chatID, msgID, b.getCheburMenuText(enabled), CheburMenuMarkup(snapshot))
 	case "menu:checkhost_cfg":
 		b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
 	case "menu:checkhost:toggle_bg":
@@ -353,17 +368,28 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				"Отправьте URL подписки ответным сообщением в этот чат (например: <code>https://example.com/sub/token</code>).\n\n"+
 				"<i>Или выполните команду:</i> <code>/nodeaddsub %s &lt;URL&gt;</code>",
 				escapeHTML(nodeName), escapeHTML(nodeName))
+			// Wave-F B2: the cancel button is composed via cbNodeCfg; if the
+			// node name would overflow the 64-byte limit, fall back to the
+			// static node-subs list route so the row never dies.
+			cancelCb, cancelOK := cbNodeCfg("menu:nodes:subnode:", nodeName)
+			if !cancelOK {
+				cancelCb = "menu:nodes:subs"
+			}
 			b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
 				tu.InlineKeyboardRow(
-					btn("🔙 Отмена", fmt.Sprintf("menu:nodes:subnode:%s", nodeName)),
+					btn("🔙 Отмена", cancelCb),
 				),
 			))
 		} else if strings.HasPrefix(cb.Data, "menu:nodes:delsub:") {
 			rest := strings.TrimPrefix(cb.Data, "menu:nodes:delsub:")
-			parts := strings.Split(rest, ":")
-			if len(parts) == 2 && b.nodeMgr != nil {
-				nodeName := parts[0]
-				idx, err := strconv.Atoi(parts[1])
+			// Wave-F B2 robust parse: the row index sits after the LAST colon,
+			// so node names containing ':' (possible for NODES env entries)
+			// round-trip through the emitted delsub button; colon-free names
+			// parse identically to the former Split-based logic.
+			sep := strings.LastIndex(rest, ":")
+			if sep != -1 && b.nodeMgr != nil {
+				nodeName := rest[:sep]
+				idx, err := strconv.Atoi(rest[sep+1:])
 				if err == nil && idx >= 0 {
 					subs, err := b.nodeMgr.ManagedSubs(nodeName)
 					if err == nil && idx < len(subs) {

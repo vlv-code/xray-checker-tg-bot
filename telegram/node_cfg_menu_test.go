@@ -470,8 +470,11 @@ func TestMenuNodesCfgCallback64ByteGuard(t *testing.T) {
 		t.Fatalf("expected the 49-char node screen to render")
 	}
 	longText, _ := longEdits[0].Params["text"].(string)
-	if !strings.Contains(longText, "исключения недоступны") {
-		t.Errorf("expected the long-name hint to cover exclusions, got: %s", longText)
+	// Wave-F B10 (Guardian-authorized register entry): the hint wording is
+	// unified for BOTH omission branches (excl-omitted and cycles-omitted);
+	// the semantic pin — hint present when buttons are omitted — survives.
+	if !strings.Contains(longText, "часть кнопок недоступна") {
+		t.Errorf("expected the unified long-name hint, got: %s", longText)
 	}
 
 	_, longMarkup := bLong.getNodeCfgScreen(veryLong)

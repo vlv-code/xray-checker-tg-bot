@@ -14,6 +14,24 @@ import (
 
 var validNodeName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,32}$`)
 
+// reservedNodeNames lists node names that collide with static Telegram
+// diagnostic routes: a node named like one of these tokens would be
+// indistinguishable from the built-in diag targets when parsed in
+// callbacks.go (menu:diag:details:<name>, menu:diag:refresh:<name>,
+// target == "local", etc.). Wave-F B6.
+var reservedNodeNames = map[string]bool{
+	"local":   true,
+	"rich":    true,
+	"summary": true,
+	"details": true,
+}
+
+// isReservedNodeName reports whether the node name is reserved because it
+// collides with static Telegram diag routes (Wave-F B6).
+func isReservedNodeName(name string) bool {
+	return reservedNodeNames[name]
+}
+
 // commandArgs returns every whitespace-separated argument after the command
 // (commandArg returns only the first).
 func commandArgs(text string) []string {
@@ -173,6 +191,11 @@ func (b *Bot) handleNodeAdd(msg *telego.Message, rawName string) {
 
 	if !validNodeName.MatchString(name) {
 		b.replyCommand(msg, "❌ Недопустимое имя ноды. Используйте только латиницу, цифры, дефис и подчёркивание (от 1 до 32 символов).")
+		return
+	}
+
+	if isReservedNodeName(name) {
+		b.replyCommand(msg, fmt.Sprintf("❌ имя ноды %q зарезервировано — выберите другое.", escapeHTML(name)))
 		return
 	}
 
