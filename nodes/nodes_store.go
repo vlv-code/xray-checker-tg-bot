@@ -52,10 +52,14 @@ func (n *NodeSettings) clone() *NodeSettings {
 }
 
 // nodeRecord is the persisted per-node entry: hashed token plus optional
-// settings overrides.
+// settings overrides and enabled state. A missing (nil) enabled field means
+// enabled — legacy records written before Wave G5b load unchanged and stay
+// enabled (migration discipline: only additive fields, existing migration
+// steps untouched).
 type nodeRecord struct {
 	TokenHash string        `json:"tokenHash"`
 	Settings  *NodeSettings `json:"settings,omitempty"`
+	Enabled   *bool         `json:"enabled,omitempty"`
 }
 
 // NodesStore persists dynamic node registrations with tokens hashed at-rest
@@ -124,13 +128,19 @@ func NewNodesStore(path string) (*NodesStore, error) {
 	return s, nil
 }
 
-// All returns a copy of all configured nodes with normalised token hashes.
+// All returns a copy of all configured nodes with normalised token hashes
+// and their enabled state (nil = enabled).
 func (s *NodesStore) All() []NodeConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]NodeConfig, 0, len(s.data))
 	for name, rec := range s.data {
-		out = append(out, NodeConfig{Name: name, Token: strings.TrimPrefix(rec.TokenHash, tokenHashPrefix)})
+		cfg := NodeConfig{Name: name, Token: strings.TrimPrefix(rec.TokenHash, tokenHashPrefix)}
+		if rec.Enabled != nil {
+			enabled := *rec.Enabled
+			cfg.Enabled = &enabled
+		}
+		out = append(out, cfg)
 	}
 	return out
 }
@@ -186,6 +196,50 @@ func (s *NodesStore) Save(name, token string) error {
 		} else {
 			delete(s.data, name)
 		}
+		return err
+	}
+	return nil
+}
+
+// SetEnabled stores the node's enabled flag and persists. Unknown nodes are
+// rejected. Wave G5b.
+func (s *NodesStore) SetEnabled(name string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.data[name]
+	if !ok {
+		return fmt.Errorf("unknown node %q", name)
+	}
+	old := rec.Enabled
+	v := enabled
+	rec.Enabled = &v
+	if err := s.persistLocked(); err != nil {
+		rec.Enabled = old
+		return err
+	}
+	return nil
+}
+
+// Rename migrates the whole node record (token hash, settings overrides,
+// enabled state) to a new key and persists. An unknown source is a no-op
+// success (nothing to migrate — e.g. a memory-only dynamic node); an
+// occupied target is rejected. On persist failure the old key stays intact.
+// Wave G5a.
+func (s *NodesStore) Rename(oldName, newName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.data[oldName]
+	if !ok {
+		return nil
+	}
+	if _, exists := s.data[newName]; exists {
+		return fmt.Errorf("node %q already exists in store", newName)
+	}
+	delete(s.data, oldName)
+	s.data[newName] = rec
+	if err := s.persistLocked(); err != nil {
+		delete(s.data, newName)
+		s.data[oldName] = rec
 		return err
 	}
 	return nil

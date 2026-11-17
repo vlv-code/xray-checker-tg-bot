@@ -94,6 +94,9 @@ type Bot struct {
 	waitingNodeAddMu sync.Mutex
 	waitingNodeAdd   map[int64]bool
 	waitingNodeSub   map[int64]string
+	// waitingNodeRename holds the chat awaiting a rename text input (Wave G5a):
+	// chatID -> node name being renamed from the cfg screen «✏️ Переименовать».
+	waitingNodeRename map[int64]string
 
 	version            string
 	releaseCheckMu     sync.Mutex
@@ -134,27 +137,28 @@ func New(token string, targets []ChatTarget, source metrics.MetricsSource, notif
 	logger.Info("Telegram bot authorized as @%s", user.Username)
 
 	return &Bot{
-		api:              api,
-		ctx:              ctx,
-		cancel:           cancel,
-		targets:          targets,
-		allowedChatIDs:   allowed,
-		adminUserIDs:     make(map[int64]bool),
-		source:           source,
-		subs:             subs,
-		notifyOnRecovery: notifyOnRecovery,
-		commandsEnabled:  commandsEnabled,
-		tracker:          NewAlertTracker(),
-		eventBuffer:      NewEventBuffer(),
-		lastSeen:         make(map[string]bool),
-		lastFlapAlert:    make(map[string]time.Time),
-		lastNodeHealth:   make(map[string]nodeHealthState),
-		lastMenuMsg:      make(map[string]int),
-		msgSeq:           make(map[string]int64),
-		subFreshness:     make(map[string]SubFreshness),
-		waitingNodeAdd:   make(map[int64]bool),
-		waitingNodeSub:   make(map[int64]string),
-		stopChan:         make(chan struct{}),
+		api:               api,
+		ctx:               ctx,
+		cancel:            cancel,
+		targets:           targets,
+		allowedChatIDs:    allowed,
+		adminUserIDs:      make(map[int64]bool),
+		source:            source,
+		subs:              subs,
+		notifyOnRecovery:  notifyOnRecovery,
+		commandsEnabled:   commandsEnabled,
+		tracker:           NewAlertTracker(),
+		eventBuffer:       NewEventBuffer(),
+		lastSeen:          make(map[string]bool),
+		lastFlapAlert:     make(map[string]time.Time),
+		lastNodeHealth:    make(map[string]nodeHealthState),
+		lastMenuMsg:       make(map[string]int),
+		msgSeq:            make(map[string]int64),
+		subFreshness:      make(map[string]SubFreshness),
+		waitingNodeAdd:    make(map[int64]bool),
+		waitingNodeSub:    make(map[int64]string),
+		waitingNodeRename: make(map[int64]string),
+		stopChan:          make(chan struct{}),
 	}, nil
 }
 

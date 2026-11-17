@@ -25,9 +25,20 @@ var reservedNodeNames = map[string]bool{
 
 // NodeConfig is one entry of the master's NODES list: a reporting node's
 // name and its bearer token.
+//
+// Enabled is nil for "enabled" (the zero state for NODES-env entries and any
+// legacy record): a false value marks the node disabled — excluded from
+// MergedSnapshot (no metrics/alerts) while remaining visible in health
+// views. Wave G5b.
 type NodeConfig struct {
-	Name  string
-	Token string
+	Name    string
+	Token   string
+	Enabled *bool
+}
+
+// nodeEnabled reports the effective enabled state: nil means enabled.
+func nodeEnabled(cfg NodeConfig) bool {
+	return cfg.Enabled == nil || *cfg.Enabled
 }
 
 // ParseNodes parses "name|token" entries. It rejects empty names/tokens,

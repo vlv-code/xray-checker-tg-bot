@@ -96,6 +96,30 @@ func (s *NodeSubsStore) Remove(node, raw string) (bool, error) {
 	return false, nil
 }
 
+// Rename migrates a node's desired-subscription list to a new key and
+// persists. An unknown source is a no-op success (nothing to migrate); an
+// occupied target is rejected. On persist failure the old key stays intact.
+// Wave G5a (used by Registry.RenameNode).
+func (s *NodeSubsStore) Rename(oldName, newName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, ok := s.data[oldName]
+	if !ok {
+		return nil
+	}
+	if existing, occupied := s.data[newName]; occupied && len(existing) > 0 {
+		return fmt.Errorf("node %q already has subscriptions", newName)
+	}
+	delete(s.data, oldName)
+	s.data[newName] = list
+	if err := s.persistLocked(); err != nil {
+		delete(s.data, newName)
+		s.data[oldName] = list
+		return err
+	}
+	return nil
+}
+
 // persistLocked atomically writes the map (parent dir created on demand,
 // tmp flushed with f.Sync before rename). Callers hold s.mu.
 func (s *NodeSubsStore) persistLocked() error {

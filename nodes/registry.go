@@ -54,10 +54,13 @@ type nodeState struct {
 	gracePending bool // emit last snapshot with Disabled=true exactly once
 }
 
-// NodeHealth is the master's point-in-time view of one node.
+// NodeHealth is the master's point-in-time view of one node. Enabled is
+// false when the node was toggled off (Wave G5b): it stays listed but is
+// excluded from MergedSnapshot, so no metrics or alerts flow for it.
 type NodeHealth struct {
 	Name             string    `json:"name"`
 	Up               bool      `json:"up"`
+	Enabled          bool      `json:"enabled"`
 	EverReported     bool      `json:"everReported"`
 	Version          string    `json:"version"`
 	HostIP           string    `json:"hostIP"`
@@ -75,6 +78,7 @@ type Registry struct {
 	mu         sync.RWMutex
 	nodes      map[string]*nodeState // by name
 	byToken    map[string]string     // token -> name
+	static     map[string]bool       // NODES-env names: config-owned (rename rejected, toggle runtime-only)
 	subs       NodeSubsSource
 	asn        LookupFunc
 	onUpdate   func(nodeName string)
@@ -92,6 +96,7 @@ func NewRegistry(cfgs []NodeConfig, subs NodeSubsSource, asn LookupFunc) *Regist
 	r := &Registry{
 		nodes:   make(map[string]*nodeState, len(cfgs)),
 		byToken: make(map[string]string, len(cfgs)),
+		static:  make(map[string]bool, len(cfgs)),
 		subs:    subs,
 		asn:     asn,
 		audits:  make(map[string]map[string]checker.CheckHostSummary),
@@ -102,6 +107,7 @@ func NewRegistry(cfgs []NodeConfig, subs NodeSubsSource, asn LookupFunc) *Regist
 		cfg.Token = HashToken(cfg.Token)
 		r.nodes[cfg.Name] = &nodeState{cfg: cfg, status: statusPending}
 		r.byToken[cfg.Token] = cfg.Name
+		r.static[cfg.Name] = true
 	}
 	return r
 }
@@ -181,6 +187,117 @@ func (r *Registry) RemoveNode(name string) error {
 		}
 	}
 
+	if r.onUpdate != nil {
+		go r.onUpdate("")
+	}
+	return nil
+}
+
+// RenameNode migrates a dynamic node to a new name: the in-memory identity
+// (nodes map + byToken with the SAME token — auth keeps working), the
+// persisted store record (token hash, settings overrides, enabled state),
+// and the managed-subscription keys. Static NODES-env nodes are config-owned
+// and rejected. Wave G5a.
+func (r *Registry) RenameNode(oldName, newName string) error {
+	oldName = strings.TrimSpace(oldName)
+	newName = strings.TrimSpace(newName)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if oldName == "" || newName == "" {
+		return fmt.Errorf("имя ноды не может быть пустым")
+	}
+	st, exists := r.nodes[oldName]
+	if !exists {
+		return fmt.Errorf("нода %q не найдена", oldName)
+	}
+	if r.static[oldName] {
+		return fmt.Errorf("нода %q — статическая (NODES): переименование выполняется в конфиге, а не через бота", oldName)
+	}
+	if newName == oldName {
+		return fmt.Errorf("новое имя совпадает с текущим именем ноды")
+	}
+	if reservedNodeNames[newName] {
+		return fmt.Errorf("имя ноды %q зарезервировано — выберите другое", newName)
+	}
+	if _, exists := r.nodes[newName]; exists {
+		return fmt.Errorf("нода с именем %q уже существует", newName)
+	}
+
+	// 1. In-memory migration (same token → byToken re-points, auth intact).
+	token := st.cfg.Token
+	st.cfg.Name = newName
+	delete(r.nodes, oldName)
+	r.nodes[newName] = st
+	r.byToken[token] = newName
+
+	rollbackMemory := func() {
+		delete(r.nodes, newName)
+		st.cfg.Name = oldName
+		r.nodes[oldName] = st
+		r.byToken[token] = oldName
+	}
+
+	// 2. Managed-subscription keys (NodeSubsStore.Rename rolls itself back
+	// on persist failure; nil subs or a custom source skips this step).
+	if s, ok := r.subs.(*NodeSubsStore); ok {
+		if err := s.Rename(oldName, newName); err != nil {
+			rollbackMemory()
+			return fmt.Errorf("renaming node subscriptions: %w", err)
+		}
+	}
+
+	// 3. Persisted record (dynamic nodes only — static nodes were rejected
+	// above). On failure: roll back the subs rename (best effort) and memory.
+	if r.nodesStore != nil {
+		if err := r.nodesStore.Rename(oldName, newName); err != nil {
+			if s, ok := r.subs.(*NodeSubsStore); ok {
+				if rbErr := s.Rename(newName, oldName); rbErr != nil {
+					logger.Warn("Registry: failed to roll back subscription keys after failed node rename %q→%q: %v", oldName, newName, rbErr)
+				}
+			}
+			rollbackMemory()
+			return fmt.Errorf("renaming node in store: %w", err)
+		}
+	}
+
+	logger.Info("Node renamed: %s -> %s (token, settings and subscriptions migrated)", oldName, newName)
+	if r.onUpdate != nil {
+		go r.onUpdate("")
+	}
+	return nil
+}
+
+// SetNodeEnabled toggles a node's participation in merged metrics and node
+// alerts: a disabled node is excluded from MergedSnapshot (no proxy metrics,
+// no alerts) but stays visible in HealthSnapshot. Works for static NODES
+// nodes too (runtime-only, nothing is persisted for config-owned nodes);
+// dynamic nodes persist the flag in the nodes store. Wave G5b.
+func (r *Registry) SetNodeEnabled(name string, enabled bool) error {
+	name = strings.TrimSpace(name)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	st, exists := r.nodes[name]
+	if !exists {
+		return fmt.Errorf("нода %q не найдена", name)
+	}
+	old := st.cfg.Enabled
+	v := enabled
+	st.cfg.Enabled = &v
+	if !r.static[name] && r.nodesStore != nil {
+		if err := r.nodesStore.SetEnabled(name, enabled); err != nil {
+			st.cfg.Enabled = old // roll back runtime on persist failure
+			return fmt.Errorf("saving node enabled state: %w", err)
+		}
+	}
+	if enabled {
+		logger.Info("Node %s enabled (back in metrics and alerts)", name)
+	} else {
+		logger.Info("Node %s disabled (excluded from metrics and alerts)", name)
+	}
 	if r.onUpdate != nil {
 		go r.onUpdate("")
 	}
@@ -323,6 +440,11 @@ func (r *Registry) MergedSnapshot(local []metrics.ProxyMetric) []metrics.ProxyMe
 	out = append(out, local...)
 	for _, name := range r.sortedNamesLocked() {
 		st := r.nodes[name]
+		// Wave G5b: a disabled node contributes nothing to the merged
+		// snapshot — no metrics, hence no proxy alerts from the pipeline.
+		if !nodeEnabled(st.cfg) {
+			continue
+		}
 		switch st.status {
 		case statusUp:
 			out = append(out, st.snapshot...)
@@ -412,6 +534,7 @@ func (r *Registry) HealthSnapshot() []NodeHealth {
 		h := NodeHealth{
 			Name:             name,
 			Up:               st.status == statusUp,
+			Enabled:          nodeEnabled(st.cfg),
 			EverReported:     !st.lastReport.IsZero(),
 			Version:          st.version,
 			HostIP:           st.hostIP,

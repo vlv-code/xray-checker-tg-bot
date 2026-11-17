@@ -38,6 +38,8 @@ func isMutatingCallback(data string) bool {
 	return strings.HasPrefix(data, "menu:nodes:delsub:") ||
 		strings.HasPrefix(data, "menu:nodes:ncfg:") ||
 		strings.HasPrefix(data, "menu:nodes:nreset:") ||
+		strings.HasPrefix(data, "menu:nodes:ren:") ||
+		strings.HasPrefix(data, "menu:nodes:tg:") ||
 		strings.HasPrefix(data, "menu:tz:") ||
 		strings.HasPrefix(data, "menu:checkhost:int:") ||
 		strings.HasPrefix(data, "menu:toggle_proxy:") ||
@@ -54,6 +56,8 @@ func isToastCallbackData(data string) bool {
 		strings.HasPrefix(data, "menu:toggle_host:") ||
 		strings.HasPrefix(data, "menu:nodes:ncfg:") ||
 		strings.HasPrefix(data, "menu:nodes:nreset:") ||
+		strings.HasPrefix(data, "menu:nodes:ren:") ||
+		strings.HasPrefix(data, "menu:nodes:tg:") ||
 		data == "menu:checkhost:run_now" ||
 		data == "menu:checkupdate"
 }
@@ -319,6 +323,12 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		// default clause below — a prefixed node name must never be swallowed
 		// by this picker rule, and the bare picker must never reach the
 		// prefix branch. Keep both rules distinct if this routing is reworked.
+		// Wave G5a: leaving the node context disarms a pending rename input.
+		b.waitingNodeAddMu.Lock()
+		if b.waitingNodeRename != nil {
+			delete(b.waitingNodeRename, chatID)
+		}
+		b.waitingNodeAddMu.Unlock()
 		text, markup := b.getNodesCfgListView()
 		b.editWithMarkup(chatID, msgID, text, markup)
 	case "menu:nodes:subs":
@@ -406,7 +416,14 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			// Order invariant (mirrors menu:chebur): this prefix branch is the
 			// per-node settings screen; the bare "menu:nodes:cfg" picker rule
 			// is an exact-match switch case above and can never match here.
+			// Wave G5a: re-entering the screen (incl. the rename cancel button)
+			// disarms a pending rename input.
 			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:cfg:")
+			b.waitingNodeAddMu.Lock()
+			if b.waitingNodeRename != nil {
+				delete(b.waitingNodeRename, chatID)
+			}
+			b.waitingNodeAddMu.Unlock()
 			text, markup := b.getNodeCfgScreen(nodeName)
 			b.editWithMarkup(chatID, msgID, text, markup)
 		} else if strings.HasPrefix(cb.Data, "menu:nodes:excl:") {
@@ -448,6 +465,72 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				text, markup := b.getNodeCfgScreen(nodeName)
 				b.editWithMarkup(chatID, msgID, text, markup)
 			}
+		} else if strings.HasPrefix(cb.Data, "menu:nodes:tg:") {
+			// Wave G5b: enable/disable node toggle. Mutating (admin-gated via
+			// isMutatingCallback) and self-toasting (isToastCallbackData). The
+			// action sits after the LAST colon so node names containing ':'
+			// (NODES env) round-trip — same robust parse as delsub.
+			rest := strings.TrimPrefix(cb.Data, "menu:nodes:tg:")
+			sep := strings.LastIndex(rest, ":")
+			if sep != -1 && b.nodeMgr != nil {
+				nodeName, action := rest[:sep], rest[sep+1:]
+				var enabled bool
+				var toast string
+				switch action {
+				case "on":
+					enabled, toast = true, "▶️ Нода включена — вернётся в метрики и алерты"
+				case "off":
+					enabled, toast = false, "⏸️ Нода отключена — исключена из метрик и алертов"
+				default:
+					return
+				}
+				// A context switch from a pending rename input disarms it.
+				b.waitingNodeAddMu.Lock()
+				if b.waitingNodeRename != nil {
+					delete(b.waitingNodeRename, chatID)
+				}
+				b.waitingNodeAddMu.Unlock()
+				if err := b.nodeMgr.SetNodeEnabled(nodeName, enabled); err != nil {
+					logger.Warn("Telegram: node toggle failed for %s (%s): %v", nodeName, action, err)
+					toast = "❌ " + err.Error()
+				}
+				if b.api != nil {
+					_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText(toast))
+				}
+				text, markup := b.getNodeCfgScreen(nodeName)
+				b.editWithMarkup(chatID, msgID, text, markup)
+			}
+		} else if strings.HasPrefix(cb.Data, "menu:nodes:ren:") {
+			// Wave G5a: arm the rename waiting state and prompt for the new
+			// name as a text reply. Mutating (admin-gated via
+			// isMutatingCallback) and self-toasting (isToastCallbackData).
+			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:ren:")
+			b.waitingNodeAddMu.Lock()
+			if b.waitingNodeRename == nil {
+				b.waitingNodeRename = make(map[int64]string)
+			}
+			b.waitingNodeRename[chatID] = nodeName
+			b.waitingNodeAddMu.Unlock()
+			if b.api != nil {
+				_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("✏️ Отправьте новое имя ноды сообщением в чат"))
+			}
+			text := fmt.Sprintf("✏️ <b>Переименование ноды</b> <code>%s</code>\n\n"+
+				"Отправьте новое имя ответным сообщением в этот чат "+
+				"(латиница, цифры, дефис, до 32 символов, например: <code>germany-2</code>).\n\n"+
+				"Токен, подписки и настройки ноды перенесутся автоматически.\n\n"+
+				"<i>Или выполните команду:</i> <code>/noderename %s &lt;новое_имя&gt;</code>",
+				escapeHTML(nodeName), escapeHTML(nodeName))
+			// Wave-F B2 fallback discipline: the cancel button is composed via
+			// cbNodeCfg; over-limit names fall back to the static picker route.
+			cancelCb, cancelOK := cbNodeCfg("menu:nodes:cfg:", nodeName)
+			if !cancelOK {
+				cancelCb = "menu:nodes:cfg"
+			}
+			b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
+				tu.InlineKeyboardRow(
+					btn("🔙 Отмена", cancelCb),
+				),
+			))
 		} else if strings.HasPrefix(cb.Data, "menu:tz:") {
 			tz := strings.TrimPrefix(cb.Data, "menu:tz:")
 			_ = b.updateConfig(func(c *BotConfig) {

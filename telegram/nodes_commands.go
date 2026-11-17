@@ -68,6 +68,9 @@ func (b *Bot) replyNodes(t ChatTarget) {
 			icon = "🟢"
 		}
 		fmt.Fprintf(&sb, "%s <b>%s</b>", icon, escapeHTML(n.Name))
+		if n.Disabled {
+			sb.WriteString(" · ⏸️ отключена")
+		}
 		if n.ASN != "" {
 			sb.WriteString(" · " + escapeHTML(n.ASN))
 		}
@@ -273,6 +276,49 @@ func (b *Bot) handleNodeDel(msg *telego.Message, rawName string) {
 		return
 	}
 	b.replyCommand(msg, fmt.Sprintf("✅ Нода <b>%s</b> удалена с мастера.", escapeHTML(name)))
+}
+
+// handleNodeRename implements /noderename <old> <new> (Wave G5a).
+func (b *Bot) handleNodeRenameCommand(msg *telego.Message) {
+	args := commandArgs(msg.Text)
+	if len(args) != 2 {
+		b.replyCommand(msg, "Использование: /noderename &lt;старое имя&gt; &lt;новое имя&gt;")
+		return
+	}
+	b.renameNodeAction(msg, args[0], args[1])
+}
+
+// handleNodeRenameInput applies the waiting-state text input from the node
+// cfg screen («✏️ Переименовать»): the message text is the new name.
+func (b *Bot) handleNodeRenameInput(msg *telego.Message, oldName string) {
+	b.renameNodeAction(msg, oldName, strings.TrimSpace(msg.Text))
+}
+
+// renameNodeAction validates the new name (pattern + reserved, mirroring
+// /nodeadd) and renames through nodeMgr — the only rename writer. The token
+// keeps working, subscriptions and settings follow, so no re-registration on
+// the node side is needed.
+func (b *Bot) renameNodeAction(msg *telego.Message, oldName, newName string) {
+	newName = strings.TrimSpace(newName)
+	if !validNodeName.MatchString(newName) {
+		b.replyCommand(msg, "❌ Недопустимое имя ноды. Используйте только латиницу, цифры, дефис и подчёркивание (от 1 до 32 символов).")
+		return
+	}
+	if isReservedNodeName(newName) {
+		b.replyCommand(msg, fmt.Sprintf("❌ имя ноды %q зарезервировано — выберите другое.", escapeHTML(newName)))
+		return
+	}
+	if b.nodeMgr == nil {
+		b.replyCommand(msg, "❌ Модуль управления нодами недоступен на этом сервере.")
+		return
+	}
+	if err := b.nodeMgr.RenameNode(oldName, newName); err != nil {
+		b.replyCommand(msg, "❌ "+escapeHTML(err.Error()))
+		return
+	}
+	b.replyCommand(msg, fmt.Sprintf("✅ Нода <b>%s</b> переименована в <b>%s</b>.\n\n"+
+		"Токен, подписки и настройки ноды перенесены — отчёты продолжат приниматься без перенастройки ноды.",
+		escapeHTML(oldName), escapeHTML(newName)))
 }
 
 func (b *Bot) handleNodeAddSubURL(msg *telego.Message, node string, rawURL string) {

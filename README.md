@@ -76,6 +76,7 @@ All features are accessible via the interactive **`/menu`** or direct chat comma
 | `/nodeset <name>` | Show a node's effective check settings (master values + overrides) |
 | `/nodeset <name> <key> <value>` | Override a check setting on one node only (see keys below) |
 | `/nodereset <name> [key]` | Return one (or all) node settings to inheriting from the master |
+| `/noderename <old> <new>` | Rename a node (token, subscriptions and settings follow; static `NODES` entries are renamed in the config) |
 | `/digest` | Trigger an immediate status digest in chat |
 | `/id` | Print this chat's `chat_id` and `topic_id` for `TELEGRAM_CHAT_IDS` |
 | `/help` | Display quick help summary |

@@ -53,15 +53,18 @@ func TestFormatAge(t *testing.T) {
 }
 
 type fakeNodeManager struct {
-	nodes      map[string]string   // name -> token
-	subs       map[string][]string // name -> URLs
-	overridden map[string]bool     // settings override marks
+	nodes        map[string]string   // name -> token
+	subs         map[string][]string // name -> URLs
+	overridden   map[string]bool     // settings override marks
+	disabled     map[string]bool     // G5b: name -> disabled state
+	renames      []string            // G5a: "old->new" records
+	enabledCalls []string            // G5b: "name=true|false" records
 }
 
 func (f *fakeNodeManager) Nodes() []NodeInfo {
 	var out []NodeInfo
 	for name := range f.nodes {
-		out = append(out, NodeInfo{Name: name, Up: true})
+		out = append(out, NodeInfo{Name: name, Up: true, Disabled: f.disabled[name]})
 	}
 	return out
 }
@@ -281,6 +284,42 @@ func (f *fakeNodeManager) ResetNodeSetting(node, key string) error {
 	} else {
 		f.overridden = nil
 	}
+	return nil
+}
+
+// RenameNode implements the NodeManager extension (Wave G5a): test double
+// that migrates name/token/disabled state and records the rename.
+func (f *fakeNodeManager) RenameNode(oldName, newName string) error {
+	if _, ok := f.nodes[oldName]; !ok {
+		return fmt.Errorf("нода не найдена")
+	}
+	if _, exists := f.nodes[newName]; exists {
+		return fmt.Errorf("нода уже существует")
+	}
+	f.nodes[newName] = f.nodes[oldName]
+	delete(f.nodes, oldName)
+	if f.disabled[oldName] {
+		f.disabled[newName] = true
+		delete(f.disabled, oldName)
+	}
+	f.renames = append(f.renames, oldName+"->"+newName)
+	return nil
+}
+
+// SetNodeEnabled implements the NodeManager extension (Wave G5b).
+func (f *fakeNodeManager) SetNodeEnabled(name string, enabled bool) error {
+	if _, ok := f.nodes[name]; !ok {
+		return fmt.Errorf("нода не найдена")
+	}
+	if f.disabled == nil {
+		f.disabled = make(map[string]bool)
+	}
+	f.disabled[name] = !enabled
+	state := "false"
+	if enabled {
+		state = "true"
+	}
+	f.enabledCalls = append(f.enabledCalls, name+"="+state)
 	return nil
 }
 

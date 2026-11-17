@@ -56,6 +56,15 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 			delete(b.waitingNodeSub, msg.Chat.ID)
 		}
 	}
+	// Wave G5a: a pending rename input (cfg screen «✏️ Переименовать») is
+	// consumed by the next plain text message — single-shot, self-clearing.
+	var waitingRenameNode string
+	if b.waitingNodeRename != nil {
+		waitingRenameNode = b.waitingNodeRename[msg.Chat.ID]
+		if waitingRenameNode != "" {
+			delete(b.waitingNodeRename, msg.Chat.ID)
+		}
+	}
 	b.waitingNodeAddMu.Unlock()
 
 	cmd, arg := parseCommand(msg.Text)
@@ -63,7 +72,7 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 	mutating := map[string]bool{
 		"interval": true, "addsub": true, "delsub": true, "removesub": true,
 		"nodeadd": true, "nodedel": true, "nodeaddsub": true, "nodedelsub": true,
-		"nodeset": true, "nodereset": true,
+		"nodeset": true, "nodereset": true, "noderename": true,
 		"togglenode": true, "disablenode": true, "togglehost": true,
 		"checkhost": true, "checkhost_bg": true, "cheburcheck": true, "targets": true, "quiet": true,
 		"tz": true, "timezone": true, "digest": true,
@@ -76,7 +85,7 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		return
 	}
 
-	if (isWaitingAdd || waitingSubNode != "") && msg.From != nil && !b.isAuthorizedMutating(msg.From.ID) {
+	if (isWaitingAdd || waitingSubNode != "" || waitingRenameNode != "") && msg.From != nil && !b.isAuthorizedMutating(msg.From.ID) {
 		b.replyCommand(msg, "⛔ Эта операция доступна только администраторам бота.")
 		return
 	}
@@ -87,6 +96,10 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 	}
 	if waitingSubNode != "" && cmd == "" {
 		b.handleNodeAddSubURL(msg, waitingSubNode, strings.TrimSpace(msg.Text))
+		return
+	}
+	if waitingRenameNode != "" && cmd == "" {
+		b.handleNodeRenameInput(msg, waitingRenameNode)
 		return
 	}
 	if cmd == "" {
@@ -140,6 +153,8 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		b.replyNodeSettings(msg)
 	case "nodereset":
 		b.handleNodeReset(msg)
+	case "noderename":
+		b.handleNodeRenameCommand(msg)
 	case "nodes":
 		b.replyNodes(t)
 	case "subs":
@@ -534,7 +549,8 @@ func (b *Bot) replyHelp(t ChatTarget) {
 			"/nodeaddsub &lt;имя&gt; &lt;URL&gt; — назначить подписку ноде\n" +
 			"/nodedelsub &lt;имя&gt; &lt;URL&gt; — снять подписку с ноды\n" +
 			"/nodeset &lt;имя&gt; [ключ значение] — настройки проверок ноды (override мастера)\n" +
-			"/nodereset &lt;имя&gt; [ключ] — вернуть настройки ноды к мастеру\n"
+			"/nodereset &lt;имя&gt; [ключ] — вернуть настройки ноды к мастеру\n" +
+			"/noderename &lt;старое&gt; &lt;новое&gt; — переименовать ноду (токен, подписки и настройки переносятся)\n"
 	}
 	text += "/checkupdate — проверить наличие новой версии чекера\n" +
 		"/help — эта справка\n\n" +

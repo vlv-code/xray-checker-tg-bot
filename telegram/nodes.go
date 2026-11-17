@@ -11,6 +11,11 @@ import (
 // NodeInfo is the bot's view of one remote checker node. It mirrors
 // nodes.NodeHealth but keeps the telegram package decoupled from the nodes
 // package (mirrors the SubscriptionManager pattern).
+//
+// Disabled mirrors nodes.NodeHealth.Enabled inverted so the zero value stays
+// "enabled" — existing literals and adapters that never set the field keep
+// their legacy meaning. A disabled node is excluded from merged metrics and
+// node alerts but stays visible with a ⏸️ marker (Wave G5b).
 type NodeInfo struct {
 	Name         string
 	Up           bool
@@ -22,6 +27,7 @@ type NodeInfo struct {
 	Total        int
 	LastReport   time.Time
 	IntervalSec  int
+	Disabled     bool
 }
 
 // ManagedSubInfo is one desired subscription on a node. ProxyCount is taken
@@ -47,6 +53,13 @@ type NodeManager interface {
 	AddNode(name, token string) error
 	// RemoveNode unregisters a node dynamically.
 	RemoveNode(name string) error
+	// RenameNode migrates a dynamic node to a new name: the token (auth keeps
+	// working), the persisted record with its settings overrides, and the
+	// managed-subscription keys all follow. Static NODES nodes are rejected.
+	RenameNode(oldName, newName string) error
+	// SetNodeEnabled toggles a node's participation in merged metrics and
+	// node alerts (persisted for dynamic nodes, runtime-only for static).
+	SetNodeEnabled(name string, enabled bool) error
 	// NodeSnapshot returns a snapshot of proxy metrics for the given node.
 	NodeSnapshot(node string) []metrics.ProxyMetric
 	// NodeDiagReports returns full diagnostic reports for the given node.
@@ -97,6 +110,15 @@ func (b *Bot) updateNodeHealthLocked(states []NodeInfo, now time.Time) []string 
 	seen := make(map[string]bool, len(states))
 	for _, st := range states {
 		seen[st.Name] = true
+		// Wave G5b: a disabled node is invisible to the alert loop — no stats
+		// recording, no transitions. Skipping it (without marking it seen is
+		// equivalent: seen is marked above to keep it out of the prune loop,
+		// and its tracked state is dropped) means a later re-enable seeds
+		// silently instead of sending a bogus recovery.
+		if st.Disabled {
+			delete(b.lastNodeHealth, st.Name)
+			continue
+		}
 		nodeID := "node:" + st.Name
 		nodeDisplayName := "🖥 [Нода] " + st.Name
 

@@ -30,6 +30,7 @@ func toNodeInfos(hs []nodes.NodeHealth) []telegram.NodeInfo {
 			Version: h.Version, HostIP: h.HostIP, ASN: h.ASN,
 			Online: h.Online, Total: h.Total, LastReport: h.LastReport,
 			IntervalSec: h.CheckIntervalSec,
+			Disabled:    !h.Enabled,
 		})
 	}
 	return out
@@ -116,6 +117,18 @@ func (a *nodeManagerAdapter) AddNode(name, token string) error {
 
 func (a *nodeManagerAdapter) RemoveNode(name string) error {
 	return a.reg.RemoveNode(name)
+}
+
+// RenameNode implements telegram.NodeManager (Wave G5a): name validation
+// (pattern/reserved) happens in the bot layer; the registry enforces
+// static-node ownership and duplicates.
+func (a *nodeManagerAdapter) RenameNode(oldName, newName string) error {
+	return a.reg.RenameNode(oldName, newName)
+}
+
+// SetNodeEnabled implements telegram.NodeManager (Wave G5b).
+func (a *nodeManagerAdapter) SetNodeEnabled(name string, enabled bool) error {
+	return a.reg.SetNodeEnabled(name, enabled)
 }
 
 func (a *nodeManagerAdapter) NodeSnapshot(node string) []metrics.ProxyMetric {

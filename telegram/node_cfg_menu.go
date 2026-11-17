@@ -98,8 +98,10 @@ func NodesCfgListMarkup(nodes []string) *telego.InlineKeyboardMarkup {
 // NodeCfgMarkup returns the keyboard for one node's settings screen. Cycle
 // buttons carry the NEXT value of each ladder; each button whose callback
 // would exceed the 64-byte limit is omitted individually (the text carries
-// the /nodeset hint).
-func NodeCfgMarkup(node string, entries []NodeSettingEntry) *telego.InlineKeyboardMarkup {
+// the /nodeset hint). Wave G5b/G5c adds the enable/disable toggle (action
+// matching the current state) and the rename prompt button, both composed
+// through cbNodeCfg with the same omit-on-overflow discipline.
+func NodeCfgMarkup(node string, enabled bool, entries []NodeSettingEntry) *telego.InlineKeyboardMarkup {
 	vals := nodeCfgEntryValues(entries)
 
 	var rows [][]telego.InlineKeyboardButton
@@ -112,6 +114,25 @@ func NodeCfgMarkup(node string, entries []NodeSettingEntry) *telego.InlineKeyboa
 	}
 	if len(firstRow) > 0 {
 		rows = append(rows, tu.InlineKeyboardRow(firstRow...))
+	}
+
+	if enabled {
+		if cb, ok := cbNodeCfg("menu:nodes:tg:", node, ":off"); ok {
+			rows = append(rows, tu.InlineKeyboardRow(
+				btn("⏸️ Отключить ноду", cb),
+			))
+		}
+	} else {
+		if cb, ok := cbNodeCfg("menu:nodes:tg:", node, ":on"); ok {
+			rows = append(rows, tu.InlineKeyboardRow(
+				btn("▶️ Включить ноду", cb),
+			))
+		}
+	}
+	if cb, ok := cbNodeCfg("menu:nodes:ren:", node); ok {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("✏️ Переименовать", cb),
+		))
 	}
 
 	if cb, ok := cbNodeCfg("menu:nodes:ncfg:", node, ":check_method:"+nextCheckMethod(vals["check_method"])); ok {
@@ -195,6 +216,20 @@ func nodeCfgCyclesFit(node string, entries []NodeSettingEntry) bool {
 	return methodOK && intervalOK && concOK
 }
 
+// nodeEnabledByName looks up the node's enabled state from the manager's
+// node list; unknown managers/nodes default to enabled (zero-value-safe).
+func (b *Bot) nodeEnabledByName(node string) bool {
+	if b.nodeMgr == nil {
+		return true
+	}
+	for _, n := range b.nodeMgr.Nodes() {
+		if n.Name == node {
+			return !n.Disabled
+		}
+	}
+	return true
+}
+
 // getNodeCfgScreen renders one node's settings screen: the /nodeset-style
 // effective values with override marks, a per-node exclusions count, the
 // /nodeset hint, and quick-action cycle buttons (callback menu:nodes:cfg:<name>).
@@ -206,6 +241,7 @@ func (b *Bot) getNodeCfgScreen(node string) (string, *telego.InlineKeyboardMarku
 	if err != nil {
 		return "❌ " + escapeHTML(err.Error()), NodesCfgListMarkup(nil)
 	}
+	enabled := b.nodeEnabledByName(node)
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "⚙️ <b>Настройки ноды %s</b>\n\n", escapeHTML(node))
@@ -216,17 +252,24 @@ func (b *Bot) getNodeCfgScreen(node string) (string, *telego.InlineKeyboardMarku
 		}
 		fmt.Fprintf(&sb, "• %s: <code>%s</code>%s\n", escapeHTML(e.Key), escapeHTML(e.Value), mark)
 	}
+	if !enabled {
+		// Wave G5b: disabled nodes are excluded from merged metrics and node
+		// alerts — make that consequence explicit on the screen.
+		sb.WriteString("\n⏸️ Нода отключена — её прокси исключены из метрик и алертов мастера.\n")
+	}
 	fmt.Fprintf(&sb, "\n🚫 Исключено прокси: <b>%d</b>\n", b.nodeExcludedProxyCount(node))
 	sb.WriteString("\n✏️ — переопределено на ноде; «↩️ Сбросить» возвращает к мастеру.\n")
 	sb.WriteString("Точные значения: /nodeset &lt;имя&gt; &lt;ключ&gt; &lt;значение&gt;\n")
-	// Wave-F B10: one unified hint wording for BOTH omission branches
-	// (exclusions omitted / cycle buttons omitted).
+	// Wave-F B10: one unified hint wording for ALL omission branches
+	// (exclusions / cycle buttons / Wave-G5 toggle and rename buttons omitted).
 	_, exclOK := cbNodeCfg("menu:nodes:excl:", node)
-	if !exclOK || !nodeCfgCyclesFit(node, entries) {
+	_, toggleOK := cbNodeCfg("menu:nodes:tg:", node, ":off")
+	_, renameOK := cbNodeCfg("menu:nodes:ren:", node)
+	if !exclOK || !nodeCfgCyclesFit(node, entries) || !toggleOK || !renameOK {
 		sb.WriteString("\n(длинное имя ноды — используйте /nodeset; часть кнопок недоступна)\n")
 	}
 
-	return sb.String(), NodeCfgMarkup(node, entries)
+	return sb.String(), NodeCfgMarkup(node, enabled, entries)
 }
 
 // getNodeExclusionsView renders the read-only list of proxy names excluded

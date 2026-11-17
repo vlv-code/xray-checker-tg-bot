@@ -257,3 +257,13 @@ func (v *viewsTestNodeManager) SetNodeSetting(node, key, value string) error {
 func (v *viewsTestNodeManager) ResetNodeSetting(node, key string) error {
 	return fmt.Errorf("не поддерживается в этом тесте")
 }
+
+// NodeManager extension methods (Wave G5a/G5b); real behavior is exercised
+// by node_cfg_g5_test.go doubles and the nodes-package tests.
+func (v *viewsTestNodeManager) RenameNode(oldName, newName string) error {
+	return fmt.Errorf("не поддерживается в этом тесте")
+}
+
+func (v *viewsTestNodeManager) SetNodeEnabled(name string, enabled bool) error {
+	return fmt.Errorf("не поддерживается в этом тесте")
+}

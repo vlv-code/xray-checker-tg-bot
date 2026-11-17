@@ -20,11 +20,14 @@ import (
 // that the UI never writes settings by any other path (nodeMgr is the
 // only settings writer).
 type cfgRecordingManager struct {
-	nodes    map[string]bool
-	values   map[string]map[string]string // node -> key -> effective value
-	overrid  map[string]map[string]bool   // node -> key -> overridden
-	setCalls []string                     // "node|key|value"
-	resets   []string                     // "node|key"
+	nodes        map[string]bool
+	values       map[string]map[string]string // node -> key -> effective value
+	overrid      map[string]map[string]bool   // node -> key -> overridden
+	setCalls     []string                     // "node|key|value"
+	resets       []string                     // "node|key"
+	disabled     map[string]bool              // G5b: node -> disabled state
+	enabledCalls []string                     // G5b: "node=true|false" records
+	renames      []string                     // G5a: "old->new" records
 }
 
 func newCfgRecordingManager(names ...string) *cfgRecordingManager {
@@ -42,7 +45,7 @@ func newCfgRecordingManager(names ...string) *cfgRecordingManager {
 func (m *cfgRecordingManager) Nodes() []NodeInfo {
 	var out []NodeInfo
 	for name := range m.nodes {
-		out = append(out, NodeInfo{Name: name, Up: true})
+		out = append(out, NodeInfo{Name: name, Up: true, Disabled: m.disabled[name]})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -120,6 +123,38 @@ func (m *cfgRecordingManager) ResetNodeSetting(node, key string) error {
 	}
 	delete(m.values[node], key)
 	delete(m.overrid[node], key)
+	return nil
+}
+
+// RenameNode implements the NodeManager extension (Wave G5a): migrates the
+// double's node set and disabled state, records the rename.
+func (m *cfgRecordingManager) RenameNode(oldName, newName string) error {
+	if !m.nodes[oldName] {
+		return fmt.Errorf("неизвестная нода: %s", oldName)
+	}
+	if m.nodes[newName] {
+		return fmt.Errorf("нода с именем %q уже существует", newName)
+	}
+	m.nodes[newName] = true
+	delete(m.nodes, oldName)
+	if m.disabled[oldName] {
+		m.disabled[newName] = true
+		delete(m.disabled, oldName)
+	}
+	m.renames = append(m.renames, oldName+"->"+newName)
+	return nil
+}
+
+// SetNodeEnabled implements the NodeManager extension (Wave G5b).
+func (m *cfgRecordingManager) SetNodeEnabled(name string, enabled bool) error {
+	if !m.nodes[name] {
+		return fmt.Errorf("неизвестная нода: %s", name)
+	}
+	m.enabledCalls = append(m.enabledCalls, fmt.Sprintf("%s=%v", name, enabled))
+	if m.disabled == nil {
+		m.disabled = map[string]bool{}
+	}
+	m.disabled[name] = !enabled
 	return nil
 }
 
