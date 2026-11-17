@@ -14,7 +14,13 @@ import (
 // Wave-F B1/B2 pin: every emitted callback must route — no dead buttons.
 func callbackRoutes(data string) bool {
 	switch data {
-	case "menu:main", "menu:noop", "menu:diag", "menu:nodes", "menu:nodes:subs", "menu:nodes:settings":
+	// Wave H2/D4 register: the global subs screen route menu:nodes:subs was
+	// removed — it is intentionally UNROUTED now.
+	// Wave H4 register: menu:cheburin (manual Cheburcheck host input) is an
+	// exact route.
+	// Wave H6 register: menu:checkhostadd (manual custom Check-Host host
+	// input) is an exact route.
+	case "menu:main", "menu:noop", "menu:diag", "menu:nodes", "menu:nodes:settings", "menu:cheburin", "menu:checkhostadd":
 		return true
 	}
 	prefixes := []string{
@@ -27,13 +33,26 @@ func callbackRoutes(data string) bool {
 		"menu:nodes:subnode:",
 		"menu:nodes:delsub:",
 		"menu:nodes:addsub:",
+		// Wave H1/H2 register: the per-node cfg screen and exclusions routes
+		// pre-existed in callbacks.go but are listed only now that the helper
+		// covers their markups (NodeCfgMarkup / exclusions screen), together
+		// with the new functional-exclusions routes.
+		"menu:nodes:cfg:",
+		"menu:nodes:excl:",
+		"menu:nodes:nx:",
+		"menu:nodes:exclpg:",
 		// Wave G: the stableID route menu:chebur:<id> is replaced by the
-		// host-based probe + pager routes; menu:checkhost:run: was always
-		// wired but listed here only now that the helper covers its markup.
+		// host-based probe + pager routes.
 		"menu:cheburh:",
 		"menu:cheburpg:",
+		// Wave H6 register: the Check-Host submenu became the union host list —
+		// the per-host check route menu:checkhosth:<key> and the custom-delete
+		// route menu:checkhostdel:<key> replace the per-proxy route
+		// menu:checkhost:run:<stableID>, whose emitter (the old proxy-list
+		// markup) is gone — the legacy entry is intentionally removed.
+		"menu:checkhosth:",
+		"menu:checkhostdel:",
 		"menu:checkhostpg:",
-		"menu:checkhost:run:",
 	}
 	for _, p := range prefixes {
 		if strings.HasPrefix(data, p) {
@@ -158,29 +177,15 @@ func TestDiagDeepSurfacesCallback64ByteGuard(t *testing.T) {
 }
 
 // TestNodesSubsCallbacksGuardAndDelsubParse (Wave-F B2): over-limit node
-// names must drop their subnode/delsub/addsub buttons (hint row instead),
-// 40-char names still fit, and the delsub parser must split on the LAST
+// names must drop their delsub/addsub buttons (hint row instead), 40-char
+// names still fit, and the delsub parser must split on the LAST
 // colon so names containing ':' round-trip through the emitted button.
+// Wave H2/D4 register: the former NodesSubsListMarkup sections were removed
+// together with the global subs screen; the manage-screen guard pins remain.
 func TestNodesSubsCallbacksGuardAndDelsubParse(t *testing.T) {
 	longName := strings.Repeat("w", 50)
 
-	// 1. Node picker: over-limit node button omitted + hint; control kept.
-	list := NodesSubsListMarkup([]NodeSubListItem{
-		{Name: longName, SubCount: 1},
-		{Name: "m31a", SubCount: 2},
-	})
-	requireAllCallbacksRoutable(t, "NodesSubsListMarkup", list)
-	if hasCallback(list, "menu:nodes:subnode:"+longName) {
-		t.Errorf("over-limit subnode button must be omitted, got %v", markupCallbacks(list))
-	}
-	if !hasCallback(list, "menu:nodes:subnode:m31a") {
-		t.Errorf("fitting subnode button must remain, got %v", markupCallbacks(list))
-	}
-	if !hasCallback(list, "menu:noop") {
-		t.Errorf("expected a hint row when the node button was omitted, got %v", markupCallbacks(list))
-	}
-
-	// 2. Manage screen: delsub/addsub omitted for the long name + hint.
+	// 1. Manage screen: delsub/addsub omitted for the long name + hint.
 	manage := NodeSubsManageMarkup(longName, []ManagedSubInfo{{URL: "https://s/1", ProxyCount: 1}})
 	requireAllCallbacksRoutable(t, "NodeSubsManageMarkup", manage)
 	if hasCallback(manage, "menu:nodes:delsub:"+longName+":0") {
@@ -190,18 +195,14 @@ func TestNodesSubsCallbacksGuardAndDelsubParse(t *testing.T) {
 		t.Errorf("over-limit addsub button must be omitted, got %v", markupCallbacks(manage))
 	}
 
-	// 3. 40-char control: 19+40=59 and 18+40+2=60 bytes still fit.
+	// 2. 40-char control: 18+40+2=60 bytes still fit.
 	name40 := strings.Repeat("w", 40)
-	list40 := NodesSubsListMarkup([]NodeSubListItem{{Name: name40, SubCount: 0}})
-	if !hasCallback(list40, "menu:nodes:subnode:"+name40) {
-		t.Errorf("40-char subnode button (59 bytes) must be kept, got %v", markupCallbacks(list40))
-	}
 	manage40 := NodeSubsManageMarkup(name40, []ManagedSubInfo{{URL: "https://s/1", ProxyCount: 1}})
 	if !hasCallback(manage40, "menu:nodes:delsub:"+name40+":0") {
 		t.Errorf("40-char delsub button (60 bytes) must be kept, got %v", markupCallbacks(manage40))
 	}
 
-	// 4. Colon round-trip: a node named "a:b" emits menu:nodes:delsub:a:b:0
+	// 3. Colon round-trip: a node named "a:b" emits menu:nodes:delsub:a:b:0
 	// and the LastIndex-colon parser must resolve name="a:b", idx=0.
 	fnm := &fakeNodeManager{
 		nodes: map[string]string{"a:b": "tok"},
@@ -242,9 +243,14 @@ func TestIsToastCallbackDataMembership(t *testing.T) {
 		"menu:toggle_proxy:p:1",
 		"menu:toggle_host:h:1",
 		"menu:nodes:ncfg:n:check_method:status",
+		"menu:nodes:nx:m31a:1:1",
 		"menu:nodes:nreset:n",
 		"menu:checkhost:run_now",
 		"menu:checkupdate",
+		// Wave H6 register: the add-host arm route answers with its own toast,
+		// the delete route answers with the «Удалён: …» toast.
+		"menu:checkhostadd",
+		"menu:checkhostdel:9.9.9.9:443",
 	}
 	for _, d := range members {
 		if !isToastCallbackData(d) {
@@ -255,7 +261,11 @@ func TestIsToastCallbackDataMembership(t *testing.T) {
 		"menu:main",
 		"menu:settings",
 		"menu:diag",
-		"menu:nodes:subs",
+		"menu:nodes:exclpg:m31a:2", // Wave H1 register: pager is a view route (the removed menu:nodes:subs entry left the list)
+		// Wave H6 register: the Check-Host per-host check and pager are view
+		// routes (open to allowed chats, generic acknowledgement).
+		"menu:checkhosth:1.1.1.1:443",
+		"menu:checkhostpg:2",
 		"menu:quiet:toggle",
 		"menu:nodes:delsub:n:0",
 	}

@@ -65,6 +65,24 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 			delete(b.waitingNodeRename, msg.Chat.ID)
 		}
 	}
+	// Wave H4: a pending manual Cheburcheck host input (route
+	// menu:cheburin, «✍️ Проверить свой хост») is consumed the same way.
+	var waitingCheburHost bool
+	if b.waitingCheburHost != nil {
+		waitingCheburHost = b.waitingCheburHost[msg.Chat.ID]
+		if waitingCheburHost {
+			delete(b.waitingCheburHost, msg.Chat.ID)
+		}
+	}
+	// Wave H6: a pending custom Check-Host host input (route
+	// menu:checkhostadd, «➕ Добавить хост») is consumed the same way.
+	var waitingCheckHostHost bool
+	if b.waitingCheckHostHost != nil {
+		waitingCheckHostHost = b.waitingCheckHostHost[msg.Chat.ID]
+		if waitingCheckHostHost {
+			delete(b.waitingCheckHostHost, msg.Chat.ID)
+		}
+	}
 	b.waitingNodeAddMu.Unlock()
 
 	cmd, arg := parseCommand(msg.Text)
@@ -85,7 +103,7 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		return
 	}
 
-	if (isWaitingAdd || waitingSubNode != "" || waitingRenameNode != "") && msg.From != nil && !b.isAuthorizedMutating(msg.From.ID) {
+	if (isWaitingAdd || waitingSubNode != "" || waitingRenameNode != "" || waitingCheburHost || waitingCheckHostHost) && msg.From != nil && !b.isAuthorizedMutating(msg.From.ID) {
 		b.replyCommand(msg, "⛔ Эта операция доступна только администраторам бота.")
 		return
 	}
@@ -100,6 +118,14 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 	}
 	if waitingRenameNode != "" && cmd == "" {
 		b.handleNodeRenameInput(msg, waitingRenameNode)
+		return
+	}
+	if waitingCheburHost && cmd == "" {
+		b.handleCheburHostInput(msg, strings.TrimSpace(msg.Text))
+		return
+	}
+	if waitingCheckHostHost && cmd == "" {
+		b.handleCheckHostHostInput(msg, strings.TrimSpace(msg.Text))
 		return
 	}
 	if cmd == "" {
@@ -529,7 +555,7 @@ func (b *Bot) replyHelp(t ChatTarget) {
 		"/togglenode <имя|ID> — включить/отключить проверку хоста (не ноды-инстанса)\n" +
 		"/checkhost <хост[:порт]> — глобальная проверка через Check-Host.net\n" +
 		"/checkhost_bg [on|off|1h|run] — фоновая проверка Check-Host\n" +
-		"/cheburcheck <хост> — активный пробинг блокировок РФ (Cheburcheck)\n" +
+		"/cheburcheck <хост> — активный пробинг блокировок (Cheburcheck)\n" +
 		"/stats — статистика аптайма и инцидентов\n" +
 		"/interval [сек] — интервал проверок прокси-хостов\n" +
 		"/quiet — настройки тихого режима\n" +

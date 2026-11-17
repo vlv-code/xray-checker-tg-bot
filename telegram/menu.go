@@ -12,7 +12,6 @@ import (
 	tu "github.com/mymmrac/telego/telegoutil"
 
 	"xray-checker/checker"
-	"xray-checker/metrics"
 )
 
 func btn(text, data string) telego.InlineKeyboardButton {
@@ -682,27 +681,36 @@ func menuPaginationRow(routePrefix string, page, totalPages int) []telego.Inline
 	}
 }
 
-// CheckHostMenuMarkup returns keyboard for selecting a proxy to test with
-// Check-Host. Wave G4: the former 20-item cap + «...и ещё» overflow stub is
-// replaced by pagination — menuListPageSize items per screen (2 per row) and
-// a «⬅️ ➡️ Стр. N/M» row (menu:checkhostpg:<page> routes) when more than one
-// page exists.
-func CheckHostMenuMarkup(proxies []metrics.ProxyMetric, page, totalPages int) *telego.InlineKeyboardMarkup {
-	pageProxies := menuPageSlice(proxies, page, totalPages)
+// CheckHostMenuMarkup returns the keyboard for the Check-Host host list.
+// Wave H6: the list is the UNION of subscription hosts (auto rows — a single
+// «<host> · авто» check button, not removable) and manually added customs
+// (check button plus a «🗑» delete button, menu:checkhostdel:<key>); the
+// «➕ Добавить хост» row arms the manual input flow (menu:checkhostadd).
+// Wave G4: pagination — menuListPageSize rows per screen and a
+// «⬅️ ➡️ Стр. N/M» row (menu:checkhostpg:<page> routes) when more than one
+// page exists. Host keys hash over 36 bytes (HostCallbackKey), so every
+// callback stays within the 64-byte limit.
+func CheckHostMenuMarkup(items []CheckHostListItem, page, totalPages int) *telego.InlineKeyboardMarkup {
+	pageItems := menuPageSlice(items, page, totalPages)
 
 	var rows [][]telego.InlineKeyboardButton
-	for i := 0; i < len(pageProxies); i += 2 {
-		if i+1 < len(pageProxies) {
+	for _, item := range pageItems {
+		key := HostCallbackKey(item.Address)
+		if item.Auto {
 			rows = append(rows, tu.InlineKeyboardRow(
-				btn(truncateButtonText(pageProxies[i].Name, 24), "menu:checkhost:run:"+pageProxies[i].StableID),
-				btn(truncateButtonText(pageProxies[i+1].Name, 24), "menu:checkhost:run:"+pageProxies[i+1].StableID),
+				btn("🌐 "+truncateButtonText(item.Address, 28)+" · авто", "menu:checkhosth:"+key),
 			))
 		} else {
 			rows = append(rows, tu.InlineKeyboardRow(
-				btn(truncateButtonText(pageProxies[i].Name, 24), "menu:checkhost:run:"+pageProxies[i].StableID),
+				btn("✍️ "+truncateButtonText(item.Address, 28), "menu:checkhosth:"+key),
+				btn("🗑", "menu:checkhostdel:"+key),
 			))
 		}
 	}
+
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("➕ Добавить хост", "menu:checkhostadd"),
+	))
 
 	if totalPages > 1 {
 		rows = append(rows, menuPaginationRow("menu:checkhostpg:", page, totalPages))
@@ -715,12 +723,15 @@ func CheckHostMenuMarkup(proxies []metrics.ProxyMetric, page, totalPages int) *t
 	return tu.InlineKeyboard(rows...)
 }
 
-// CheburMenuMarkup returns keyboard for selecting a host for the active RF
+// CheburMenuMarkup returns keyboard for selecting a host for the active
 // blocking probe (Cheburcheck). Wave G1: the list is UNIQUE bare hosts
 // (cheburHostsFromSnapshot — port stripped, protocol-agnostic dedup, sorted),
 // since Cheburcheck probes hosts and has no port concept; buttons carry
 // menu:cheburh:<HostCallbackKey(host)> (host keys hash over 36 bytes,
 // test-pinned ≤64). Wave G4: the wave-F cap+stub is replaced by pagination.
+// Wave H3: host buttons are PLAIN <host> (the former 🧀 prefix is dropped).
+// Wave H4: the «✍️ Проверить свой хост» row (exact route menu:cheburin)
+// arms the manual host input flow.
 func CheburMenuMarkup(hosts []string, page, totalPages int) *telego.InlineKeyboardMarkup {
 	pageHosts := menuPageSlice(hosts, page, totalPages)
 
@@ -728,15 +739,19 @@ func CheburMenuMarkup(hosts []string, page, totalPages int) *telego.InlineKeyboa
 	for i := 0; i < len(pageHosts); i += 2 {
 		if i+1 < len(pageHosts) {
 			rows = append(rows, tu.InlineKeyboardRow(
-				btn("🧀 "+truncateButtonText(pageHosts[i], 28), "menu:cheburh:"+HostCallbackKey(pageHosts[i])),
-				btn("🧀 "+truncateButtonText(pageHosts[i+1], 28), "menu:cheburh:"+HostCallbackKey(pageHosts[i+1])),
+				btn(truncateButtonText(pageHosts[i], 28), "menu:cheburh:"+HostCallbackKey(pageHosts[i])),
+				btn(truncateButtonText(pageHosts[i+1], 28), "menu:cheburh:"+HostCallbackKey(pageHosts[i+1])),
 			))
 		} else {
 			rows = append(rows, tu.InlineKeyboardRow(
-				btn("🧀 "+truncateButtonText(pageHosts[i], 28), "menu:cheburh:"+HostCallbackKey(pageHosts[i])),
+				btn(truncateButtonText(pageHosts[i], 28), "menu:cheburh:"+HostCallbackKey(pageHosts[i])),
 			))
 		}
 	}
+
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("✍️ Проверить свой хост", "menu:cheburin"),
+	))
 
 	if totalPages > 1 {
 		rows = append(rows, menuPaginationRow("menu:cheburpg:", page, totalPages))
@@ -930,7 +945,7 @@ func PickDeepDiagnosticsMarkupWithTabs(target string, tabs []NodeTabItem, report
 func CheckHostResultMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🌐 К выбору прокси", "menu:checkhost"),
+			btn("🌐 К списку хостов", "menu:checkhost"),
 			btn("🏠 Главное меню", "menu:main"),
 		),
 	)

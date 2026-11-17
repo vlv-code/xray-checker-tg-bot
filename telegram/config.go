@@ -34,6 +34,7 @@ type BotConfig struct {
 	CheckHostBgEnabled        bool     `json:"checkhost_bg_enabled"`
 	CheckHostIntervalHours    int      `json:"checkhost_interval_hours"`
 	CheckHostAlertEnabled     bool     `json:"checkhost_alert_enabled"`
+	CheckHostHosts            []string `json:"checkhost_hosts,omitempty"` // Wave H6: manually added hosts (customs of the Check-Host union list; also audited by runAuditNow)
 	Timezone                  string   `json:"timezone,omitempty"`
 	NodeSyncEnabled           bool     `json:"node_sync_enabled"`
 	NodeAlertsEnabled         bool     `json:"node_alerts_enabled"`
@@ -195,6 +196,10 @@ func (cm *ConfigManager) Get() BotConfig {
 	if len(cm.cfg.DisabledProxies) > 0 {
 		c.DisabledProxies = make([]string, len(cm.cfg.DisabledProxies))
 		copy(c.DisabledProxies, cm.cfg.DisabledProxies)
+	}
+	if len(cm.cfg.CheckHostHosts) > 0 {
+		c.CheckHostHosts = make([]string, len(cm.cfg.CheckHostHosts))
+		copy(c.CheckHostHosts, cm.cfg.CheckHostHosts)
 	}
 	return c
 }

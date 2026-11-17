@@ -156,8 +156,12 @@ func TestIsMutatingCallback_Classification(t *testing.T) {
 		"menu:nodes:toggle_sync",
 		"menu:nodes:toggle_alerts",
 		"menu:nodes:toggle_proxy_alerts",
+		// Wave H6: the custom Check-Host host add/del routes persist config.
+		"menu:checkhostadd",
+		"menu:checkhostdel:9.9.9.9:443",
 		// mutating prefix routes (with payloads)
 		"menu:nodes:delsub:node-1:0",
+		"menu:nodes:nx:node-1:0:1", // Wave H1: per-proxy exclusion toggle
 		"menu:tz:Europe/Moscow",
 		"menu:checkhost:int:2",
 		"menu:toggle_proxy:proxy-x:1",
@@ -180,7 +184,11 @@ func TestIsMutatingCallback_Classification(t *testing.T) {
 		"menu:checkhost", "menu:checkhost_cfg",
 		"menu:nodes", "menu:nodes:refresh", "menu:nodes:add",
 		"menu:nodes:install", "menu:nodes:health",
-		"menu:nodes:settings", "menu:nodes:subs",
+		"menu:nodes:settings",
+		// Wave H1/H2 register: the removed global subs screen entry
+		// menu:nodes:subs left the informational list; the exclusions view +
+		// pager routes (functional screen) stay open to non-admins.
+		"menu:nodes:cfg:node-1", "menu:nodes:excl:node-1", "menu:nodes:exclpg:node-1:2",
 		"menu:noop", "menu:diag:noop:2:3",
 		// prefix routes that only display views or set ephemeral per-chat prompts
 		"menu:nodes:subnode:node-1",
@@ -189,7 +197,10 @@ func TestIsMutatingCallback_Classification(t *testing.T) {
 		"menu:diag:node:local", "menu:diag:details:nodes:2",
 		"menu:stats:incidents:all", "menu:diag:pick_deep:nodes:2",
 		"menu:diag:deep:proxy-x:1", "menu:diag:refresh:summary",
-		"menu:checkhost:run:proxy-x",
+		// Wave H6 register: the per-host Check-Host check and pager stay
+		// informational (the former per-proxy entry menu:checkhost:run:proxy-x
+		// left the list together with its removed route).
+		"menu:checkhosth:1.1.1.1:443", "menu:checkhostpg:2",
 	}
 	for _, data := range informational {
 		if isMutatingCallback(data) {

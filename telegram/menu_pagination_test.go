@@ -60,10 +60,10 @@ func hasButtonText(markup *telego.InlineKeyboardMarkup, text string) bool {
 
 // TestCheburMenuMarkupPagination (wave G4, replaces the Wave-F B4 cap+stub
 // pin TestCheburMenuMarkupCapOverflowAndEmptyState): 25 unique hosts paginate
-// at 20 per page — page 1 shows 20 «🧀 <host>» buttons plus the «Стр. 1/2»
-// row with next-only navigation, page 2 shows the remaining 5 with prev.
-// Every emitted callback routes (no dead buttons) and the wave-F overflow
-// stub row is gone.
+// at 20 per page — page 1 shows 20 «<host>» buttons (wave H3: plain, no 🧀)
+// plus the «Стр. 1/2» row with next-only navigation, page 2 shows the
+// remaining 5 with prev. Every emitted callback routes (no dead buttons) and
+// the wave-F overflow stub row is gone.
 func TestCheburMenuMarkupPagination(t *testing.T) {
 	proxies := cheburPageProxies()
 	hosts := cheburHostsFromSnapshot(proxies)
@@ -136,22 +136,40 @@ func TestCheburMenuMarkupPagination(t *testing.T) {
 	}
 }
 
-// TestCheckHostMenuMarkupPagination (wave G4, replaces the CheckHostMenuMarkup
-// overflow stub): 25 proxies paginate at 20 per page with menu:checkhostpg:
-// navigation; the «...и ещё %d прокси-хостов» stub row is gone; every emitted
-// callback routes.
+// TestCheckHostMenuMarkupPagination (Wave H6, REPLACES the wave G4 pin over
+// the old proxy-list source — authorized H6 list-source register 2026-11-17):
+// the UNION list (25 subscription hosts + 5 customs = 30 items) paginates at
+// 20 per page with menu:checkhostpg: navigation; auto rows carry the check
+// button only, custom rows additionally carry the 🗑 delete button; the
+// «...и ещё» stub row stays gone; every emitted callback routes.
 func TestCheckHostMenuMarkupPagination(t *testing.T) {
-	proxies := cheburPageProxies()
-	totalPages := menuTotalPages(len(proxies), menuListPageSize)
+	items := checkHostUnionList(cheburPageProxies(),
+		[]string{"custom-20.example.com:443", "custom-21.example.com:443", "custom-22.example.com:443",
+			"custom-23.example.com:443", "custom-24.example.com:443"})
+	if len(items) != 30 {
+		t.Fatalf("expected 30 union items (25 auto + 5 custom), got %d", len(items))
+	}
+	totalPages := menuTotalPages(len(items), menuListPageSize)
 	if totalPages != 2 {
-		t.Fatalf("expected 2 pages for 25 proxies, got %d", totalPages)
+		t.Fatalf("expected 2 pages for 30 union items, got %d", totalPages)
 	}
 
-	runButtons := func(markup *telego.InlineKeyboardMarkup) int {
+	hButtons := func(markup *telego.InlineKeyboardMarkup) int {
 		n := 0
 		for _, row := range markup.InlineKeyboard {
 			for _, b := range row {
-				if strings.HasPrefix(b.CallbackData, "menu:checkhost:run:") {
+				if strings.HasPrefix(b.CallbackData, "menu:checkhosth:") {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	delButtons := func(markup *telego.InlineKeyboardMarkup) int {
+		n := 0
+		for _, row := range markup.InlineKeyboard {
+			for _, b := range row {
+				if strings.HasPrefix(b.CallbackData, "menu:checkhostdel:") {
 					n++
 				}
 			}
@@ -159,10 +177,15 @@ func TestCheckHostMenuMarkupPagination(t *testing.T) {
 		return n
 	}
 
-	mk1 := CheckHostMenuMarkup(proxies, 1, totalPages)
+	mk1 := CheckHostMenuMarkup(items, 1, totalPages)
 	requireAllCallbacksRoutable(t, "CheckHostMenuMarkup page 1", mk1)
-	if got := runButtons(mk1); got != 20 {
-		t.Errorf("expected 20 run buttons on page 1, got %d", got)
+	if got := hButtons(mk1); got != 20 {
+		t.Errorf("expected 20 per-host buttons on page 1, got %d", got)
+	}
+	// Sorted lowercase, «custom-*» (<«h») lands first: page 1 = 5 custom rows
+	// + first 15 subscription hosts → 5 delete buttons.
+	if got := delButtons(mk1); got != 5 {
+		t.Errorf("page 1 (5 custom rows first) must carry 5 delete buttons, got %d", got)
 	}
 	if !hasCallback(mk1, "menu:checkhostpg:2") {
 		t.Errorf("page 1 must carry the next-page button menu:checkhostpg:2")
@@ -181,10 +204,13 @@ func TestCheckHostMenuMarkupPagination(t *testing.T) {
 		}
 	}
 
-	mk2 := CheckHostMenuMarkup(proxies, 2, totalPages)
+	mk2 := CheckHostMenuMarkup(items, 2, totalPages)
 	requireAllCallbacksRoutable(t, "CheckHostMenuMarkup page 2", mk2)
-	if got := runButtons(mk2); got != 5 {
-		t.Errorf("expected 5 run buttons on page 2, got %d", got)
+	if got := hButtons(mk2); got != 10 {
+		t.Errorf("expected 10 per-host buttons on page 2 (10 remaining auto rows), got %d", got)
+	}
+	if got := delButtons(mk2); got != 0 {
+		t.Errorf("page 2 holds only auto rows, so it must carry no delete buttons, got %d", got)
 	}
 	if !hasCallback(mk2, "menu:checkhostpg:1") {
 		t.Errorf("page 2 must carry the prev-page button menu:checkhostpg:1")
@@ -193,10 +219,10 @@ func TestCheckHostMenuMarkupPagination(t *testing.T) {
 		t.Errorf("page 2 must not carry a next-page button")
 	}
 
-	// Control: 20 proxies → single page, no pagination row.
-	mk20 := CheckHostMenuMarkup(proxies[:20], 1, 1)
-	if got := runButtons(mk20); got != 20 {
-		t.Errorf("expected 20 run buttons for a full single page, got %d", got)
+	// Control: 20 items → single page, no pagination row.
+	mk20 := CheckHostMenuMarkup(items[:20], 1, 1)
+	if got := hButtons(mk20); got != 20 {
+		t.Errorf("expected 20 per-host buttons for a full single page, got %d", got)
 	}
 	if hasCallback(mk20, "menu:checkhostpg:2") {
 		t.Errorf("a single page must not carry pagination buttons")

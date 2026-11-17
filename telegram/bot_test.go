@@ -71,26 +71,35 @@ func TestCheckHostMenuAndMarkup(t *testing.T) {
 		t.Errorf("expected menu:checkhost button in MainMenuMarkup")
 	}
 
-	// 2. Check CheckHostMenuMarkup generates proxy buttons
-	proxies := []metrics.ProxyMetric{
-		{Name: "Node-1", StableID: "id-1", Address: "1.1.1.1:443"},
-		{Name: "Node-2", StableID: "id-2", Address: "2.2.2.2:443"},
+	// 2. Check CheckHostMenuMarkup renders the union host list (Wave H6
+	//    register: the per-proxy button pin menu:checkhost:run:id-1 was
+	//    replaced together with the proxy-list source — authorized 2026-11-17).
+	items := []CheckHostListItem{
+		{Address: "1.1.1.1:443", Auto: true},
+		{Address: "9.9.9.9:443"},
 	}
-	chMarkup := CheckHostMenuMarkup(proxies, 1, 1)
+	chMarkup := CheckHostMenuMarkup(items, 1, 1)
 	if chMarkup == nil || len(chMarkup.InlineKeyboard) < 2 {
 		t.Fatalf("expected rows in CheckHostMenuMarkup, got %v", chMarkup)
 	}
 
-	foundID1 := false
+	foundAuto := false
+	foundCustomDel := false
 	for _, row := range chMarkup.InlineKeyboard {
-		for _, btn := range row {
-			if btn.CallbackData == "menu:checkhost:run:id-1" {
-				foundID1 = true
+		for _, b := range row {
+			if b.CallbackData == "menu:checkhosth:1.1.1.1:443" {
+				foundAuto = true
+			}
+			if b.CallbackData == "menu:checkhostdel:9.9.9.9:443" {
+				foundCustomDel = true
 			}
 		}
 	}
-	if !foundID1 {
-		t.Errorf("expected menu:checkhost:run:id-1 button in CheckHostMenuMarkup")
+	if !foundAuto {
+		t.Errorf("expected menu:checkhosth:1.1.1.1:443 check button in CheckHostMenuMarkup")
+	}
+	if !foundCustomDel {
+		t.Errorf("expected menu:checkhostdel:9.9.9.9:443 delete button in CheckHostMenuMarkup")
 	}
 
 	// 3. Check getCheckHostMenuText

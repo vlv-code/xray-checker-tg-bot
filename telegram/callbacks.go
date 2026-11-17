@@ -29,6 +29,10 @@ func isMutatingCallback(data string) bool {
 		"menu:checkhost:toggle_bg",
 		"menu:checkhost:toggle_alert",
 		"menu:checkhost:run_now",
+		// Wave H6: the manual custom-host input leads to a persisted config
+		// write, so arming is admin-gated too (unlike the informational
+		// menu:cheburin arm).
+		"menu:checkhostadd",
 		"menu:checkupdate",
 		"menu:nodes:toggle_sync",
 		"menu:nodes:toggle_alerts",
@@ -43,6 +47,8 @@ func isMutatingCallback(data string) bool {
 		strings.HasPrefix(data, "menu:nodes:tg:") ||
 		strings.HasPrefix(data, "menu:tz:") ||
 		strings.HasPrefix(data, "menu:checkhost:int:") ||
+		// Wave H6: removing a custom Check-Host host persists config.
+		strings.HasPrefix(data, "menu:checkhostdel:") ||
 		strings.HasPrefix(data, "menu:toggle_proxy:") ||
 		strings.HasPrefix(data, "menu:toggle_host:") ||
 		strings.HasPrefix(data, "menu:interval:set:")
@@ -61,6 +67,10 @@ func isToastCallbackData(data string) bool {
 		strings.HasPrefix(data, "menu:nodes:ren:") ||
 		strings.HasPrefix(data, "menu:nodes:tg:") ||
 		data == "menu:checkhost:run_now" ||
+		// Wave H6: the add-host arm answers with its own toast, the delete
+		// route with the «Удалён: …» toast.
+		data == "menu:checkhostadd" ||
+		strings.HasPrefix(data, "menu:checkhostdel:") ||
 		data == "menu:checkupdate"
 }
 
@@ -119,9 +129,13 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:main":
 		// Wave H4: leaving for the main menu disarms a pending manual
 		// Cheburcheck host input (mirrors the wave G5a rename disarm).
+		// Wave H6: the pending custom Check-Host host input disarms the same way.
 		b.waitingNodeAddMu.Lock()
 		if b.waitingCheburHost != nil {
 			delete(b.waitingCheburHost, chatID)
+		}
+		if b.waitingCheckHostHost != nil {
+			delete(b.waitingCheckHostHost, chatID)
 		}
 		b.waitingNodeAddMu.Unlock()
 		b.editWithMarkup(chatID, msgID, b.getMenuText(), MainMenuMarkup())
@@ -233,16 +247,52 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:subs":
 		b.editWithMarkup(chatID, msgID, b.getSubsText(), BackToSettingsMarkup())
 	case "menu:checkhost":
-		snapshot := b.source.MetricsSnapshot()
-		b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(),
-			CheckHostMenuMarkup(snapshot, 1, menuTotalPages(len(snapshot), menuListPageSize)))
-	case "menu:chebur":
 		// EXACT match only (order invariant, mirrors menu:chebur): the per-host
-		// probe route is the "menu:cheburh:" prefix branch, the pager the
-		// "menu:cheburpg:" prefix branch in the default clause below, and the
-		// manual-input route the exact case "menu:cheburin" next — none can
-		// collide with this bare exact case. Re-entering the submenu disarms a
-		// pending manual-input state (wave H4).
+		// check route is the "menu:checkhosth:" prefix branch, the delete route
+		// the "menu:checkhostdel:" prefix branch, the pager the
+		// "menu:checkhostpg:" prefix branch and the manual-input route the
+		// exact case "menu:checkhostadd" — none can collide with this bare
+		// exact case. Re-entering the submenu disarms a pending custom-host
+		// input (wave H6) and recomputes the union list (snapshot + customs).
+		b.waitingNodeAddMu.Lock()
+		if b.waitingCheckHostHost != nil {
+			delete(b.waitingCheckHostHost, chatID)
+		}
+		b.waitingNodeAddMu.Unlock()
+		items := b.checkHostListItems()
+		b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(),
+			CheckHostMenuMarkup(items, 1, menuTotalPages(len(items), menuListPageSize)))
+	case "menu:checkhostadd":
+		// Wave H6: manual custom-host input — arm the single-shot waiting
+		// state (mirrors menu:cheburin but admin-gated here: the flow ends in
+		// a persisted config write); the next plain text is consumed in
+		// handleMessage.
+		b.waitingNodeAddMu.Lock()
+		if b.waitingCheckHostHost == nil {
+			b.waitingCheckHostHost = make(map[int64]bool)
+		}
+		b.waitingCheckHostHost[chatID] = true
+		b.waitingNodeAddMu.Unlock()
+		if b.api != nil {
+			_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("➕ Отправьте хост сообщением в чат"))
+		}
+		text := "➕ <b>Добавление хоста в Check-Host</b>\n\n" +
+			"Отправьте хост ответным сообщением: домен или IP, можно с портом.\n" +
+			"Например: <code>example.com</code> или <code>1.2.3.4:443</code>.\n\n" +
+			"Хосты из подписок (авто) дублировать не нужно — они уже проверяются."
+		b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
+			tu.InlineKeyboardRow(
+				btn("🔙 К списку хостов", "menu:checkhost"),
+				btn("🏠 Главное меню", "menu:main"),
+			),
+		))
+	case "menu:chebur":
+		// EXACT match only (order invariant): the per-host probe route is the
+		// "menu:cheburh:" prefix branch, the pager the "menu:cheburpg:"
+		// prefix branch in the default clause below, and the manual-input
+		// route the exact case "menu:cheburin" next — none can collide with
+		// this bare exact case. Re-entering the submenu disarms a pending
+		// manual-input state (wave H4).
 		b.waitingNodeAddMu.Lock()
 		if b.waitingCheburHost != nil {
 			delete(b.waitingCheburHost, chatID)
@@ -252,6 +302,26 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		hosts := cheburHostsFromSnapshot(snapshot)
 		b.editWithMarkup(chatID, msgID, b.getCheburMenuText(len(hosts)),
 			CheburMenuMarkup(hosts, 1, menuTotalPages(len(hosts), menuListPageSize)))
+	case "menu:cheburin":
+		// Wave H4: manual host input — arm the single-shot waiting state
+		// (mirrors menu:nodes:add); the next plain text is consumed in
+		// handleMessage and admin-gated there. Not itself mutating: arming is
+		// harmless, the actual probe is gated.
+		b.waitingNodeAddMu.Lock()
+		if b.waitingCheburHost == nil {
+			b.waitingCheburHost = make(map[int64]bool)
+		}
+		b.waitingCheburHost[chatID] = true
+		b.waitingNodeAddMu.Unlock()
+		text := "✍️ <b>Проверить свой хост</b>\n\n" +
+			"Отправьте хост для активного пробинга: домен или IP, можно с портом — порт будет отброшен.\n" +
+			"Например: <code>example.com</code> или <code>1.2.3.4:443</code>."
+		b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
+			tu.InlineKeyboardRow(
+				btn("🔙 К Cheburcheck", "menu:chebur"),
+				btn("🏠 Главное меню", "menu:main"),
+			),
+		))
 	case "menu:checkhost_cfg":
 		b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
 	case "menu:checkhost:toggle_bg":
@@ -913,9 +983,21 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 					}
 				}()
 			}
-		} else if strings.HasPrefix(cb.Data, "menu:checkhost:run:") {
-			stableID := strings.TrimPrefix(cb.Data, "menu:checkhost:run:")
-			go b.handleCheckHostProxy(chatID, msgID, stableID)
+		} else if strings.HasPrefix(cb.Data, "menu:checkhosth:") {
+			// Wave H6: per-host Check-Host check route — resolve the
+			// HostCallbackKey back to the union host (snapshot address or
+			// custom) and run the TCP check; bare hosts get the :443 default.
+			// Order invariant (mirrors menu:cheburh): this prefix branch (and
+			// the menu:checkhostpg: pager below) can never collide with the
+			// bare "menu:checkhost" exact-match switch case above — keep both
+			// rules distinct if this routing is reworked.
+			hostKey := strings.TrimPrefix(cb.Data, "menu:checkhosth:")
+			go b.handleCheckHostHostKey(chatID, msgID, hostKey)
+		} else if strings.HasPrefix(cb.Data, "menu:checkhostdel:") {
+			// Wave H6: remove a custom Check-Host host. Mutating (admin-gated
+			// via isMutatingCallback) and self-toasting (isToastCallbackData);
+			// writes only through updateConfig — see handleCheckHostDel.
+			b.handleCheckHostDel(chatID, msgID, cb, cb.Data)
 		} else if strings.HasPrefix(cb.Data, "menu:cheburh:") {
 			// Wave G1: per-host probe route — resolve the HostCallbackKey back
 			// to the snapshot host and probe it. Order invariant: this prefix
@@ -939,18 +1021,20 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			}
 			b.editWithMarkup(chatID, msgID, b.getCheburMenuText(len(hosts)), CheburMenuMarkup(hosts, page, totalPages))
 		} else if strings.HasPrefix(cb.Data, "menu:checkhostpg:") {
-			// Wave G4: Check-Host submenu pager (replaces the wave-F overflow
-			// stub). Pages clamp into range.
+			// Wave H6: the pager recomputes the UNION list (subscription
+			// hosts + customs) from the current sources, mirroring the
+			// menu:cheburpg: recompute-and-clamp discipline. View route — not
+			// gated, not self-toasting.
 			page, _ := strconv.Atoi(strings.TrimPrefix(cb.Data, "menu:checkhostpg:"))
-			snapshot := b.source.MetricsSnapshot()
-			totalPages := menuTotalPages(len(snapshot), menuListPageSize)
+			items := b.checkHostListItems()
+			totalPages := menuTotalPages(len(items), menuListPageSize)
 			if page < 1 {
 				page = 1
 			}
 			if page > totalPages {
 				page = totalPages
 			}
-			b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(), CheckHostMenuMarkup(snapshot, page, totalPages))
+			b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(), CheckHostMenuMarkup(items, page, totalPages))
 		} else if strings.HasPrefix(cb.Data, "menu:interval:set:") {
 			secStr := strings.TrimPrefix(cb.Data, "menu:interval:set:")
 			if sec, err := strconv.Atoi(secStr); err == nil && sec >= 10 {
