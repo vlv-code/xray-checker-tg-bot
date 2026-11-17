@@ -1,14 +1,12 @@
 package telegram
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/mymmrac/telego"
 
 	"xray-checker/checker"
-	"xray-checker/metrics"
 )
 
 // callbackRoutes reports whether a callback_data value has a routing rule in
@@ -29,7 +27,13 @@ func callbackRoutes(data string) bool {
 		"menu:nodes:subnode:",
 		"menu:nodes:delsub:",
 		"menu:nodes:addsub:",
-		"menu:chebur:",
+		// Wave G: the stableID route menu:chebur:<id> is replaced by the
+		// host-based probe + pager routes; menu:checkhost:run: was always
+		// wired but listed here only now that the helper covers its markup.
+		"menu:cheburh:",
+		"menu:cheburpg:",
+		"menu:checkhostpg:",
+		"menu:checkhost:run:",
 	}
 	for _, p := range prefixes {
 		if strings.HasPrefix(data, p) {
@@ -262,70 +266,7 @@ func TestIsToastCallbackDataMembership(t *testing.T) {
 	}
 }
 
-// TestCheburMenuMarkupCapOverflowAndEmptyState (Wave-F B4): the Cheburcheck
-// submenu mirrors CheckHostMenuMarkup's overflow mechanism — capped at 20
-// proxy buttons per screen with a routable menu:noop note row for the rest —
-// and the text builder flags the empty state in Russian.
-func TestCheburMenuMarkupCapOverflowAndEmptyState(t *testing.T) {
-	var proxies []metrics.ProxyMetric
-	for i := 0; i < 25; i++ {
-		proxies = append(proxies, metrics.ProxyMetric{
-			Name:     fmt.Sprintf("P%02d", i),
-			StableID: fmt.Sprintf("sid%02d", i),
-			Address:  "1.1.1.1:443",
-			Protocol: "vless",
-		})
-	}
-
-	mk := CheburMenuMarkup(proxies)
-	proxyBtns := 0
-	overflowNote := false
-	for _, row := range mk.InlineKeyboard {
-		for _, b := range row {
-			if len(b.CallbackData) > 64 {
-				t.Errorf("callback_data exceeds 64 bytes: %q (%d bytes)", b.CallbackData, len(b.CallbackData))
-			}
-			if strings.HasPrefix(b.CallbackData, "menu:chebur:") {
-				proxyBtns++
-			}
-			if b.CallbackData == "menu:noop" && strings.Contains(b.Text, "и ещё 5") {
-				overflowNote = true
-			}
-			if !callbackRoutes(b.CallbackData) {
-				t.Errorf("emitted callback does not route: %q", b.CallbackData)
-			}
-		}
-	}
-	if proxyBtns != 20 {
-		t.Errorf("expected CheburMenuMarkup to cap at 20 proxy buttons, got %d", proxyBtns)
-	}
-	if !overflowNote {
-		t.Errorf("expected an overflow note row («...и ещё 5 прокси») for 25 proxies, got %v", markupCallbacks(mk))
-	}
-
-	// Control: exactly 20 enabled proxies → no note row, all buttons kept.
-	exact := CheburMenuMarkup(proxies[:20])
-	proxyBtns = 0
-	for _, row := range exact.InlineKeyboard {
-		for _, b := range row {
-			if strings.HasPrefix(b.CallbackData, "menu:chebur:") {
-				proxyBtns++
-			}
-			if b.CallbackData == "menu:noop" {
-				t.Errorf("no overflow note expected at the cap boundary, got %q", b.Text)
-			}
-		}
-	}
-	if proxyBtns != 20 {
-		t.Errorf("expected all 20 buttons at the cap boundary, got %d", proxyBtns)
-	}
-
-	// Empty state: the text builder flags zero enabled proxies in Russian.
-	b := &Bot{}
-	if txt := b.getCheburMenuText(0); !strings.Contains(txt, "Нет активных прокси для проверки") {
-		t.Errorf("expected empty-state note for 0 enabled proxies, got: %s", txt)
-	}
-	if txt := b.getCheburMenuText(25); strings.Contains(txt, "Нет активных прокси") {
-		t.Errorf("empty-state note must not appear with enabled proxies, got: %s", txt)
-	}
-}
+// TestCheburMenuMarkupCapOverflowAndEmptyState (Wave-F B4) was REPLACED by
+// TestCheburMenuMarkupPagination + TestCheburMenuTextEmptyState (wave G4):
+// the cap+stub approach was removed in favor of pagination — authorized
+// replaced-test entry 2026-11-17.

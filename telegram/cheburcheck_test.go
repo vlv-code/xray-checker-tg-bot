@@ -17,11 +17,13 @@ import (
 	"xray-checker/metrics"
 )
 
-// TestHandleCheburcheckProxy_UsesInjectedClient mirrors the fixed F2
-// Check-Host per-proxy test: an injected chebur client must be used, a
-// hysteria2 proxy must be probed on the BARE host (no port in /check target),
-// the per-scanner token must be sent, and the final report must be rendered.
-func TestHandleCheburcheckProxy_UsesInjectedClient(t *testing.T) {
+// TestHandleCheburcheckHost_UsesInjectedClient (replaces
+// TestHandleCheburcheckProxy_UsesInjectedClient — authorized rework, wave G1
+// host-based menu): an injected chebur client must be used, the host resolved
+// from the menu key must be probed on the BARE host (no port in /check
+// target), the per-scanner token must be sent, and the final report must
+// carry the 🧀 header with the wave G summary-first format.
+func TestHandleCheburcheckHost_UsesInjectedClient(t *testing.T) {
 	var mu sync.Mutex
 	var checkTargets []string
 	var probeTokens []string
@@ -71,7 +73,7 @@ func TestHandleCheburcheckProxy_UsesInjectedClient(t *testing.T) {
 		cheburClient: chebClient,
 	}
 
-	b.handleCheburcheckProxy(12345, 10, "hys-c")
+	b.handleCheburcheckHost(12345, 10, HostCallbackKey("1.2.3.4"))
 
 	mu.Lock()
 	gotTargets := append([]string(nil), checkTargets...)
@@ -90,10 +92,40 @@ func TestHandleCheburcheckProxy_UsesInjectedClient(t *testing.T) {
 		t.Fatal("expected editMessageText calls, got none")
 	}
 	final, _ := edits[len(edits)-1].Params["text"].(string)
-	for _, want := range []string{"test-scanner", "✅", "Активный пробинг Cheburcheck"} {
+	for _, want := range []string{"🧀", "1.2.3.4", "Ответы: 1 из 1", "Не ограничен"} {
 		if !strings.Contains(final, want) {
 			t.Errorf("final report missing %q, got: %s", want, final)
 		}
+	}
+}
+
+// TestHandleCheburcheckHost_UnknownKeyGraceful (wave G1): a host key that
+// does not resolve in the snapshot (e.g. a stale button after the proxy set
+// changed) must answer with a graceful RU error and never touch the network.
+func TestHandleCheburcheckHost_UnknownKeyGraceful(t *testing.T) {
+	ft, api := newFakeTelegramBot(t)
+	b := &Bot{
+		api:     api,
+		ctx:     context.Background(),
+		targets: []ChatTarget{{ChatID: 12345}},
+		source: &mockSource{metrics: []metrics.ProxyMetric{
+			{Name: "P", StableID: "p", Address: "1.2.3.4:443", Protocol: "vless"},
+		}},
+		tracker:     NewAlertTracker(),
+		eventBuffer: NewEventBuffer(),
+		// cheburClient stays nil: with the reverse lookup failing first, the
+		// client seam must never be reached.
+	}
+
+	b.handleCheburcheckHost(12345, 10, "not-in-snapshot.example.com")
+
+	edits := ft.callsOf("editMessageText")
+	if len(edits) != 1 {
+		t.Fatalf("expected exactly one error edit, got %d", len(edits))
+	}
+	text, _ := edits[0].Params["text"].(string)
+	if !strings.Contains(text, "Хост не найден в текущей конфигурации") {
+		t.Errorf("expected graceful host-not-found message, got: %s", text)
 	}
 }
 
@@ -131,33 +163,159 @@ func TestHandleCheburcheckCommand_NoScanners_GracefulMessage(t *testing.T) {
 	}
 }
 
-// TestCheburcheckMenuButton_CallbackDataWithin64Bytes pins the hard Telegram
-// constraint: the Cheburcheck submenu button callback_data must stay within
-// 64 bytes even for the longest possible stableID (16 hex chars).
-// Wave D: the per-proxy Cheburcheck button moved from the Check-Host list
-// (sibling) into its own CheburMenuMarkup submenu — construction source
-// updated accordingly, the ≤64-byte pin itself survives unchanged.
-func TestCheburcheckMenuButton_CallbackDataWithin64Bytes(t *testing.T) {
-	longest := strings.Repeat("a", 16) // max models.GenerateStableID length
-	proxies := []metrics.ProxyMetric{
-		{Name: "Proxy One", StableID: longest, Address: "1.1.1.1:443", Protocol: "vless"},
+// TestCheburcheckHostButton_LongHostRoundTrip (replaces
+// TestCheburcheckMenuButton_CallbackDataWithin64Bytes — authorized rework,
+// wave G1): the chebur host button for a >36-byte host hashes via
+// HostCallbackKey to a short callback that (a) stays within Telegram's
+// 64-byte limit and (b) round-trips: tapping it resolves the ORIGINAL host
+// through the snapshot reverse lookup and probes it.
+func TestCheburcheckHostButton_LongHostRoundTrip(t *testing.T) {
+	longHost := strings.Repeat("z", 50) + ".example.com"
+
+	var mu sync.Mutex
+	var checkTargets []string
+	chebMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if r.URL.Path == "/check" {
+			checkTargets = append(checkTargets, r.URL.Query().Get("target"))
+		}
+		mu.Unlock()
+		switch {
+		case r.URL.Path == "/check":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "job77"})
+		case r.URL.Path == "/probe/job77":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(
+				"event: started\ndata: {\"id\":\"job77\",\"target\":\"h\",\"online_probes\":1}\n\n" +
+					"event: result\ndata: {\"job_id\":\"j\",\"probe_id\":\"p1\",\"cached\":false,\"verdicts\":[\"ok\"]}\n\n" +
+					"event: done\ndata: {\"id\":\"job77\",\"status\":\"finished\",\"response_count\":1,\"online_probes\":1}\n\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer chebMock.Close()
+
+	chebClient := checker.NewCheburcheckClient(chebMock.URL, 5*time.Second, []checker.ScannerCred{
+		{Name: "test-scanner", Token: "tok-1"},
+	})
+
+	ft, api := newFakeTelegramBot(t)
+	b := &Bot{
+		api:     api,
+		ctx:     context.Background(),
+		targets: []ChatTarget{{ChatID: 12345}},
+		source: &mockSource{metrics: []metrics.ProxyMetric{
+			{Name: "Long", StableID: "long", Address: longHost + ":443", Protocol: "vless"},
+		}},
+		tracker:      NewAlertTracker(),
+		eventBuffer:  NewEventBuffer(),
+		cheburClient: chebClient,
 	}
-	markup := CheburMenuMarkup(proxies)
-	if markup == nil {
-		t.Fatal("nil markup")
-	}
-	foundChebur := false
+
+	markup := CheburMenuMarkup([]string{longHost}, 1, 1)
+	var cb string
 	for _, row := range markup.InlineKeyboard {
 		for _, btn := range row {
-			if len(btn.CallbackData) > 64 {
-				t.Errorf("callback_data exceeds 64 bytes: %q (%d bytes)", btn.CallbackData, len(btn.CallbackData))
-			}
-			if btn.CallbackData == "menu:chebur:"+longest {
-				foundChebur = true
+			if strings.HasPrefix(btn.CallbackData, "menu:cheburh:") {
+				cb = btn.CallbackData
 			}
 		}
 	}
-	if !foundChebur {
-		t.Fatalf("expected a menu:chebur:%s button in the Cheburcheck submenu", longest)
+	if cb == "" {
+		t.Fatal("expected a menu:cheburh: host button in the Cheburcheck submenu")
+	}
+	if len(cb) > 64 {
+		t.Fatalf("callback_data exceeds 64 bytes: %q (%d bytes)", cb, len(cb))
+	}
+	if cb == "menu:cheburh:"+longHost {
+		t.Errorf("a >36-byte host must be hashed via HostCallbackKey, not embedded raw")
+	}
+	if want := "menu:cheburh:" + HostCallbackKey(longHost); cb != want {
+		t.Fatalf("expected callback %q, got %q", want, cb)
+	}
+
+	// Round-trip: tapping the hashed-key button probes the ORIGINAL host.
+	b.handleCheburcheckHost(12345, 10, strings.TrimPrefix(cb, "menu:cheburh:"))
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got []string
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		got = append([]string(nil), checkTargets...)
+		mu.Unlock()
+		if len(got) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(got) != 1 || got[0] != longHost {
+		t.Fatalf("expected the hashed-key tap to probe the original host %s, got %v", longHost, got)
+	}
+	if edits := ft.callsOf("editMessageText"); len(edits) == 0 {
+		t.Fatal("expected the report edit after the probe")
+	}
+}
+
+// TestCheburProbeIconCDNFamilyIsInfo (wave G reconciliation): the deep-diag
+// per-scanner icon treats the informational CDN family (cdn_block/whitelist)
+// as ℹ️ — never ⛔; only the real restrictions (sni_block/tspu_block/
+// dns_spoofing) are ⛔; ok ✅; unknown/empty ❓.
+func TestCheburProbeIconCDNFamilyIsInfo(t *testing.T) {
+	cases := []struct {
+		verdicts []string
+		want     string
+	}{
+		{[]string{"cdn_block"}, "ℹ️"},
+		{[]string{"whitelist"}, "ℹ️"},
+		{[]string{"ok", "cdn_block"}, "ℹ️"},
+		{[]string{"sni_block"}, "⛔"},
+		{[]string{"tspu_block"}, "⛔"},
+		{[]string{"dns_spoofing"}, "⛔"},
+		{[]string{"ok"}, "✅"},
+		{[]string{"ok", "sni_block"}, "⛔"},
+		{nil, "❓"},
+		{[]string{"unknown_kind"}, "❓"},
+	}
+	for _, tc := range cases {
+		if got := cheburProbeIcon(tc.verdicts); got != tc.want {
+			t.Errorf("cheburProbeIcon(%v) = %s, want %s", tc.verdicts, got, tc.want)
+		}
+	}
+}
+
+// TestFormatCheburDiagBlock_CountsLine (wave G reconciliation): the deep-diag
+// chebur block surfaces the counts line (KindCounts / OnlineProbes /
+// Answered) in addition to the verdict and the per-scanner lines.
+func TestFormatCheburDiagBlock_CountsLine(t *testing.T) {
+	cheb := &checker.CheburcheckSummary{
+		Target:       "example.com",
+		OnlineProbes: 4,
+		Answered:     3,
+		KindCounts:   map[string]int{"ok": 2, "cdn_block": 1, "sni_block": 2},
+		Results: []checker.CheburProbeResult{
+			{Name: "msk-1", Verdicts: []string{"ok", "cdn_block"}},
+			{Name: "spb-1", Verdicts: []string{"ok"}},
+			{Name: "kzn-1", Verdicts: []string{"sni_block"}},
+		},
+	}
+	block := formatCheburDiagBlock(cheb)
+	for _, want := range []string{
+		"Ответы: 3 из 4 сканеров",
+		"Доступен: 2",
+		"CDN-блокировка: 1",
+		"SNI Блок: 2",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("diag block missing %q, got: %s", want, block)
+		}
+	}
+	// The multi-verdict scanner (ok + cdn_block) renders ℹ️, never ⛔.
+	for _, line := range strings.Split(block, "\n") {
+		if strings.Contains(line, "msk-1") {
+			if !strings.Contains(line, "ℹ️") || strings.Contains(line, "⛔") {
+				t.Errorf("cdn_block scanner line must use ℹ️ (not ⛔), got: %s", line)
+			}
+		}
 	}
 }

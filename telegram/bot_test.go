@@ -76,7 +76,7 @@ func TestCheckHostMenuAndMarkup(t *testing.T) {
 		{Name: "Node-1", StableID: "id-1", Address: "1.1.1.1:443"},
 		{Name: "Node-2", StableID: "id-2", Address: "2.2.2.2:443"},
 	}
-	chMarkup := CheckHostMenuMarkup(proxies)
+	chMarkup := CheckHostMenuMarkup(proxies, 1, 1)
 	if chMarkup == nil || len(chMarkup.InlineKeyboard) < 2 {
 		t.Fatalf("expected rows in CheckHostMenuMarkup, got %v", chMarkup)
 	}

@@ -221,19 +221,17 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		b.editWithMarkup(chatID, msgID, b.getSubsText(), BackToSettingsMarkup())
 	case "menu:checkhost":
 		snapshot := b.source.MetricsSnapshot()
-		b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(), CheckHostMenuMarkup(snapshot))
+		b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(),
+			CheckHostMenuMarkup(snapshot, 1, menuTotalPages(len(snapshot), menuListPageSize)))
 	case "menu:chebur":
-		// EXACT match only (order invariant): the per-proxy probe route is the
-		// "menu:chebur:" prefix branch in the default clause below — a prefix
-		// rule without the trailing colon here would swallow menu:chebur:<id>.
+		// EXACT match only (order invariant): the per-host probe route is the
+		// "menu:cheburh:" prefix branch and the pager the "menu:cheburpg:"
+		// prefix branch in the default clause below — neither can collide with
+		// this bare exact case.
 		snapshot := b.source.MetricsSnapshot()
-		enabled := 0
-		for i := range snapshot {
-			if !snapshot[i].Disabled {
-				enabled++
-			}
-		}
-		b.editWithMarkup(chatID, msgID, b.getCheburMenuText(enabled), CheburMenuMarkup(snapshot))
+		hosts := cheburHostsFromSnapshot(snapshot)
+		b.editWithMarkup(chatID, msgID, b.getCheburMenuText(len(hosts)),
+			CheburMenuMarkup(hosts, 1, menuTotalPages(len(hosts), menuListPageSize)))
 	case "menu:checkhost_cfg":
 		b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
 	case "menu:checkhost:toggle_bg":
@@ -787,13 +785,41 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		} else if strings.HasPrefix(cb.Data, "menu:checkhost:run:") {
 			stableID := strings.TrimPrefix(cb.Data, "menu:checkhost:run:")
 			go b.handleCheckHostProxy(chatID, msgID, stableID)
-		} else if strings.HasPrefix(cb.Data, "menu:chebur:") {
-			// Order invariant: this prefix branch (with the trailing colon) is
-			// the per-proxy probe route; the submenu-open rule for the bare
-			// "menu:chebur" is an exact-match switch case and can never match
-			// here — keep both rules distinct if this routing is reworked.
-			stableID := strings.TrimPrefix(cb.Data, "menu:chebur:")
-			go b.handleCheburcheckProxy(chatID, msgID, stableID)
+		} else if strings.HasPrefix(cb.Data, "menu:cheburh:") {
+			// Wave G1: per-host probe route — resolve the HostCallbackKey back
+			// to the snapshot host and probe it. Order invariant: this prefix
+			// branch (and the menu:cheburpg: pager below) can never collide
+			// with the bare "menu:chebur" exact-match switch case above —
+			// keep both rules distinct if this routing is reworked.
+			hostKey := strings.TrimPrefix(cb.Data, "menu:cheburh:")
+			go b.handleCheburcheckHost(chatID, msgID, hostKey)
+		} else if strings.HasPrefix(cb.Data, "menu:cheburpg:") {
+			// Wave G4: Cheburcheck submenu pager. Pages clamp into range; the
+			// host list is recomputed from the current snapshot.
+			page, _ := strconv.Atoi(strings.TrimPrefix(cb.Data, "menu:cheburpg:"))
+			snapshot := b.source.MetricsSnapshot()
+			hosts := cheburHostsFromSnapshot(snapshot)
+			totalPages := menuTotalPages(len(hosts), menuListPageSize)
+			if page < 1 {
+				page = 1
+			}
+			if page > totalPages {
+				page = totalPages
+			}
+			b.editWithMarkup(chatID, msgID, b.getCheburMenuText(len(hosts)), CheburMenuMarkup(hosts, page, totalPages))
+		} else if strings.HasPrefix(cb.Data, "menu:checkhostpg:") {
+			// Wave G4: Check-Host submenu pager (replaces the wave-F overflow
+			// stub). Pages clamp into range.
+			page, _ := strconv.Atoi(strings.TrimPrefix(cb.Data, "menu:checkhostpg:"))
+			snapshot := b.source.MetricsSnapshot()
+			totalPages := menuTotalPages(len(snapshot), menuListPageSize)
+			if page < 1 {
+				page = 1
+			}
+			if page > totalPages {
+				page = totalPages
+			}
+			b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(), CheckHostMenuMarkup(snapshot, page, totalPages))
 		} else if strings.HasPrefix(cb.Data, "menu:interval:set:") {
 			secStr := strings.TrimPrefix(cb.Data, "menu:interval:set:")
 			if sec, err := strconv.Atoi(secStr); err == nil && sec >= 10 {

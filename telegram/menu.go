@@ -57,7 +57,7 @@ func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("🌐 Проверка Check-Host.net", "menu:checkhost"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🇷🇺 Cheburcheck РФ", "menu:chebur"),
+			btn("🧀 Cheburcheck РФ", "menu:chebur"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🖥 Ноды", "menu:nodes"),
@@ -654,31 +654,90 @@ func IntervalMenuMarkup(currentInterval int) *telego.InlineKeyboardMarkup {
 	)
 }
 
-// CheckHostMenuMarkup returns keyboard for selecting a proxy to test with Check-Host.
-func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMarkup {
-	var rows [][]telego.InlineKeyboardButton
-	limit := len(proxies)
-	if limit > 20 {
-		limit = 20
-	}
+// menuListPageSize caps the number of list items (proxies for the Check-Host
+// picker, unique hosts for the Cheburcheck picker) per screen. Wave G4:
+// pagination replaces the wave-F cap+stub approach.
+const menuListPageSize = 20
 
-	for i := 0; i < limit; i += 2 {
-		if i+1 < limit {
+// menuTotalPages computes the page count for a paginated menu list.
+func menuTotalPages(total, pageSize int) int {
+	if total <= 0 || pageSize <= 0 {
+		return 1
+	}
+	return (total + pageSize - 1) / pageSize
+}
+
+// menuPageSlice returns the items of one paginated page, with the page
+// defensively clamped into [1, totalPages].
+func menuPageSlice[T any](items []T, page, totalPages int) []T {
+	if page < 1 {
+		page = 1
+	}
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * menuListPageSize
+	if start > len(items) {
+		start = len(items)
+	}
+	end := start + menuListPageSize
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[start:end]
+}
+
+// menuPaginationRow renders the «⬅️ · Стр. N/M · ➡️» row for paginated picker
+// menus; prev/next emit the given callback-route prefix for their target page
+// (or the routable menu:noop placeholder «·» when the direction is
+// unavailable). Wave G4.
+func menuPaginationRow(routePrefix string, page, totalPages int) []telego.InlineKeyboardButton {
+	var prevBtn telego.InlineKeyboardButton
+	if page > 1 {
+		prevBtn = btn("⬅️", fmt.Sprintf("%s%d", routePrefix, page-1))
+	} else {
+		prevBtn = btn("·", "menu:noop")
+	}
+	var nextBtn telego.InlineKeyboardButton
+	if page < totalPages {
+		nextBtn = btn("➡️", fmt.Sprintf("%s%d", routePrefix, page+1))
+	} else {
+		nextBtn = btn("·", "menu:noop")
+	}
+	return []telego.InlineKeyboardButton{
+		prevBtn,
+		btn(fmt.Sprintf("Стр. %d/%d", page, totalPages), "menu:noop"),
+		nextBtn,
+	}
+}
+
+// CheckHostMenuMarkup returns keyboard for selecting a proxy to test with
+// Check-Host. Wave G4: the former 20-item cap + «...и ещё» overflow stub is
+// replaced by pagination — menuListPageSize items per screen (2 per row) and
+// a «⬅️ ➡️ Стр. N/M» row (menu:checkhostpg:<page> routes) when more than one
+// page exists.
+func CheckHostMenuMarkup(proxies []metrics.ProxyMetric, page, totalPages int) *telego.InlineKeyboardMarkup {
+	pageProxies := menuPageSlice(proxies, page, totalPages)
+
+	var rows [][]telego.InlineKeyboardButton
+	for i := 0; i < len(pageProxies); i += 2 {
+		if i+1 < len(pageProxies) {
 			rows = append(rows, tu.InlineKeyboardRow(
-				btn(truncateButtonText(proxies[i].Name, 24), "menu:checkhost:run:"+proxies[i].StableID),
-				btn(truncateButtonText(proxies[i+1].Name, 24), "menu:checkhost:run:"+proxies[i+1].StableID),
+				btn(truncateButtonText(pageProxies[i].Name, 24), "menu:checkhost:run:"+pageProxies[i].StableID),
+				btn(truncateButtonText(pageProxies[i+1].Name, 24), "menu:checkhost:run:"+pageProxies[i+1].StableID),
 			))
 		} else {
 			rows = append(rows, tu.InlineKeyboardRow(
-				btn(truncateButtonText(proxies[i].Name, 24), "menu:checkhost:run:"+proxies[i].StableID),
+				btn(truncateButtonText(pageProxies[i].Name, 24), "menu:checkhost:run:"+pageProxies[i].StableID),
 			))
 		}
 	}
 
-	if len(proxies) > 20 {
-		rows = append(rows, tu.InlineKeyboardRow(
-			btn(fmt.Sprintf("...и ещё %d прокси-хостов (проверьте через /checkhost)", len(proxies)-20), "menu:noop"),
-		))
+	if totalPages > 1 {
+		rows = append(rows, menuPaginationRow("menu:checkhostpg:", page, totalPages))
 	}
 
 	rows = append(rows, tu.InlineKeyboardRow(
@@ -688,44 +747,31 @@ func CheckHostMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMa
 	return tu.InlineKeyboard(rows...)
 }
 
-// cheburMenuProxyCap caps the Cheburcheck proxy list per screen (mirrors the
-// CheckHostMenuMarkup cap of 20).
-const cheburMenuProxyCap = 20
+// CheburMenuMarkup returns keyboard for selecting a host for the active RF
+// blocking probe (Cheburcheck). Wave G1: the list is UNIQUE bare hosts
+// (cheburHostsFromSnapshot — port stripped, protocol-agnostic dedup, sorted),
+// since Cheburcheck probes hosts and has no port concept; buttons carry
+// menu:cheburh:<HostCallbackKey(host)> (host keys hash over 36 bytes,
+// test-pinned ≤64). Wave G4: the wave-F cap+stub is replaced by pagination.
+func CheburMenuMarkup(hosts []string, page, totalPages int) *telego.InlineKeyboardMarkup {
+	pageHosts := menuPageSlice(hosts, page, totalPages)
 
-// CheburMenuMarkup returns keyboard for selecting a proxy for the active
-// RF blocking probe (Cheburcheck). Layout mirrors the original Check-Host
-// list: two proxies per row, disabled proxies skipped, navigation row last.
-// Wave-F B4: the list is capped at 20 enabled proxies per screen with an
-// overflow note row (routable menu:noop, same mechanism as CheckHostMenuMarkup).
-// Buttons carry menu:chebur:<stableID> (12 + stableID ≤ 64-byte
-// callback_data limit — test-pinned).
-func CheburMenuMarkup(proxies []metrics.ProxyMetric) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
-	var currentRow []telego.InlineKeyboardButton
-	enabledTotal := 0
-	for i := range proxies {
-		if proxies[i].Disabled {
-			continue
+	for i := 0; i < len(pageHosts); i += 2 {
+		if i+1 < len(pageHosts) {
+			rows = append(rows, tu.InlineKeyboardRow(
+				btn("🧀 "+truncateButtonText(pageHosts[i], 28), "menu:cheburh:"+HostCallbackKey(pageHosts[i])),
+				btn("🧀 "+truncateButtonText(pageHosts[i+1], 28), "menu:cheburh:"+HostCallbackKey(pageHosts[i+1])),
+			))
+		} else {
+			rows = append(rows, tu.InlineKeyboardRow(
+				btn("🧀 "+truncateButtonText(pageHosts[i], 28), "menu:cheburh:"+HostCallbackKey(pageHosts[i])),
+			))
 		}
-		enabledTotal++
-		if enabledTotal > cheburMenuProxyCap {
-			continue // keep counting, stop emitting buttons
-		}
-		currentRow = append(currentRow,
-			btn(truncateButtonText(proxies[i].Name, 24), "menu:chebur:"+proxies[i].StableID))
-		if len(currentRow) == 2 {
-			rows = append(rows, currentRow)
-			currentRow = nil
-		}
-	}
-	if len(currentRow) > 0 {
-		rows = append(rows, currentRow)
 	}
 
-	if enabledTotal > cheburMenuProxyCap {
-		rows = append(rows, tu.InlineKeyboardRow(
-			btn(fmt.Sprintf("...и ещё %d прокси — используйте /cheburcheck <хост>", enabledTotal-cheburMenuProxyCap), "menu:noop"),
-		))
+	if totalPages > 1 {
+		rows = append(rows, menuPaginationRow("menu:cheburpg:", page, totalPages))
 	}
 
 	rows = append(rows, tu.InlineKeyboardRow(

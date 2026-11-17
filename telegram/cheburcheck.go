@@ -10,7 +10,6 @@ import (
 	"github.com/mymmrac/telego"
 
 	"xray-checker/checker"
-	"xray-checker/metrics"
 )
 
 // resolveCheburClient returns the injected client or lazily builds the default
@@ -72,28 +71,34 @@ func (b *Bot) handleCheburcheckCommand(msg *telego.Message) {
 	}
 }
 
-// handleCheburcheckProxy runs the active probe for one proxy looked up by its
-// stableID (menu:chebur:<stableID> button). The bare server host is probed —
-// cheburcheck has no port concept (UDP protocols included).
-func (b *Bot) handleCheburcheckProxy(chatID int64, msgID int, stableID string) {
+// handleCheburcheckHost runs the active probe for one host resolved from a
+// menu:cheburh:<HostCallbackKey> button: the key is reverse-looked-up against
+// the snapshot's unique hosts (same HostCallbackKey round-trip as the toggle
+// host route) and the bare host is probed directly — cheburcheck has no port
+// concept (UDP protocols included).
+func (b *Bot) handleCheburcheckHost(chatID int64, msgID int, hostKey string) {
 	seq := b.nextMsgSeq(chatID, msgID)
-	snapshot := b.source.MetricsSnapshot()
-	var targetProxy *metrics.ProxyMetric
-	for i := range snapshot {
-		if snapshot[i].StableID == stableID {
-			targetProxy = &snapshot[i]
-			break
+
+	var host string
+	if b.source != nil {
+		for _, pm := range b.source.MetricsSnapshot() {
+			if pm.Disabled || pm.Address == "" {
+				continue
+			}
+			h, _, splitErr := net.SplitHostPort(pm.Address)
+			if splitErr != nil || h == "" {
+				h = pm.Address
+			}
+			if HostCallbackKey(h) == hostKey {
+				host = h
+				break
+			}
 		}
 	}
 
-	if targetProxy == nil {
-		b.editWithMarkup(chatID, msgID, "❌ Прокси не найден в текущей конфигурации.", BackToMenuMarkup())
+	if host == "" {
+		b.editWithMarkup(chatID, msgID, "❌ Хост не найден в текущей конфигурации.", BackToMenuMarkup())
 		return
-	}
-
-	host, _, splitErr := net.SplitHostPort(targetProxy.Address)
-	if splitErr != nil || host == "" {
-		host = targetProxy.Address
 	}
 
 	chebClient := b.resolveCheburClient()
@@ -103,9 +108,8 @@ func (b *Bot) handleCheburcheckProxy(chatID int64, msgID int, stableID string) {
 	}
 
 	b.editWithMarkup(chatID, msgID, fmt.Sprintf("⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
-		"Активный пробинг <b>%s</b> (<code>%s</code>) со сканеров РФ...\n"+
-		"Пожалуйста, подождите 5–20 секунд...",
-		escapeHTML(targetProxy.Name), escapeHTML(host)), BackToMenuMarkup())
+		"Активный пробинг <code>%s</code> со сканеров РФ...\n"+
+		"Пожалуйста, подождите 5–20 секунд...", escapeHTML(host)), BackToMenuMarkup())
 
 	ctx, cancel := context.WithTimeout(b.ctx, 20*time.Second)
 	defer cancel()
