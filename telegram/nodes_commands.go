@@ -216,10 +216,12 @@ func (b *Bot) handleNodeAdd(msg *telego.Message, rawName string) {
 	reportURL := b.getMasterReportURL()
 	text := buildNodeRegisteredText(name, token, reportURL)
 
+	// Wave H2 (decision D4): the «📋 Подписки нод» entry to the removed
+	// global subs screen is gone — node subscriptions are managed via the
+	// per-node cfg screen (menu:nodes:cfg:<n> → «📋 Подписки ноды»).
 	markup := tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
 			btn("🩺 Проверить связь", "menu:nodes:health"),
-			btn("📋 Подписки нод", "menu:nodes:subs"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🔙 К списку нод", "menu:nodes"),
@@ -343,15 +345,19 @@ func (b *Bot) handleNodeAddSubURL(msg *telego.Message, node string, rawURL strin
 		"URL: <code>%s</code>\n\n"+
 		"Нода применит её и начнёт проверку прокси при следующем отчёте.",
 		escapeHTML(node), escapeHTML(rawURL))
-	markup := tu.InlineKeyboard(
-		tu.InlineKeyboardRow(
-			btn(fmt.Sprintf("📋 К подпискам %s", node), fmt.Sprintf("menu:nodes:subnode:%s", node)),
-		),
-		tu.InlineKeyboardRow(
-			btn("🔙 К списку нод", "menu:nodes:subs"),
-			btn("⚙️ Глобальные настройки нод", "menu:nodes:settings"),
-		),
-	)
+	// Wave H2 (decision D4): the back button targets the per-node subs manage
+	// screen (the only subs surface now); composed via cbNodeCfg — omitted
+	// when the node name would overflow the 64-byte callback limit.
+	var rows [][]telego.InlineKeyboardButton
+	if cb, ok := cbNodeCfg("menu:nodes:subnode:", node); ok {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn(fmt.Sprintf("📋 К подпискам %s", node), cb),
+		))
+	}
+	rows = append(rows, tu.InlineKeyboardRow(
+		btn("⚙️ Глобальные настройки нод", "menu:nodes:settings"),
+	))
+	markup := tu.InlineKeyboard(rows...)
 	t := targetFromMessage(msg)
 	b.sendOrUpdateMenu(t, text, markup)
 }

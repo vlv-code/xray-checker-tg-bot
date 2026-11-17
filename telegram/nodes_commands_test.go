@@ -140,7 +140,11 @@ func TestGenerateNodeToken(t *testing.T) {
 	}
 }
 
-func TestNodesSubsViews(t *testing.T) {
+// TestNodesSubsManageView (replaces TestNodesSubsViews — authorized register
+// entry, decision D4: the global «Подписки нод» list screen was removed; the
+// per-node manage view is the only subs surface and is reached from the
+// per-node cfg screen).
+func TestNodesSubsManageView(t *testing.T) {
 	fnm := &fakeNodeManager{
 		nodes: map[string]string{"m31a": "tok1", "msk-1": "tok2"},
 		subs: map[string][]string{
@@ -148,14 +152,6 @@ func TestNodesSubsViews(t *testing.T) {
 		},
 	}
 	b := &Bot{nodeMgr: fnm}
-	text, markup := b.getNodesSubsListView()
-	if !strings.Contains(text, "Управление подписками нод") {
-		t.Errorf("expected header in list view text: %s", text)
-	}
-	if markup == nil || len(markup.InlineKeyboard) < 2 {
-		t.Fatalf("expected markup with node buttons, got %v", markup)
-	}
-
 	manageText, manageMarkup := b.getNodeSubsManageView("m31a")
 	if !strings.Contains(manageText, "m31a") || !strings.Contains(manageText, "https://sub.url/1") {
 		t.Errorf("expected node details in manage view text: %s", manageText)
@@ -226,14 +222,16 @@ func TestNodeSubsCallbacks(t *testing.T) {
 		t.Errorf("expected waitingNodeSub to be m31a, got %q", b.waitingNodeSub[123])
 	}
 
-	// 2. menu:nodes:subs clears waitingNodeSub
+	// 2. menu:nodes:subnode:m31a clears waitingNodeSub (Wave H2/D4 register:
+	// the former menu:nodes:subs disarm route was removed; the manage screen
+	// re-entry keeps the same disarm semantics)
 	b.handleCallbackQuery(&telego.CallbackQuery{
 		ID:      "q2",
-		Data:    "menu:nodes:subs",
+		Data:    "menu:nodes:subnode:m31a",
 		Message: cbMsg,
 	})
 	if b.waitingNodeSub[123] != "" {
-		t.Errorf("expected waitingNodeSub to be cleared on menu:nodes:subs, got %q", b.waitingNodeSub[123])
+		t.Errorf("expected waitingNodeSub to be cleared on menu:nodes:subnode:m31a, got %q", b.waitingNodeSub[123])
 	}
 
 	// 3. menu:nodes:delsub:m31a:0 removes the subscription

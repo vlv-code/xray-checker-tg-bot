@@ -37,6 +37,7 @@ func isMutatingCallback(data string) bool {
 	}
 	return strings.HasPrefix(data, "menu:nodes:delsub:") ||
 		strings.HasPrefix(data, "menu:nodes:ncfg:") ||
+		strings.HasPrefix(data, "menu:nodes:nx:") ||
 		strings.HasPrefix(data, "menu:nodes:nreset:") ||
 		strings.HasPrefix(data, "menu:nodes:ren:") ||
 		strings.HasPrefix(data, "menu:nodes:tg:") ||
@@ -55,6 +56,7 @@ func isToastCallbackData(data string) bool {
 	return strings.HasPrefix(data, "menu:toggle_proxy:") ||
 		strings.HasPrefix(data, "menu:toggle_host:") ||
 		strings.HasPrefix(data, "menu:nodes:ncfg:") ||
+		strings.HasPrefix(data, "menu:nodes:nx:") ||
 		strings.HasPrefix(data, "menu:nodes:nreset:") ||
 		strings.HasPrefix(data, "menu:nodes:ren:") ||
 		strings.HasPrefix(data, "menu:nodes:tg:") ||
@@ -293,6 +295,15 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			b.editWithMarkup(chatID, msgID, text, markup)
 		}()
 	case "menu:nodes", "menu:nodes:refresh":
+		// Wave H2 navigation tree (decision D4 — the global «Подписки нод»
+		// screen route menu:nodes:subs is REMOVED; node subscriptions live
+		// only in the per-node manage screen):
+		//   menu:nodes → menu:nodes:cfg (picker) → menu:nodes:cfg:<n> (node screen)
+		//     ├─ menu:nodes:subnode:<n> (subs manage; back → menu:nodes:cfg:<n>;
+		//     │    addsub cancel → menu:nodes:subnode:<n>, fallback menu:nodes:cfg)
+		//     └─ menu:nodes:excl:<n> (per-proxy exclusions; back → menu:nodes:cfg:<n>;
+		//          pager menu:nodes:exclpg:<key>:<page>,
+		//          toggle menu:nodes:nx:<key>:<idx>:<page>)
 		b.editWithMarkup(chatID, msgID, b.getNodesMainView(), NodesMainMenuMarkup())
 	case "menu:nodes:add":
 		b.waitingNodeAddMu.Lock()
@@ -330,14 +341,6 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		}
 		b.waitingNodeAddMu.Unlock()
 		text, markup := b.getNodesCfgListView()
-		b.editWithMarkup(chatID, msgID, text, markup)
-	case "menu:nodes:subs":
-		b.waitingNodeAddMu.Lock()
-		if b.waitingNodeSub != nil {
-			delete(b.waitingNodeSub, chatID)
-		}
-		b.waitingNodeAddMu.Unlock()
-		text, markup := b.getNodesSubsListView()
 		b.editWithMarkup(chatID, msgID, text, markup)
 	case "menu:nodes:toggle_sync":
 		_ = b.updateConfig(func(c *BotConfig) {
@@ -378,10 +381,11 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				escapeHTML(nodeName), escapeHTML(nodeName))
 			// Wave-F B2: the cancel button is composed via cbNodeCfg; if the
 			// node name would overflow the 64-byte limit, fall back to the
-			// static node-subs list route so the row never dies.
+			// static node-cfg picker so the row never dies (Wave H2/D4: the
+			// former menu:nodes:subs fallback route is removed).
 			cancelCb, cancelOK := cbNodeCfg("menu:nodes:subnode:", nodeName)
 			if !cancelOK {
-				cancelCb = "menu:nodes:subs"
+				cancelCb = "menu:nodes:cfg"
 			}
 			b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
 				tu.InlineKeyboardRow(
@@ -427,8 +431,38 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			text, markup := b.getNodeCfgScreen(nodeName)
 			b.editWithMarkup(chatID, msgID, text, markup)
 		} else if strings.HasPrefix(cb.Data, "menu:nodes:excl:") {
+			// Wave H1: the exclusions screen is now a FUNCTIONAL per-proxy
+			// toggle list (was a read-only view); page 1 on entry. Node names
+			// may contain ':' (NODES env) — no idx/page suffix here, so the
+			// whole remainder is the name.
 			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:excl:")
-			text, markup := b.getNodeExclusionsView(nodeName)
+			text, markup := b.getNodeExclusionsView(nodeName, 1, "")
+			b.editWithMarkup(chatID, msgID, text, markup)
+		} else if strings.HasPrefix(cb.Data, "menu:nodes:nx:") {
+			// Wave H1: per-proxy exclusion toggle. Mutating (admin-gated via
+			// isMutatingCallback) and self-toasting (isToastCallbackData);
+			// writes only through updateConfig — see handleNodeExclToggle.
+			b.handleNodeExclToggle(chatID, msgID, cb, cb.Data)
+		} else if strings.HasPrefix(cb.Data, "menu:nodes:exclpg:") {
+			// Wave H1: exclusions screen pager. View route — not gated, not
+			// self-toasting. Pages clamp into range inside the view.
+			rest := strings.TrimPrefix(cb.Data, "menu:nodes:exclpg:")
+			sep := strings.LastIndex(rest, ":")
+			if sep == -1 {
+				return
+			}
+			page, err := strconv.Atoi(rest[sep+1:])
+			if err != nil {
+				return
+			}
+			node := b.nodeByKey(rest[:sep])
+			if node == "" {
+				if b.api != nil {
+					_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("❌ Нода не найдена"))
+				}
+				return
+			}
+			text, markup := b.getNodeExclusionsView(node, page, "")
 			b.editWithMarkup(chatID, msgID, text, markup)
 		} else if strings.HasPrefix(cb.Data, "menu:nodes:ncfg:") {
 			// Mutating (admin-gated via isMutatingCallback): apply one setting

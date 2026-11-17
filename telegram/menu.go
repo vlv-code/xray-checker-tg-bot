@@ -143,51 +143,15 @@ func NodesSettingsMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 		tu.InlineKeyboardRow(
 			btn(proxyAlertsStatus, "menu:nodes:toggle_proxy_alerts"),
 		),
-		tu.InlineKeyboardRow(
-			btn("📋 Подписки нод", "menu:nodes:subs"),
-		),
+		// Wave H2 (decision D4): the «📋 Подписки нод» entry to the global
+		// subs screen (menu:nodes:subs) is removed — node subscriptions are
+		// managed ONLY via the per-node cfg screen (menu:nodes:cfg:<n> →
+		// «📋 Подписки ноды»).
 		tu.InlineKeyboardRow(
 			btn("🔙 К нодам", "menu:nodes"),
 			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
-}
-
-// NodeSubListItem holds a node name and count of assigned subscriptions.
-type NodeSubListItem struct {
-	Name     string
-	SubCount int
-}
-
-// NodesSubsListMarkup returns keyboard with a button for each node and navigation buttons.
-// Wave-F B2: node buttons are composed via cbNodeCfg; a node whose callback
-// would exceed the 64-byte limit is omitted and one routable hint row
-// (menu:noop) points to the /nodesubs command path.
-func NodesSubsListMarkup(nodes []NodeSubListItem) *telego.InlineKeyboardMarkup {
-	var rows [][]telego.InlineKeyboardButton
-	omitted := 0
-	for _, n := range nodes {
-		cb, ok := cbNodeCfg("menu:nodes:subnode:", n.Name)
-		if !ok {
-			omitted++
-			continue
-		}
-		rows = append(rows, tu.InlineKeyboardRow(
-			btn(fmt.Sprintf("🖥 %s (%d подп.)", n.Name, n.SubCount), cb),
-		))
-	}
-	if omitted > 0 {
-		rows = append(rows, tu.InlineKeyboardRow(
-			btn("ℹ️ длинное имя ноды — используйте /nodesubs", "menu:noop"),
-		))
-	}
-	rows = append(rows,
-		tu.InlineKeyboardRow(
-			btn("🔙 К глобальным настройкам", "menu:nodes:settings"),
-			btn("🏠 Главное меню", "menu:main"),
-		),
-	)
-	return tu.InlineKeyboard(rows...)
 }
 
 // NodeSubsManageMarkup returns keyboard to manage subscriptions for a specific node.
@@ -221,12 +185,16 @@ func NodeSubsManageMarkup(node string, subs []ManagedSubInfo) *telego.InlineKeyb
 			btn("ℹ️ длинное имя ноды — используйте /nodesubs", "menu:noop"),
 		))
 	}
-	rows = append(rows,
-		tu.InlineKeyboardRow(
-			btn("🔙 К списку нод", "menu:nodes:subs"),
-			btn("⚙️ Глобальные настройки нод", "menu:nodes:settings"),
-		),
-	)
+	// Wave H2 (decision D4): the back row returns to the per-node cfg screen
+	// (menu:nodes:cfg:<node>) instead of the removed global subs screen; the
+	// back button is omitted via cbNodeCfg when the name would overflow the
+	// 64-byte limit (the /nodesubs hint row above stays the command path).
+	var backRow []telego.InlineKeyboardButton
+	if cb, ok := cbNodeCfg("menu:nodes:cfg:", node); ok {
+		backRow = append(backRow, btn("🔙 К настройкам ноды", cb))
+	}
+	backRow = append(backRow, btn("⚙️ Глобальные настройки нод", "menu:nodes:settings"))
+	rows = append(rows, tu.InlineKeyboardRow(backRow...))
 	return tu.InlineKeyboard(rows...)
 }
 

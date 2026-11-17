@@ -1272,37 +1272,17 @@ func (b *Bot) getNodesSettingsView() string {
 		syncStr, alertsStr, proxyAlertsStr, cfg.NodeStaleTimeoutSec)
 }
 
-func (b *Bot) getNodesSubsListView() (string, *telego.InlineKeyboardMarkup) {
-	if b.nodeMgr == nil {
-		return "📋 <b>Управление подписками нод</b>\n\nНоды не настроены.", NodesSubsListMarkup(nil)
-	}
-	nodes := b.nodeMgr.Nodes()
-	if len(nodes) == 0 {
-		return "📋 <b>Управление подписками нод</b>\n\nНет подключенных нод.\nСначала подключите ноду через меню нод (<code>/nodeadd</code>).", NodesSubsListMarkup(nil)
-	}
-
-	var items []NodeSubListItem
-	for _, n := range nodes {
-		subs, _ := b.nodeMgr.ManagedSubs(n.Name)
-		items = append(items, NodeSubListItem{
-			Name:     n.Name,
-			SubCount: len(subs),
-		})
-	}
-
-	text := "📋 <b>Управление подписками нод</b>\n\n" +
-		"Выберите ноду, чтобы посмотреть назначенные подписки, добавить новую или удалить существующие:"
-
-	return text, NodesSubsListMarkup(items)
-}
-
+// getNodeSubsManageView renders one node's subscription manage screen — the
+// ONLY subs surface since Wave H2 (decision D4 removed the global
+// «Подписки нод» screen; entry is the per-node cfg screen). Unknown-node and
+// no-manager errors fall back to the node-cfg picker markup.
 func (b *Bot) getNodeSubsManageView(nodeName string) (string, *telego.InlineKeyboardMarkup) {
 	if b.nodeMgr == nil {
-		return "Ноды не настроены.", NodesSubsListMarkup(nil)
+		return "Ноды не настроены.", NodesCfgListMarkup(nil)
 	}
 	subs, err := b.nodeMgr.ManagedSubs(nodeName)
 	if err != nil {
-		return "❌ " + escapeHTML(err.Error()), NodesSubsListMarkup(nil)
+		return "❌ " + escapeHTML(err.Error()), NodesCfgListMarkup(nil)
 	}
 
 	var sb strings.Builder

@@ -109,7 +109,7 @@ Run additional lightweight checker node instances anywhere in the world (VPS, ho
   - The bot automatically generates a secure 64-hex bearer token and replies with a copy-pasteable **`docker run`** command and **Docker Compose** block.
   - Nodes are hot-registered on the master and saved to `/app/data/nodes.json` (persists across restarts and container rebuilds).
 - **Interactive Subscription Management**:
-  - Open **`[ 🖥 Ноды ]`** ➔ **`[ ⚙️ Настройки нод ]`** ➔ **`[ 📋 Подписки нод ]`**.
+  - Open **`[ 🖥 Ноды ]`** ➔ **`[ ⚙️ Настройки нод ]`** ➔ select a node ➔ **`[ 📋 Подписки ноды ]`**.
   - Select any node to inspect its assigned subscriptions, proxy counts from its latest report, and delete subscriptions with 1-click (`[ 🗑 Удалить: #N ]`).
   - Assign new subscriptions with **`[ ➕ Назначить подписку ]`** by simply sending the subscription URL in chat.
   - Subscriptions are dynamically synced to the node upon its next report cycle.

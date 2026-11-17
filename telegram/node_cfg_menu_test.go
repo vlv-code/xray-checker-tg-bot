@@ -530,39 +530,48 @@ func TestMenuNodesCfgCallback64ByteGuard(t *testing.T) {
 	}
 }
 
-// TestMenuNodesExclView: the read-only exclusions view lists the node's
-// excluded proxy display names (resolved from the namespaced stable IDs) and
-// links back to the per-node settings screen; foreign-node entries stay out.
-func TestMenuNodesExclView(t *testing.T) {
+// TestMenuNodesExclRouteRendersFunctionalList (Wave H1 — replaces the former
+// read-only view pin TestMenuNodesExclView, authorized register entry: the
+// exclusions screen became a functional per-proxy toggle list per decision
+// D1, and the «только в мастер-экранах» hint is gone; the full behavior
+// matrix lives in node_excl_toggle_test.go). This pins the ROUTE branch:
+// menu:nodes:excl:<name> renders the functional list with toggle rows and
+// back-to-node-screen navigation; foreign-node proxies stay out.
+func TestMenuNodesExclRouteRendersFunctionalList(t *testing.T) {
 	ft, api := newFakeTelegramBot(t)
 	mgr := newCfgRecordingManager("m31a")
 	b, cm := newCfgTestBot(t, api, nil, mgr)
 	_ = cm.Update(func(c *BotConfig) {
-		c.DisabledProxies = []string{"m31a/idx1", "m31a/idx2", "other/zzz"}
+		c.DisabledProxies = []string{"m31a/idx2", "other/zzz"}
 	})
 	b.source = &mockSource{metrics: []metrics.ProxyMetric{
-		{Name: "Alpha", StableID: "m31a/idx1", Address: "1.1.1.1:443", Protocol: "vless"},
-		{Name: "Beta", StableID: "m31a/idx2", Address: "2.2.2.2:443", Protocol: "vless"},
+		{Name: "Alpha", StableID: "m31a/idx1", Address: "1.1.1.1:443", Protocol: "vless", NodeName: "m31a"},
+		{Name: "Beta", StableID: "m31a/idx2", Address: "2.2.2.2:443", Protocol: "vless", NodeName: "m31a"},
 	}}
 
 	b.handleCallbackQuery(gateCallback(1001, "menu:nodes:excl:m31a"))
 
 	edits := ft.callsOf("editMessageText")
 	if len(edits) == 0 {
-		t.Fatalf("expected exclusions view render, got 0 edits")
+		t.Fatalf("expected exclusions screen render, got 0 edits")
 	}
 	text, _ := edits[0].Params["text"].(string)
-	for _, want := range []string{"Alpha", "Beta", "мастер"} {
+	for _, want := range []string{"Исключения ноды m31a", "Всего прокси: <b>2</b>", "Исключено: <b>1</b>"} {
 		if !strings.Contains(text, want) {
-			t.Errorf("expected exclusions view to contain %q, got: %s", want, text)
+			t.Errorf("expected exclusions screen text to contain %q, got: %s", want, text)
 		}
 	}
-	if strings.Contains(text, "zzz") {
-		t.Errorf("foreign-node exclusion must not be listed, got: %s", text)
+	if strings.Contains(text, "zzz") || strings.Contains(text, "Foreign") {
+		t.Errorf("foreign-node entries must not be listed, got: %s", text)
+	}
+	if strings.Contains(text, "только в мастер-экранах") {
+		t.Errorf("read-only master-screen hint must be gone, got: %s", text)
 	}
 
-	// Back button returns to the per-node settings screen.
-	_, markup := b.getNodeExclusionsView("m31a")
+	_, markup := b.getNodeExclusionsView("m31a", 1, "")
+	if !hasCallback(markup, "menu:nodes:nx:m31a:0:1") || !hasCallback(markup, "menu:nodes:nx:m31a:1:1") {
+		t.Errorf("expected toggle rows in exclusions markup, got %v", markupCallbacks(markup))
+	}
 	if !hasCallback(markup, "menu:nodes:cfg:m31a") {
 		t.Errorf("expected back callback menu:nodes:cfg:m31a, got %v", markupCallbacks(markup))
 	}

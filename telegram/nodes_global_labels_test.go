@@ -45,17 +45,9 @@ func TestNodesMenu_GlobalRenamedLabels(t *testing.T) {
 		t.Errorf("expected the menu:nodes:cfg row (%d) directly below the menu:nodes:settings row (%d)", cfgRow, settingsRow)
 	}
 
-	// 2. NodesSubsListMarkup: back button to the global screen renamed.
-	listMarkup := NodesSubsListMarkup(nil)
-	lastRow := listMarkup.InlineKeyboard[len(listMarkup.InlineKeyboard)-1]
-	if lastRow[0].CallbackData != "menu:nodes:settings" {
-		t.Errorf("expected back button callback menu:nodes:settings, got %s", lastRow[0].CallbackData)
-	}
-	if lastRow[0].Text != "🔙 К глобальным настройкам" {
-		t.Errorf("expected back button label «🔙 К глобальным настройкам», got %q", lastRow[0].Text)
-	}
-
-	// 3. NodeSubsManageMarkup: the global-screen shortcut button renamed.
+	// 2. NodeSubsManageMarkup: the global-screen shortcut button renamed
+	// (Wave H2/D4 register: the former NodesSubsListMarkup section was
+	// removed together with the global subs screen).
 	manageMarkup := NodeSubsManageMarkup("m31a", nil)
 	foundGlobal := false
 	for _, row := range manageMarkup.InlineKeyboard {
@@ -72,7 +64,7 @@ func TestNodesMenu_GlobalRenamedLabels(t *testing.T) {
 		t.Fatalf("expected NodeSubsManageMarkup to keep a menu:nodes:settings button")
 	}
 
-	// 4. getNodesSettingsView header (views.go render path) renamed.
+	// 3. getNodesSettingsView header (views.go render path) renamed.
 	cm, err := NewConfigManager(filepath.Join(t.TempDir(), "cfg.json"), BotConfig{})
 	if err != nil {
 		t.Fatal(err)

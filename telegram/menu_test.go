@@ -268,7 +268,9 @@ func TestNodesMarkups(t *testing.T) {
 		t.Errorf("expected settings button callback, got %s", nodesMenu.InlineKeyboard[3][0].CallbackData)
 	}
 
-	// 3. NodesSettingsMarkup
+	// 3. NodesSettingsMarkup (Wave H2/D4 register: the «📋 Подписки нод»
+	// entry to the removed global subs screen is gone — the markup must not
+	// emit menu:nodes:subs anywhere; the last row is the navigation row)
 	cfg := BotConfig{
 		NodeSyncEnabled:     true,
 		NodeAlertsEnabled:   true,
@@ -278,35 +280,20 @@ func TestNodesMarkups(t *testing.T) {
 	if len(setMenu.InlineKeyboard) < 4 {
 		t.Fatalf("expected at least 4 rows in NodesSettingsMarkup, got %d", len(setMenu.InlineKeyboard))
 	}
-	if setMenu.InlineKeyboard[3][0].CallbackData != "menu:nodes:subs" {
-		t.Errorf("expected menu:nodes:subs callback, got %s", setMenu.InlineKeyboard[3][0].CallbackData)
+	for _, row := range setMenu.InlineKeyboard {
+		for _, b := range row {
+			if b.CallbackData == "menu:nodes:subs" {
+				t.Errorf("removed route menu:nodes:subs must not be emitted by NodesSettingsMarkup")
+			}
+		}
+	}
+	lastSetRow := setMenu.InlineKeyboard[len(setMenu.InlineKeyboard)-1]
+	if lastSetRow[0].CallbackData != "menu:nodes" {
+		t.Errorf("expected nav row back to menu:nodes, got %s", lastSetRow[0].CallbackData)
 	}
 
-	// 4. NodesSubsListMarkup
-	subItems := []NodeSubListItem{
-		{Name: "m31a", SubCount: 2},
-		{Name: "msk-1", SubCount: 0},
-	}
-	listMarkup := NodesSubsListMarkup(subItems)
-	if len(listMarkup.InlineKeyboard) < 3 {
-		t.Fatalf("expected at least 3 rows in NodesSubsListMarkup, got %d", len(listMarkup.InlineKeyboard))
-	}
-	if listMarkup.InlineKeyboard[0][0].CallbackData != "menu:nodes:subnode:m31a" {
-		t.Errorf("expected menu:nodes:subnode:m31a, got %s", listMarkup.InlineKeyboard[0][0].CallbackData)
-	}
-	if !strings.Contains(listMarkup.InlineKeyboard[0][0].Text, "m31a (2 подп.)") {
-		t.Errorf("expected 'm31a (2 подп.)' in button text, got %s", listMarkup.InlineKeyboard[0][0].Text)
-	}
-	if listMarkup.InlineKeyboard[1][0].CallbackData != "menu:nodes:subnode:msk-1" {
-		t.Errorf("expected menu:nodes:subnode:msk-1, got %s", listMarkup.InlineKeyboard[1][0].CallbackData)
-	}
-	// Back button should lead to node settings
-	lastRow := listMarkup.InlineKeyboard[len(listMarkup.InlineKeyboard)-1]
-	if lastRow[0].CallbackData != "menu:nodes:settings" {
-		t.Errorf("expected back button to menu:nodes:settings, got %s", lastRow[0].CallbackData)
-	}
-
-	// 5. NodeSubsManageMarkup
+	// 4. NodeSubsManageMarkup (Wave H2/D4 register: former NodesSubsListMarkup
+	// section removed with the global subs screen)
 	nodeSubs := []ManagedSubInfo{
 		{URL: "https://sub.one/x", ProxyCount: 15},
 		{URL: "https://sub.two/y", ProxyCount: -1},
@@ -326,9 +313,13 @@ func TestNodesMarkups(t *testing.T) {
 	if manageMarkup.InlineKeyboard[2][0].CallbackData != "menu:nodes:addsub:m31a" {
 		t.Errorf("expected addsub callback, got %s", manageMarkup.InlineKeyboard[2][0].CallbackData)
 	}
-	// Back buttons
+	// Back buttons: per-node cfg screen + global settings (Wave H2/D4 — the
+	// former menu:nodes:subs back target is removed)
 	backRow := manageMarkup.InlineKeyboard[len(manageMarkup.InlineKeyboard)-1]
-	if backRow[0].CallbackData != "menu:nodes:subs" {
-		t.Errorf("expected back to menu:nodes:subs, got %s", backRow[0].CallbackData)
+	if backRow[0].CallbackData != "menu:nodes:cfg:m31a" {
+		t.Errorf("expected back to menu:nodes:cfg:m31a, got %s", backRow[0].CallbackData)
+	}
+	if len(backRow) < 2 || backRow[1].CallbackData != "menu:nodes:settings" {
+		t.Errorf("expected global settings shortcut in back row, got %v", backRow)
 	}
 }
