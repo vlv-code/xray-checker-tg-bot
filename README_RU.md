@@ -5,6 +5,8 @@
 [![License](https://img.shields.io/badge/License-AGPL%20v3-blue)](https://github.com/vlv-code/xray-checker-tg-bot/blob/main/LICENSE)
 [![ru](https://img.shields.io/badge/lang-ru-blue)](README_RU.md)
 [![en](https://img.shields.io/badge/lang-en-red)](README.md)
+[![Boosty](https://img.shields.io/badge/Donate-Boosty-F15F2C.svg)](https://boosty.to/oovlvoo)
+[![USDT TON](https://img.shields.io/badge/Donate-USDT%20TON-26A17B.svg)](#поддержать-проект)
 
 > [!NOTE]
 > **Данный репозиторий является форком проекта [kutovoys/xray-checker](https://github.com/kutovoys/xray-checker)** с добавлением полнофункционального Telegram-бота на официальной библиотеке `mymmrac/telego`:
@@ -385,3 +387,14 @@ NO_PROXY=localhost,127.0.0.1
 WEB_ENABLED=false
 ```
 Метрики `/metrics` продолжат работать, а веб-дашборд будет отключен для экономии памяти.
+
+---
+
+## Поддержать проект
+
+Если Xray Checker был вам полезен, вы можете поддержать разработку:
+- **[Boosty](https://boosty.to/oovlvoo)**
+- **Криптовалюта:** USDT, сеть TON (только USDT и только эта сеть, иначе средства будут потеряны):
+  ```text
+  UQDASKlEmcoPuBr5-u5jSjLdXWfCiSfARjPc_wWW0qLbSreC
+  ```

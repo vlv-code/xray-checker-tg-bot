@@ -5,6 +5,8 @@
 [![License](https://img.shields.io/badge/License-AGPL%20v3-blue)](https://github.com/vlv-code/xray-checker-tg-bot/blob/main/LICENSE)
 [![ru](https://img.shields.io/badge/lang-ru-blue)](README_RU.md)
 [![en](https://img.shields.io/badge/lang-en-red)](README.md)
+[![Boosty](https://img.shields.io/badge/Donate-Boosty-F15F2C.svg)](https://boosty.to/oovlvoo)
+[![USDT TON](https://img.shields.io/badge/Donate-USDT%20TON-26A17B.svg)](#support-the-project)
 
 <!-- META-PROJECT:ENTRY:BEGIN -->
 [![Built with Meta-Project](https://img.shields.io/badge/Built%20with-Meta--Project-blueviolet)](https://github.com/vlv-code/meta-project)
@@ -390,3 +392,14 @@ Set in `.env`:
 WEB_ENABLED=false
 ```
 `/metrics` remains active while saving RAM and CPU.
+
+---
+
+## Support the Project
+
+If Xray Checker has been useful to you, you can support its development:
+- **[Boosty](https://boosty.to/oovlvoo)**
+- **Cryptocurrency:** USDT, network TON (USDT only and only this network, otherwise funds will be lost):
+  ```text
+  UQDASKlEmcoPuBr5-u5jSjLdXWfCiSfARjPc_wWW0qLbSreC
+  ```
