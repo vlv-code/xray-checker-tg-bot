@@ -66,6 +66,7 @@ type NodeHealth struct {
 	HostIP           string    `json:"hostIP"`
 	ASN              string    `json:"asn"`
 	Online           int       `json:"online"`
+	Disabled         int       `json:"disabled"`
 	Total            int       `json:"total"`
 	LastReport       time.Time `json:"lastReport"`
 	CheckIntervalSec int       `json:"checkIntervalSec"`
@@ -546,6 +547,9 @@ func (r *Registry) HealthSnapshot() []NodeHealth {
 		for _, pm := range st.snapshot {
 			if pm.Online {
 				h.Online++
+			}
+			if pm.Disabled {
+				h.Disabled++
 			}
 		}
 		out = append(out, h)

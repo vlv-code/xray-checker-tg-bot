@@ -128,6 +128,19 @@ func (b *Bot) getNodeDiagnosticsReports(nodeName string) []checker.ProxyDiagRepo
 	return reports
 }
 
+// nodeHealthBadge renders the binary failure indicator shared by node tabs
+// and /nodes: «⚠️» only when ACTIVE proxies are failing (manually disabled ⏸
+// proxies are never failures); empty when everything active is up. The
+// detailed per-proxy state lives inside the tab/screen itself (user decision:
+// «просто — есть падения / нет падений»).
+func nodeHealthBadge(online, total, disabled int) string {
+	active := total - disabled
+	if active > 0 && online < active {
+		return "⚠️"
+	}
+	return ""
+}
+
 // getNodeTabs returns the navigation tabs for Master and remote nodes.
 func (b *Bot) getNodeTabs(activeTarget string) []NodeTabItem {
 	if b.nodeMgr == nil {
@@ -140,11 +153,14 @@ func (b *Bot) getNodeTabs(activeTarget string) []NodeTabItem {
 
 	masterOnline := 0
 	masterTotal := 0
+	masterDisabled := 0
 	if b.source != nil {
 		for _, pm := range b.source.MetricsSnapshot() {
-			if pm.NodeName == "" && !pm.Disabled {
+			if pm.NodeName == "" {
 				masterTotal++
-				if pm.Online {
+				if pm.Disabled {
+					masterDisabled++
+				} else if pm.Online {
 					masterOnline++
 				}
 			}
@@ -156,7 +172,7 @@ func (b *Bot) getNodeTabs(activeTarget string) []NodeTabItem {
 		{
 			ID:       "local",
 			Label:    "🏠 Мастер",
-			Status:   fmt.Sprintf("%d/%d", masterOnline, masterTotal),
+			Status:   nodeHealthBadge(masterOnline, masterTotal, masterDisabled),
 			IsActive: masterActive,
 		},
 	}
@@ -165,12 +181,8 @@ func (b *Bot) getNodeTabs(activeTarget string) []NodeTabItem {
 		badge := ""
 		if !n.Up {
 			badge = "🔴 оффлайн"
-		} else if n.Total > 0 && n.Online < n.Total {
-			badge = fmt.Sprintf("⚠️ %d/%d", n.Online, n.Total)
-		} else if n.Total > 0 {
-			badge = fmt.Sprintf("%d/%d", n.Online, n.Total)
 		} else {
-			badge = "0"
+			badge = nodeHealthBadge(n.Online, n.Total, n.DisabledProxies)
 		}
 
 		tabs = append(tabs, NodeTabItem{

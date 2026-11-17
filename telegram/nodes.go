@@ -17,17 +17,18 @@ import (
 // their legacy meaning. A disabled node is excluded from merged metrics and
 // node alerts but stays visible with a ⏸️ marker (Wave G5b).
 type NodeInfo struct {
-	Name         string
-	Up           bool
-	EverReported bool
-	Version      string
-	HostIP       string
-	ASN          string
-	Online       int
-	Total        int
-	LastReport   time.Time
-	IntervalSec  int
-	Disabled     bool
+	Name            string
+	Up              bool
+	EverReported    bool
+	Version         string
+	HostIP          string
+	ASN             string
+	Online          int
+	Total           int
+	DisabledProxies int
+	LastReport      time.Time
+	IntervalSec     int
+	Disabled        bool
 }
 
 // ManagedSubInfo is one desired subscription on a node. ProxyCount is taken

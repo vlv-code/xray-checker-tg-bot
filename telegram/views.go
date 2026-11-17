@@ -121,13 +121,22 @@ func (b *Bot) getMenuText() string {
 				asnInfo = fmt.Sprintf(" (%s)", escapeHTML(n.ASN))
 			}
 
+			// Disabled proxies are excluded from the active denominator —
+			// they must not surface as failures (same semantics as nodeHealthBadge).
+			active := nTotal - n.DisabledProxies
+			paused := ""
+			if n.DisabledProxies > 0 {
+				paused = fmt.Sprintf(" · %d⏸", n.DisabledProxies)
+			}
 			if !n.Up {
 				fmt.Fprintf(&sb, "  %s 🖥 %s: 🔴 <b>оффлайн</b> <i>(потеряна связь)</i>\n", branch, escapeHTML(n.Name))
-			} else if nTotal > 0 && nOnline == nTotal {
-				fmt.Fprintf(&sb, "  %s 🖥 %s: 🟢 <b>%d/%d онлайн</b>%s\n", branch, escapeHTML(n.Name), nOnline, nTotal, asnInfo)
-			} else if nTotal > 0 && nOnline < nTotal {
-				downCount := nTotal - nOnline
-				fmt.Fprintf(&sb, "  %s 🖥 %s: ⚠️ <b>%d/%d онлайн</b> <i>(%d сбоит)</i>%s\n", branch, escapeHTML(n.Name), nOnline, nTotal, downCount, asnInfo)
+			} else if active > 0 && nOnline == active {
+				fmt.Fprintf(&sb, "  %s 🖥 %s: 🟢 <b>%d/%d онлайн</b>%s%s\n", branch, escapeHTML(n.Name), nOnline, active, paused, asnInfo)
+			} else if active > 0 {
+				downCount := active - nOnline
+				fmt.Fprintf(&sb, "  %s 🖥 %s: ⚠️ <b>%d/%d онлайн</b> <i>(%d сбоит)</i>%s%s\n", branch, escapeHTML(n.Name), nOnline, active, downCount, paused, asnInfo)
+			} else if n.DisabledProxies > 0 {
+				fmt.Fprintf(&sb, "  %s 🖥 %s: 🟢 <b>на связи</b> <i>(%d⏸)</i>%s\n", branch, escapeHTML(n.Name), n.DisabledProxies, asnInfo)
 			} else {
 				fmt.Fprintf(&sb, "  %s 🖥 %s: 🟢 <b>на связи</b> <i>(0 прокси)</i>%s\n", branch, escapeHTML(n.Name), asnInfo)
 			}

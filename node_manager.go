@@ -29,8 +29,9 @@ func toNodeInfos(hs []nodes.NodeHealth) []telegram.NodeInfo {
 			Name: h.Name, Up: h.Up, EverReported: h.EverReported,
 			Version: h.Version, HostIP: h.HostIP, ASN: h.ASN,
 			Online: h.Online, Total: h.Total, LastReport: h.LastReport,
-			IntervalSec: h.CheckIntervalSec,
-			Disabled:    !h.Enabled,
+			DisabledProxies: h.Disabled,
+			IntervalSec:     h.CheckIntervalSec,
+			Disabled:        !h.Enabled,
 		})
 	}
 	return out

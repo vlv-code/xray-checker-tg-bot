@@ -77,8 +77,10 @@ func (b *Bot) replyNodes(t ChatTarget) {
 		if !n.EverReported {
 			sb.WriteString(" · отчётов ещё не было")
 		} else {
-			fmt.Fprintf(&sb, " · %d/%d онлайн · отчёт %s назад",
-				n.Online, n.Total, formatAge(now.Sub(n.LastReport)))
+			if badge := nodeHealthBadge(n.Online, n.Total, n.DisabledProxies); badge != "" {
+				sb.WriteString(" · " + badge)
+			}
+			fmt.Fprintf(&sb, " · отчёт %s назад", formatAge(now.Sub(n.LastReport)))
 			if n.Version != "" {
 				sb.WriteString(" · v" + escapeHTML(n.Version))
 			}
