@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -137,6 +138,22 @@ func (c *CheburcheckClient) HasCredentials() bool {
 	return c != nil && (c.apiKey != "" || len(c.scanners) > 0)
 }
 
+// CheburCDNControl aggregates one scanner's CDN control-server probe outcome
+// (the optional SSE result field `cdn_unbounded`). KB reference
+// (https://cheburcheck.ru/kb/probing): every control CDN server renders as a
+// segment with the statuses «Успешно», «Блокировка после ClientHello»,
+// «Таймаут получения данных», «Ошибка подключения» — mapped here to
+// OK/ClientHello/Timeout/Error. The KB documents those STATUSES but not the
+// SSE payload schema, so the field is parsed defensively
+// (parseCheburCDNControl) and report lines stay hidden when the field is
+// absent across results (wave H5, user decision D2).
+type CheburCDNControl struct {
+	OK          int `json:"ok"`
+	ClientHello int `json:"client_hello"`
+	Timeout     int `json:"timeout"`
+	Error       int `json:"error"`
+}
+
 // CheburProbeResult is one scanner's active-probe outcome.
 type CheburProbeResult struct {
 	ProbeID  string   `json:"probe_id,omitempty"`
@@ -146,6 +163,14 @@ type CheburProbeResult struct {
 	ASN      string   `json:"asn,omitempty"`
 	Verdicts []string `json:"verdicts"`
 	Cached   bool     `json:"cached,omitempty"`
+	// DNSSpoofed is the defensive parse of the optional SSE `dns` flag
+	// (nil = field absent or unrecognizable). Verdicts stay authoritative:
+	// the flag only speaks when a scanner's verdict list is silent (see
+	// aggregate).
+	DNSSpoofed *bool `json:"dns_spoofed,omitempty"`
+	// CDNControl is the defensive parse of the optional SSE `cdn_unbounded`
+	// counters (nil = field absent or unrecognizable).
+	CDNControl *CheburCDNControl `json:"cdn_control,omitempty"`
 }
 
 // CheburcheckSummary aggregates the active probe verdicts for one target.
@@ -186,20 +211,98 @@ func (f *cheburFlexStr) UnmarshalJSON(b []byte) error {
 }
 
 // cheburSSEPayload covers started/result/done event bodies; unknown extra
-// fields are ignored by encoding/json.
+// fields are ignored by encoding/json. The optional result-only fields dns
+// and cdn_unbounded are captured raw and parsed defensively
+// (parseCheburDNSFlag / parseCheburCDNControl) — the KB documents neither
+// SSE schema.
 type cheburSSEPayload struct {
-	ID            string        `json:"id"`
-	Target        string        `json:"target"`
-	OnlineProbes  int           `json:"online_probes"`
-	JobID         string        `json:"job_id"`
-	ProbeID       string        `json:"probe_id"`
-	Cached        bool          `json:"cached"`
-	Verdicts      []string      `json:"verdicts"`
-	Region        string        `json:"region"`
-	Provider      string        `json:"provider"`
-	ASN           cheburFlexStr `json:"asn"`
-	Status        string        `json:"status"`
-	ResponseCount int           `json:"response_count"`
+	ID            string          `json:"id"`
+	Target        string          `json:"target"`
+	OnlineProbes  int             `json:"online_probes"`
+	JobID         string          `json:"job_id"`
+	ProbeID       string          `json:"probe_id"`
+	Cached        bool            `json:"cached"`
+	Verdicts      []string        `json:"verdicts"`
+	Region        string          `json:"region"`
+	Provider      string          `json:"provider"`
+	ASN           cheburFlexStr   `json:"asn"`
+	Status        string          `json:"status"`
+	ResponseCount int             `json:"response_count"`
+	DNS           json.RawMessage `json:"dns"`
+	CDNUnbounded  json.RawMessage `json:"cdn_unbounded"`
+}
+
+// parseCheburDNSFlag defensively normalizes the optional SSE result field
+// `dns` (KB: DNS substitution is detected by comparing the response shape —
+// «код DNS и количество уникальных IPv4- и IPv6-адресов»; the SSE schema is
+// not documented). Accepted truthy forms: JSON true, non-zero number,
+// strings "true"/"yes"/"spoofed"/"dns_spoofing"/"blocked"; falsey: JSON
+// false, 0, "false"/"no"/""/"ok"/"clean". Anything else — null, unknown
+// wording, non-scalar — counts as absent.
+func parseCheburDNSFlag(raw json.RawMessage) (value, present bool) {
+	s := strings.TrimSpace(string(raw))
+	switch {
+	case s == "" || s == "null":
+		return false, false
+	case s == "true":
+		return true, true
+	case s == "false":
+		return false, true
+	}
+	if n, err := strconv.Atoi(s); err == nil {
+		return n != 0, true
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		switch strings.ToLower(strings.TrimSpace(str)) {
+		case "true", "yes", "spoofed", "dns_spoofing", "blocked":
+			return true, true
+		case "false", "no", "", "ok", "clean":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+// parseCheburCDNControl defensively normalizes the optional SSE result field
+// `cdn_unbounded`: the accepted shape is a JSON object of per-status
+// counters (tolerant key spellings, string-encoded numbers tolerated);
+// null, strings, bools and unrecognized objects degrade to nil so a
+// malformed field can never fail the stream.
+func parseCheburCDNControl(raw json.RawMessage) *CheburCDNControl {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return nil
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	pick := func(keys ...string) int {
+		for _, k := range keys {
+			if v, ok := obj[k]; ok {
+				switch n := v.(type) {
+				case float64:
+					return int(n)
+				case string:
+					if m, err := strconv.Atoi(strings.TrimSpace(n)); err == nil {
+						return m
+					}
+				}
+			}
+		}
+		return 0
+	}
+	ctrl := &CheburCDNControl{
+		OK:          pick("ok", "success", "successes", "success_count", "passed"),
+		ClientHello: pick("client_hello", "clienthello", "client_hello_block", "ch_block"),
+		Timeout:     pick("timeout", "timeouts", "timeout_count"),
+		Error:       pick("error", "errors", "error_count", "failed"),
+	}
+	if ctrl.OK == 0 && ctrl.ClientHello == 0 && ctrl.Timeout == 0 && ctrl.Error == 0 {
+		return nil
+	}
+	return ctrl
 }
 
 // parseCheburError converts a non-200 JSON {code,info} body into a typed error.
@@ -420,7 +523,7 @@ func (c *CheburcheckClient) consumeProbeStream(ctx context.Context, body io.Read
 		if err := json.Unmarshal([]byte(strings.Join(dataLines, "\n")), &payload); err != nil {
 			logger.Warn("cheburcheck: scanner %s sent malformed %s event: %v", scannerName, evName, err)
 		} else if evName == "result" {
-			results = append(results, CheburProbeResult{
+			result := CheburProbeResult{
 				ProbeID:  payload.ProbeID,
 				Name:     scannerName,
 				Region:   payload.Region,
@@ -428,7 +531,14 @@ func (c *CheburcheckClient) consumeProbeStream(ctx context.Context, body io.Read
 				ASN:      string(payload.ASN),
 				Verdicts: append([]string(nil), payload.Verdicts...),
 				Cached:   payload.Cached,
-			})
+			}
+			// Wave H5: optional dns / cdn_unbounded fields — defensive parse,
+			// absent/malformed data stays nil and never fails the stream.
+			if v, present := parseCheburDNSFlag(payload.DNS); present {
+				result.DNSSpoofed = &v
+			}
+			result.CDNControl = parseCheburCDNControl(payload.CDNUnbounded)
+			results = append(results, result)
 		} else if evName == "started" {
 			// started reports the job-wide online-scanner count; keep the max
 			// so repeated job-wide values are not double-counted across
@@ -485,12 +595,19 @@ func (c *CheburcheckClient) consumeProbeStream(ctx context.Context, body io.Read
 // overall verdict. Rule per the scanner methodology article
 // (https://cheburcheck.ru/kb/probing): «Один сканер может сообщить сразу о
 // нескольких признаках» — every scanner counts in EACH verdict kind it
-// reported; scanners with no verdicts count as uncertain («Неясно»).
+// reported; scanners with no verdicts count as uncertain («Неясно»), except
+// that a silent verdict list with a parsed dns=true flag (optional SSE field,
+// wave H5) counts as dns_spoofing — verdicts stay authoritative whenever
+// they are non-empty.
 func (c *CheburcheckClient) aggregate(s *CheburcheckSummary) {
 	s.KindCounts = make(map[string]int, len(s.Results))
 	for _, r := range s.Results {
 		if len(r.Verdicts) == 0 {
-			s.KindCounts["uncertain"]++
+			if r.DNSSpoofed != nil && *r.DNSSpoofed {
+				s.KindCounts["dns_spoofing"]++
+			} else {
+				s.KindCounts["uncertain"]++
+			}
 			continue
 		}
 		for _, v := range r.Verdicts {
@@ -742,16 +859,148 @@ func cheburDetailSection(results []CheburProbeResult) string {
 	return sb.String()
 }
 
+// cheburCDNControlLine sums the CDN control-server counters over the results
+// that carry the optional SSE field `cdn_unbounded` (KB statuses: Успешно /
+// Блокировка после ClientHello / Таймаут получения данных / Ошибка
+// подключения — wave H5). The line stays hidden entirely when no result
+// carries the field or every counter is zero (defensive, user decision D2).
+func cheburCDNControlLine(results []CheburProbeResult) string {
+	var total CheburCDNControl
+	carried := false
+	for _, r := range results {
+		if r.CDNControl == nil {
+			continue
+		}
+		carried = true
+		total.OK += r.CDNControl.OK
+		total.ClientHello += r.CDNControl.ClientHello
+		total.Timeout += r.CDNControl.Timeout
+		total.Error += r.CDNControl.Error
+	}
+	if !carried {
+		return ""
+	}
+	parts := make([]string, 0, 4)
+	if total.OK > 0 {
+		parts = append(parts, fmt.Sprintf("%d✅", total.OK))
+	}
+	if total.ClientHello > 0 {
+		parts = append(parts, fmt.Sprintf("%dClientHello", total.ClientHello))
+	}
+	if total.Timeout > 0 {
+		parts = append(parts, fmt.Sprintf("%dтаймаут", total.Timeout))
+	}
+	if total.Error > 0 {
+		parts = append(parts, fmt.Sprintf("%dошибок", total.Error))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "CDN-контроль: " + strings.Join(parts, " · ")
+}
+
+// cheburRegionsLine renders the dense «По регионам: Москва 4✅1⛔ · …» line
+// (wave H5): scanners aggregated per region — ✅ for ok-only scanners, ⛔ for
+// scanners with a real restriction (sni_block/tspu_block/dns_spoofing),
+// bare count when a region has neither; regions sorted by scanner count
+// (desc, then name asc), top-5 shown, the remainder folded into
+// «+N регионов».
+func cheburRegionsLine(results []CheburProbeResult) string {
+	type regStat struct{ total, ok, blocked int }
+	stats := make(map[string]*regStat)
+	for _, r := range results {
+		if r.Region == "" {
+			continue
+		}
+		st, seen := stats[r.Region]
+		if !seen {
+			st = &regStat{}
+			stats[r.Region] = st
+		}
+		st.total++
+		restricted, ok := false, false
+		for _, v := range r.Verdicts {
+			for _, want := range cheburRealRestrictionKinds {
+				if v == want {
+					restricted = true
+				}
+			}
+			if v == "ok" {
+				ok = true
+			}
+		}
+		switch {
+		case restricted:
+			st.blocked++
+		case ok:
+			st.ok++
+		}
+	}
+	if len(stats) == 0 {
+		return ""
+	}
+	regions := make([]string, 0, len(stats))
+	for name := range stats {
+		regions = append(regions, name)
+	}
+	sort.Slice(regions, func(i, j int) bool {
+		if stats[regions[i]].total != stats[regions[j]].total {
+			return stats[regions[i]].total > stats[regions[j]].total
+		}
+		return regions[i] < regions[j]
+	})
+	const topN = 5
+	parts := make([]string, 0, topN)
+	for i, name := range regions {
+		if i == topN {
+			break
+		}
+		st := stats[name]
+		seg := html.EscapeString(name) + " "
+		switch {
+		case st.ok > 0 && st.blocked > 0:
+			seg += fmt.Sprintf("%d✅%d⛔", st.ok, st.blocked)
+		case st.ok > 0:
+			seg += fmt.Sprintf("%d✅", st.ok)
+		case st.blocked > 0:
+			seg += fmt.Sprintf("%d⛔", st.blocked)
+		default:
+			seg += fmt.Sprintf("%d", st.total)
+		}
+		parts = append(parts, seg)
+	}
+	line := "По регионам: " + strings.Join(parts, " · ")
+	if extra := len(regions) - topN; extra > 0 {
+		line += fmt.Sprintf(" · +%d %s", extra, cheburPluralRegions(extra))
+	}
+	return line
+}
+
+// cheburPluralRegions is the RU plural for the extra-region counter:
+// 1 регион, 2–4 региона, otherwise регионов (11–14 included).
+func cheburPluralRegions(n int) string {
+	if n%10 == 1 && n%100 != 11 {
+		return "регион"
+	}
+	if n%10 >= 2 && n%10 <= 4 && (n%100 < 12 || n%100 > 14) {
+		return "региона"
+	}
+	return "регионов"
+}
+
 // FormatCheburcheckReport renders the summary as Telegram HTML, summary-first
-// (wave G frozen format): 🧀 header, overall status, answered ratio, per-kind
-// counts with site labels, then the compact grouped per-scanner detail. Every
+// (wave H5 compact-full format; replaces the wave G 🧀 header — authorized
+// H3 rework 2026-11-17): plain header, overall status, answered ratio,
+// per-kind counts with site labels, the always-on DNS substitution ratio
+// («у 0 из N» is site-parity), the optional CDN control totals and region
+// breakdown lines, then the compact grouped per-scanner detail. Every
 // external string is escaped exactly once.
 func FormatCheburcheckReport(s *CheburcheckSummary) string {
 	if s == nil {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🧀 <b>Cheburcheck</b>: <code>%s</code>\n", html.EscapeString(s.Target)))
+	sb.WriteString(fmt.Sprintf("<b>Cheburcheck</b>: <code>%s</code>\n", html.EscapeString(s.Target)))
 	if s.Verdict != "" {
 		sb.WriteString(fmt.Sprintf("Статус: <i>%s</i>\n", html.EscapeString(s.Verdict)))
 	}
@@ -763,6 +1012,20 @@ func FormatCheburcheckReport(s *CheburcheckSummary) string {
 	}
 	if line := cheburCountsLine(s.KindCounts); line != "" {
 		sb.WriteString("• " + line + "\n")
+	}
+	// DNS substitution ratio: always shown (site parity), «у 0 из N» is fine.
+	probed := len(s.Results)
+	if probed == 0 {
+		probed = s.Answered
+	}
+	if probed > 0 {
+		sb.WriteString(fmt.Sprintf("Подмена DNS: %d из %d\n", s.KindCounts["dns_spoofing"], probed))
+	}
+	if line := cheburCDNControlLine(s.Results); line != "" {
+		sb.WriteString(line + "\n")
+	}
+	if line := cheburRegionsLine(s.Results); line != "" {
+		sb.WriteString(line + "\n")
 	}
 	sb.WriteString(cheburDetailSection(s.Results))
 	return sb.String()
@@ -804,7 +1067,7 @@ func EnrichVerdictWithChebur(verdict string, s *CheburcheckSummary) string {
 	case len(pairs) > 0:
 		return fmt.Sprintf("%s | Cheburcheck: обнаружены ограничения: %s", verdict, strings.Join(pairs, ", "))
 	case kinds["ok"] > 0:
-		return fmt.Sprintf("%s | Cheburcheck: сканеры РФ видят доступность (%d/%d)", verdict, kinds["ok"], len(s.Results))
+		return fmt.Sprintf("%s | Cheburcheck: сканеры видят доступность (%d/%d)", verdict, kinds["ok"], len(s.Results))
 	default:
 		return fmt.Sprintf("%s | Cheburcheck: неопределённый результат (%d ответов)", verdict, len(s.Results))
 	}

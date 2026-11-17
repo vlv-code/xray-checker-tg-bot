@@ -627,10 +627,13 @@ func TestCheburcheck_PreStreamErrors(t *testing.T) {
 	}
 }
 
-// TestFormatCheburcheckReport_SummaryFirstAndCompact pins the wave G frozen
-// layout: 🧀 header, Статус line, Ответы ratio, per-kind counts line with
-// site labels, then the compact per-scanner section grouped by dominant
-// verdict («+N» for hidden scanners, (кеш) markers, 12-line cap with
+// TestFormatCheburcheckReport_SummaryFirstAndCompact pins the wave H5
+// compact-full layout (replaces the wave G frozen header/counters — authorized
+// H3/H5 rework register 2026-11-17: the 🧀 emoji is dropped and the dense
+// «Подмена DNS: X из N» ratio line is added): plain header, Статус line,
+// Ответы ratio, per-kind counts line with site labels, the DNS substitution
+// ratio, then the compact per-scanner section grouped by dominant verdict
+// («+N» for hidden scanners, (кеш) markers, 12-line cap with
 // «+ ещё N сканеров»).
 func TestFormatCheburcheckReport_SummaryFirstAndCompact(t *testing.T) {
 	t.Run("summary-first layout", func(t *testing.T) {
@@ -645,10 +648,11 @@ func TestFormatCheburcheckReport_SummaryFirstAndCompact(t *testing.T) {
 		out := FormatCheburcheckReport(s)
 		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 		want := []string{
-			"🧀 <b>Cheburcheck</b>: <code>cdn.example</code>",
+			"<b>Cheburcheck</b>: <code>cdn.example</code>",
 			"Статус: <i>Не ограничен — ограничений не обнаружено</i>",
 			"Ответы: 42 из 42 сканеров",
 			"• Доступен: 16 · CDN-блокировка: 24 · Неясно: 2",
+			"Подмена DNS: 0 из 42",
 		}
 		for i, w := range want {
 			if i >= len(lines) {
@@ -657,6 +661,91 @@ func TestFormatCheburcheckReport_SummaryFirstAndCompact(t *testing.T) {
 			if lines[i] != w {
 				t.Errorf("line %d = %q, want %q\nfull report:\n%s", i, lines[i], w, out)
 			}
+		}
+		if strings.Contains(out, "🧀") {
+			t.Errorf("wave H3: report header must not carry the 🧀 emoji, got:\n%s", out)
+		}
+	})
+
+	t.Run("dns line always shown at zero", func(t *testing.T) {
+		// Site parity (wave H5): «у 0 из N» is a valid display — the DNS
+		// substitution ratio line renders even when no scanner reports it.
+		s := &CheburcheckSummary{
+			Target:     "zero.example",
+			KindCounts: map[string]int{"ok": 3},
+			Verdict:    "Не ограничен — ограничений не обнаружено",
+			Results:    make([]CheburProbeResult, 3),
+		}
+		out := FormatCheburcheckReport(s)
+		if !strings.Contains(out, "Подмена DNS: 0 из 3\n") {
+			t.Errorf("dns ratio line must always render (0 из N is valid), got:\n%s", out)
+		}
+	})
+
+	t.Run("cdn control line from cdn_unbounded", func(t *testing.T) {
+		// Wave H5: the SSE result field cdn_unbounded carries the per-scanner
+		// CDN control-server outcome (KB statuses: Успешно / Блокировка после
+		// ClientHello / Таймаут получения данных / Ошибка подключения);
+		// summaries sum the counters of scanners that carry the field.
+		s := &CheburcheckSummary{
+			Target:     "cdn.example",
+			KindCounts: map[string]int{"ok": 3},
+			Verdict:    "Не ограничен — ограничений не обнаружено",
+			Results: []CheburProbeResult{
+				{Region: "Москва", Verdicts: []string{"ok"}, CDNControl: &CheburCDNControl{OK: 12, ClientHello: 1, Timeout: 8, Error: 5}},
+				{Region: "СПб", Verdicts: []string{"ok"}}, // field absent for this scanner
+			},
+		}
+		out := FormatCheburcheckReport(s)
+		if !strings.Contains(out, "CDN-контроль: 12✅ · 1ClientHello · 8таймаут · 5ошибок\n") {
+			t.Errorf("cdn control totals must render as one dense line, got:\n%s", out)
+		}
+	})
+
+	t.Run("cdn control line hidden when absent across results", func(t *testing.T) {
+		s := &CheburcheckSummary{
+			Target:     "x.example",
+			KindCounts: map[string]int{"ok": 1},
+			Verdict:    "Не ограничен — ограничений не обнаружено",
+			Results:    []CheburProbeResult{{Region: "Москва", Verdicts: []string{"ok"}}},
+		}
+		out := FormatCheburcheckReport(s)
+		if strings.Contains(out, "CDN-контроль") {
+			t.Errorf("cdn control line must stay hidden when no result carries the field, got:\n%s", out)
+		}
+	})
+
+	t.Run("regions top five plus extra count", func(t *testing.T) {
+		// Wave H5: «По регионам» aggregates scanners per region (✅ = ok-only,
+		// ⛔ = any real restriction), sorted by scanner count desc, top-5 shown,
+		// the remainder folded into «+N регионов».
+		s := &CheburcheckSummary{
+			Target:  "geo.example",
+			Verdict: "Не ограничен — ограничений не обнаружено",
+		}
+		mk := func(dst []CheburProbeResult, region string, n int, verdicts []string) []CheburProbeResult {
+			for i := 0; i < n; i++ {
+				dst = append(dst, CheburProbeResult{Region: region, Verdicts: verdicts})
+			}
+			return dst
+		}
+		rs := []CheburProbeResult{}
+		rs = mk(rs, "Москва", 4, []string{"ok"})
+		rs = mk(rs, "Москва", 1, []string{"sni_block"})
+		rs = mk(rs, "СПб", 4, []string{"ok"})
+		rs = mk(rs, "Казань", 3, []string{"ok"})
+		rs = mk(rs, "Екатеринбург", 2, []string{"ok"})
+		rs = mk(rs, "Новосибирск", 1, []string{"ok"})
+		rs = mk(rs, "Самара", 1, []string{"ok"})
+		rs = mk(rs, "Омск", 1, []string{"ok"})
+		s.Results = rs
+		s.KindCounts = map[string]int{"ok": 15, "sni_block": 1}
+		out := FormatCheburcheckReport(s)
+		if !strings.Contains(out, "По регионам: Москва 4✅1⛔ · СПб 4✅ · Казань 3✅ · Екатеринбург 2✅ · Новосибирск 1✅ · +2 региона\n") {
+			t.Errorf("regions line must show top-5 by scanner count then the extra count, got:\n%s", out)
+		}
+		if strings.Contains(out, "Самара") || strings.Contains(out, "Омск") {
+			t.Errorf("regions beyond top-5 must not be listed individually, got:\n%s", out)
 		}
 	})
 
@@ -754,6 +843,89 @@ func TestFormatCheburcheckReport_EscapesExternalData(t *testing.T) {
 		if strings.Contains(out, bad) {
 			t.Errorf("report contains UNESCAPED external data %q in:\n%s", bad, out)
 		}
+	}
+}
+
+// TestCheburcheck_SSE_DNSAndCDNFields (Wave H5): result events may carry the
+// optional `dns` flag and the `cdn_unbounded` CDN control-server counters.
+// The KB (https://cheburcheck.ru/kb/probing) documents the control-server
+// STATUSES («Успешно», «Блокировка после ClientHello», «Таймаут получения
+// данных», «Ошибка подключения») and the DNS comparison («форма ответа: код
+// DNS и количество уникальных IPv4- и IPv6-адресов») but NOT the SSE payload
+// schema — so both fields are parsed defensively and absent/malformed data
+// never fails the stream. Verdicts stay authoritative for KindCounts: the dns
+// flag only speaks when a scanner's verdict list is silent.
+func TestCheburcheck_SSE_DNSAndCDNFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/check":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "h5job"})
+		case r.URL.Path == "/probe/h5job":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(
+				cheburSSE("started", `{"id":"h5job","target":"example.com","online_probes":4}`) +
+					cheburSSE("result", `{"job_id":"j1","probe_id":"p1","verdicts":[],"dns":true,"cdn_unbounded":{"ok":12,"client_hello":1,"timeout":8,"error":5}}`) +
+					cheburSSE("result", `{"job_id":"j2","probe_id":"p2","verdicts":["ok"],"dns":false,"cdn_unbounded":null}`) +
+					cheburSSE("result", `{"job_id":"j3","probe_id":"p3","verdicts":["ok"],"cdn_unbounded":"garbage"}`) +
+					cheburSSE("result", `{"job_id":"j4","probe_id":"p4","verdicts":["ok"]}`) +
+					cheburSSE("done", `{"id":"h5job","status":"finished","response_count":4,"online_probes":4}`)))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cl := NewCheburcheckClient(srv.URL, 5*time.Second, []ScannerCred{{Name: "s", Token: "t"}})
+	cl.limiter = nil
+
+	summary, err := cl.CheckTarget(context.Background(), "example.com")
+	if err != nil {
+		t.Fatalf("CheckTarget failed: %v", err)
+	}
+	if len(summary.Results) != 4 {
+		t.Fatalf("expected 4 results, got %d", len(summary.Results))
+	}
+
+	// r1: dns=true + cdn counters parsed.
+	r1 := summary.Results[0]
+	if r1.DNSSpoofed == nil || !*r1.DNSSpoofed {
+		t.Errorf("dns:true must parse into DNSSpoofed, got %v", r1.DNSSpoofed)
+	}
+	if r1.CDNControl == nil || r1.CDNControl.OK != 12 || r1.CDNControl.ClientHello != 1 ||
+		r1.CDNControl.Timeout != 8 || r1.CDNControl.Error != 5 {
+		t.Errorf("cdn_unbounded counters must parse, got %+v", r1.CDNControl)
+	}
+	// Verdicts were silent and the dns flag spoke: count as dns_spoofing, not
+	// as uncertain.
+	if summary.KindCounts["dns_spoofing"] != 1 {
+		t.Errorf("silent verdicts + dns:true must count as dns_spoofing, got %v", summary.KindCounts)
+	}
+	if summary.KindCounts["uncertain"] != 0 {
+		t.Errorf("dns evidence must not fall into uncertain, got %v", summary.KindCounts)
+	}
+
+	// r2: explicit dns=false parses as a present-false flag (no dns count).
+	if r2 := summary.Results[1]; r2.DNSSpoofed == nil || *r2.DNSSpoofed {
+		t.Errorf("dns:false must parse as a present-false flag, got %v", r2.DNSSpoofed)
+	}
+
+	// r3/r4: malformed and absent fields degrade to nil, stream unaffected.
+	if r3 := summary.Results[2]; r3.CDNControl != nil || r3.DNSSpoofed != nil {
+		t.Errorf("malformed cdn_unbounded must degrade to nil, got %+v", r3.CDNControl)
+	}
+	if r4 := summary.Results[3]; r4.CDNControl != nil || r4.DNSSpoofed != nil {
+		t.Errorf("absent fields must stay nil, got %+v/%v", r4.CDNControl, r4.DNSSpoofed)
+	}
+
+	// The report renders the aggregated CDN line from the single carrying
+	// result and hides nothing else.
+	out := FormatCheburcheckReport(summary)
+	if !strings.Contains(out, "CDN-контроль: 12✅ · 1ClientHello · 8таймаут · 5ошибок\n") {
+		t.Errorf("report must render aggregated cdn control totals, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Подмена DNS: 1 из 4\n") {
+		t.Errorf("dns ratio must reflect the dns evidence count, got:\n%s", out)
 	}
 }
 
@@ -1017,7 +1189,8 @@ func TestEnrichVerdictWithChebur(t *testing.T) {
 		Results:    make([]CheburProbeResult, 42),
 	}
 	got = EnrichVerdictWithChebur("Нода не отвечает", cdnHeavy)
-	if !strings.Contains(got, "Cheburcheck: сканеры РФ видят доступность (16/42)") {
+	// Wave H3 register: «РФ» removed from the chebur wording.
+	if !strings.Contains(got, "Cheburcheck: сканеры видят доступность (16/42)") {
 		t.Fatalf("cdn-heavy summary must keep the contradiction note with the ok ratio, got %q", got)
 	}
 	if strings.Contains(got, "обнаружены ограничения") || strings.Contains(got, "cdn_block") {
