@@ -9,14 +9,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mymmrac/telego"
+
 	"xray-checker/checker"
 	"xray-checker/metrics"
 )
 
-// TestMainMenuHasCheburcheckButton pins the Wave-D main-menu entry:
-// «🧀 Cheburcheck РФ» (wave G3: the flag emoji is replaced by the
-// Cheburcheck-themed 🧀) with the exact callback menu:chebur must sit on its
-// own row BETWEEN the Check-Host row and the Nodes row.
+// TestMainMenuHasCheburcheckButton pins the Wave-D main-menu entry with the
+// exact callback menu:chebur on its own row BETWEEN the Check-Host row and the
+// Nodes row. Wave H3 register (authorized label rework 2026-11-17): the
+// former «🧀 Cheburcheck РФ» label is replaced by the plain «Cheburcheck» —
+// no emoji, no «РФ».
 func TestMainMenuHasCheburcheckButton(t *testing.T) {
 	markup := MainMenuMarkup()
 	cheburRow, checkhostRow, nodesRow := -1, -1, -1
@@ -36,14 +39,11 @@ func TestMainMenuHasCheburcheckButton(t *testing.T) {
 		t.Fatalf("expected MainMenuMarkup to contain a menu:chebur button")
 	}
 	label := markup.InlineKeyboard[cheburRow][0].Text
-	if !strings.Contains(label, "Cheburcheck РФ") {
-		t.Errorf("expected button labeled 'Cheburcheck РФ', got %q", label)
+	if label != "Cheburcheck" {
+		t.Errorf("expected plain 'Cheburcheck' button (wave H3: no emoji, no РФ), got %q", label)
 	}
-	if !strings.Contains(label, "🧀") {
-		t.Errorf("expected the 🧀 chebur icon on the main-menu button, got %q", label)
-	}
-	if strings.Contains(label, "🇷🇺") {
-		t.Errorf("flag emoji must be replaced by 🧀 on the main-menu button, got %q", label)
+	if strings.Contains(label, "🧀") || strings.Contains(label, "🇷🇺") || strings.Contains(label, "РФ") {
+		t.Errorf("wave H3: main-menu button must be free of 🧀/🇷🇺/РФ, got %q", label)
 	}
 	if checkhostRow == -1 || nodesRow == -1 || checkhostRow >= cheburRow || cheburRow >= nodesRow {
 		t.Errorf("expected menu:chebur row %d strictly between Check-Host row %d and Nodes row %d",
@@ -53,8 +53,9 @@ func TestMainMenuHasCheburcheckButton(t *testing.T) {
 
 // TestMenuCheburOpensSubmenu: the exact callback menu:chebur must edit the
 // message into the Cheburcheck host-selection submenu (RU text carrying the
-// /cheburcheck usage hint and the 🧀 icon, wave G3); with zero hosts the
-// hint-only submenu must still render without panicking.
+// /cheburcheck usage hint; wave H3 register: the title is
+// «Cheburcheck — активный пробинг блокировок», free of 🧀 and «РФ»); with zero
+// hosts the hint-only submenu must still render without panicking.
 func TestMenuCheburOpensSubmenu(t *testing.T) {
 	ft, api := newFakeTelegramBot(t)
 	b, _ := newGateTestBot(t, api, nil)
@@ -71,8 +72,11 @@ func TestMenuCheburOpensSubmenu(t *testing.T) {
 	if !strings.Contains(text, "/cheburcheck") {
 		t.Errorf("expected submenu text to contain the /cheburcheck usage hint, got: %s", text)
 	}
-	if !strings.Contains(text, "🧀") || strings.Contains(text, "🇷🇺") {
-		t.Errorf("expected the 🧀 submenu title (no flag emoji), got: %s", text)
+	if !strings.Contains(text, "Cheburcheck — активный пробинг блокировок") {
+		t.Errorf("expected the wave H3 submenu title, got: %s", text)
+	}
+	if strings.Contains(text, "🧀") || strings.Contains(text, "РФ") {
+		t.Errorf("wave H3: submenu text must be free of 🧀/РФ, got: %s", text)
 	}
 
 	// Zero hosts: hint-only submenu must still render (no panic, one edit).
@@ -169,12 +173,14 @@ func TestMenuCheburPrefixOrdering(t *testing.T) {
 	}
 
 	// 2. The bare menu:chebur must open the submenu, never the probe handler.
+	// Wave H3 register: the detection string follows the reworked title
+	// («Cheburcheck — активный пробинг блокировок», no РФ).
 	b.handleCallbackQuery(gateCallback(9999, "menu:chebur"))
 	var submenuEdit string
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && submenuEdit == "" {
 		for _, c := range ft.callsOf("editMessageText") {
-			if txt, _ := c.Params["text"].(string); strings.Contains(txt, "Активный пробинг блокировок РФ") {
+			if txt, _ := c.Params["text"].(string); strings.Contains(txt, "активный пробинг блокировок") {
 				submenuEdit = txt
 			}
 		}
@@ -194,7 +200,8 @@ func TestMenuCheburPrefixOrdering(t *testing.T) {
 // callback_data limit for every button of the Cheburcheck submenu even with
 // the longest possible host (wave G1: buttons are hosts keyed via
 // HostCallbackKey — hosts longer than 36 bytes hash to a short h:<hex> key),
-// plus the 2-per-row layout.
+// plus the 2-per-row layout. Wave H4 register (authorized layout change
+// 2026-11-17): the manual-input row «✍️ Проверить свой хост» adds one row.
 func TestCheburMenuMarkupCallbackLength(t *testing.T) {
 	longHost := strings.Repeat("a", 60) + ".example.com" // > 36 bytes → hashed key
 	hosts := []string{"1.1.1.1", longHost}
@@ -202,8 +209,8 @@ func TestCheburMenuMarkupCallbackLength(t *testing.T) {
 	if markup == nil {
 		t.Fatal("nil markup")
 	}
-	if len(markup.InlineKeyboard) != 2 {
-		t.Errorf("expected 2 rows (one pair row + back row), got %d rows", len(markup.InlineKeyboard))
+	if len(markup.InlineKeyboard) != 3 {
+		t.Errorf("expected 3 rows (one pair row + manual-input row + back row), got %d rows", len(markup.InlineKeyboard))
 	}
 	foundPair, foundShort, foundLong := false, false, false
 	for _, row := range markup.InlineKeyboard {
@@ -235,8 +242,10 @@ func TestCheburMenuMarkupCallbackLength(t *testing.T) {
 
 // TestCheburMenuMarkupUniqueHostsDedup (wave G1): Cheburcheck probes HOSTS,
 // not proxy connections — two proxies sharing the same bare host (any
-// protocol/port) must yield exactly ONE «🧀 <host>» button; the host list is
-// sorted; disabled proxies are excluded.
+// protocol/port) must yield exactly ONE «<host>» button; the host list is
+// sorted; disabled proxies are excluded. Wave H3 register (authorized label
+// rework 2026-11-17): host buttons are PLAIN <host> — the former «🧀» prefix
+// is removed.
 func TestCheburMenuMarkupUniqueHostsDedup(t *testing.T) {
 	proxies := []metrics.ProxyMetric{
 		{Name: "A-vless", StableID: "a1", Address: "shared.example.com:443", Protocol: "vless"},
@@ -259,12 +268,15 @@ func TestCheburMenuMarkupUniqueHostsDedup(t *testing.T) {
 		for _, b := range row {
 			if strings.HasPrefix(b.CallbackData, "menu:cheburh:") {
 				cheburBtns++
-				if !strings.HasPrefix(b.Text, "🧀") {
-					t.Errorf("expected «🧀 <host>» button text, got %q", b.Text)
+				if strings.Contains(b.Text, "🧀") {
+					t.Errorf("wave H3: host buttons must be plain <host>, got %q", b.Text)
 				}
 			}
 			if b.CallbackData == "menu:cheburh:shared.example.com" {
 				foundShared = true
+				if b.Text != "shared.example.com" {
+					t.Errorf("expected the plain host as button text, got %q", b.Text)
+				}
 			}
 		}
 	}
@@ -273,6 +285,201 @@ func TestCheburMenuMarkupUniqueHostsDedup(t *testing.T) {
 	}
 	if !foundShared {
 		t.Errorf("expected a menu:cheburh:shared.example.com button (dedup across protocols)")
+	}
+}
+
+// TestCheburMenuMarkupManualInputRow (Wave H4): the Cheburcheck submenu gains
+// the «✍️ Проверить свой хост» row with the exact route menu:cheburin — the
+// button must never be dead and must stay within the 64-byte callback limit.
+func TestCheburMenuMarkupManualInputRow(t *testing.T) {
+	markup := CheburMenuMarkup([]string{"1.1.1.1"}, 1, 1)
+	requireAllCallbacksRoutable(t, "CheburMenuMarkup(manual input row)", markup)
+	if !hasCallback(markup, "menu:cheburin") {
+		t.Fatalf("expected the manual-input button with exact callback menu:cheburin, got %v", markupCallbacks(markup))
+	}
+	if !hasButtonText(markup, "✍️ Проверить свой хост") {
+		t.Errorf("expected the «✍️ Проверить свой хост» button, got %v", markupCallbacks(markup))
+	}
+}
+
+// TestMenuCheburinManualInputFlow (Wave H4): the manual host input flow —
+// menu:cheburin arms the per-chat waiting state and prompts in RU; the next
+// plain text from an ADMIN is consumed as host[:port] (port stripped) and
+// probed via the injected chebur client; non-admins are denied; invalid input
+// answers with a RU validation error; navigating to the main menu disarms.
+func TestMenuCheburinManualInputFlow(t *testing.T) {
+	var mu sync.Mutex
+	var checkTargets []string
+	chebMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if r.URL.Path == "/check" {
+			checkTargets = append(checkTargets, r.URL.Query().Get("target"))
+		}
+		mu.Unlock()
+		switch {
+		case r.URL.Path == "/check":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "injob"})
+		case r.URL.Path == "/probe/injob":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(
+				"event: started\ndata: {\"id\":\"injob\",\"target\":\"h\",\"online_probes\":1}\n\n" +
+					"event: result\ndata: {\"job_id\":\"j\",\"probe_id\":\"p1\",\"verdicts\":[\"ok\"]}\n\n" +
+					"event: done\ndata: {\"id\":\"injob\",\"status\":\"finished\",\"response_count\":1,\"online_probes\":1}\n\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer chebMock.Close()
+
+	chebClient := checker.NewCheburcheckClient(chebMock.URL, 5*time.Second,
+		[]checker.ScannerCred{{Name: "test-scanner", Token: "tok-1"}})
+
+	checkTargetsLen := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(checkTargets)
+	}
+	waitChecksGrew := func(baseline int) []string {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if checkTargetsLen() > baseline {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), checkTargets[baseline:]...)
+	}
+	newTargetsSince := func(baseline int) []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), checkTargets[baseline:]...)
+	}
+
+	// 1. menu:cheburin arms the waiting state and renders the RU prompt.
+	ft, api := newFakeTelegramBot(t)
+	b, _ := newGateTestBot(t, api, nil)
+	b.cheburClient = chebClient
+
+	b.handleCallbackQuery(gateCallback(9999, "menu:cheburin"))
+	edits := ft.callsOf("editMessageText")
+	if len(edits) == 0 {
+		t.Fatalf("expected menu:cheburin to render the input prompt, got 0 edits")
+	}
+	prompt, _ := edits[0].Params["text"].(string)
+	if !strings.Contains(prompt, "Проверить свой хост") || !strings.Contains(prompt, "Отправьте хост") {
+		t.Errorf("expected the RU manual-input prompt, got: %s", prompt)
+	}
+	if !b.waitingCheburHost[12345] {
+		t.Fatalf("menu:cheburin must arm waitingCheburHost for the chat, got %v", b.waitingCheburHost)
+	}
+
+	// 2. The next plain text is consumed as host:port — port stripped.
+	baseline := checkTargetsLen()
+	b.handleMessage(&telego.Message{
+		MessageID: 11,
+		Chat:      telego.Chat{ID: 12345, Type: "private"},
+		From:      &telego.User{ID: 9999, Username: "admin"},
+		Text:      "example.com:8443",
+	})
+	got := waitChecksGrew(baseline)
+	if len(got) != 1 || got[0] != "example.com" {
+		t.Fatalf("expected the waiting text to probe the bare host example.com (port stripped), got %v", got)
+	}
+	if b.waitingCheburHost[12345] {
+		t.Fatalf("waiting state must be consumed after the input, got %v", b.waitingCheburHost)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var report string
+	for time.Now().Before(deadline) && report == "" {
+		for _, c := range ft.callsOf("editMessageText") {
+			if txt, _ := c.Params["text"].(string); strings.Contains(txt, "<b>Cheburcheck</b>: <code>example.com</code>") {
+				report = txt
+			}
+		}
+		if report == "" {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if report == "" {
+		t.Errorf("expected the FormatCheburcheckReport edit for the manual host, got %v", ft.callsOf("editMessageText"))
+	}
+
+	// 3. Non-admin text while armed: denied, no probe.
+	baselineNA := checkTargetsLen()
+	ftNA, apiNA := newFakeTelegramBot(t)
+	bNA, _ := newGateTestBot(t, apiNA, []int64{1001})
+	bNA.cheburClient = chebClient
+	bNA.handleCallbackQuery(gateCallback(1001, "menu:cheburin"))
+	bNA.handleMessage(&telego.Message{
+		Chat: telego.Chat{ID: 12345, Type: "private"},
+		From: &telego.User{ID: 9999, Username: "intruder"},
+		Text: "evil.example.com",
+	})
+	time.Sleep(150 * time.Millisecond)
+	if got := newTargetsSince(baselineNA); len(got) != 0 {
+		t.Fatalf("non-admin waiting text must be denied, saw /check targets %v", got)
+	}
+	if bNA.waitingCheburHost[12345] {
+		t.Fatalf("waiting state must be consumed even when denied, got %v", bNA.waitingCheburHost)
+	}
+	for _, c := range ftNA.callsOf("sendMessage") {
+		if txt, _ := c.Params["text"].(string); strings.Contains(txt, "Cheburcheck") {
+			t.Errorf("non-admin must never receive a probe report, got: %s", txt)
+		}
+	}
+
+	// 4. Invalid input: RU validation error, no network.
+	baselineBad := checkTargetsLen()
+	ftBad, apiBad := newFakeTelegramBot(t)
+	bBad, _ := newGateTestBot(t, apiBad, nil)
+	bBad.cheburClient = chebClient
+	bBad.handleCallbackQuery(gateCallback(9999, "menu:cheburin"))
+	bBad.handleMessage(&telego.Message{
+		Chat: telego.Chat{ID: 12345, Type: "private"},
+		From: &telego.User{ID: 9999, Username: "admin"},
+		Text: "https://example.com/path",
+	})
+	time.Sleep(150 * time.Millisecond)
+	if got := newTargetsSince(baselineBad); len(got) != 0 {
+		t.Fatalf("invalid input must not reach the probe, saw /check targets %v", got)
+	}
+	var errReply string
+	for _, c := range ftBad.callsOf("sendMessage") {
+		if txt, _ := c.Params["text"].(string); strings.HasPrefix(txt, "❌") {
+			errReply = txt
+		}
+	}
+	if !strings.Contains(errReply, "Отправьте") {
+		t.Errorf("expected a RU validation error, got: %q", errReply)
+	}
+
+	// 5. Navigation to the main menu disarms the pending input.
+	baselineNav := checkTargetsLen()
+	ftNav, apiNav := newFakeTelegramBot(t)
+	bNav, _ := newGateTestBot(t, apiNav, nil)
+	bNav.cheburClient = chebClient
+	bNav.handleCallbackQuery(gateCallback(9999, "menu:cheburin"))
+	if !bNav.waitingCheburHost[12345] {
+		t.Fatalf("expected the armed state before navigation")
+	}
+	bNav.handleCallbackQuery(gateCallback(9999, "menu:main"))
+	if bNav.waitingCheburHost[12345] {
+		t.Fatalf("menu:main must disarm waitingCheburHost, got %v", bNav.waitingCheburHost)
+	}
+	if len(ftNav.callsOf("editMessageText")) == 0 {
+		t.Fatalf("expected menu:main to render the main menu")
+	}
+	bNav.handleMessage(&telego.Message{
+		Chat: telego.Chat{ID: 12345, Type: "private"},
+		From: &telego.User{ID: 9999, Username: "admin"},
+		Text: "example.com",
+	})
+	time.Sleep(150 * time.Millisecond)
+	if got := newTargetsSince(baselineNav); len(got) != 0 {
+		t.Fatalf("disarmed state must not probe, saw /check targets %v", got)
 	}
 }
 

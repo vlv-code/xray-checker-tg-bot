@@ -57,7 +57,7 @@ func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("🌐 Проверка Check-Host.net", "menu:checkhost"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🧀 Cheburcheck РФ", "menu:chebur"),
+			btn("Cheburcheck", "menu:chebur"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🖥 Ноды", "menu:nodes"),

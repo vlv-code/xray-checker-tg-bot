@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -46,7 +47,7 @@ func (b *Bot) handleCheburcheckCommand(msg *telego.Message) {
 	}
 
 	sentMsg, _ := b.sendAndReturn(t, fmt.Sprintf("⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
-		"Активный пробинг <code>%s</code> со сканеров РФ...\n"+
+		"Активный пробинг <code>%s</code>...\n"+
 		"Пожалуйста, подождите 5–20 секунд...", escapeHTML(target)))
 
 	ctx, cancel := context.WithTimeout(b.ctx, 20*time.Second)
@@ -108,7 +109,7 @@ func (b *Bot) handleCheburcheckHost(chatID int64, msgID int, hostKey string) {
 	}
 
 	b.editWithMarkup(chatID, msgID, fmt.Sprintf("⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
-		"Активный пробинг <code>%s</code> со сканеров РФ...\n"+
+		"Активный пробинг <code>%s</code>...\n"+
 		"Пожалуйста, подождите 5–20 секунд...", escapeHTML(host)), BackToMenuMarkup())
 
 	ctx, cancel := context.WithTimeout(b.ctx, 20*time.Second)
@@ -124,4 +125,97 @@ func (b *Bot) handleCheburcheckHost(chatID int64, msgID int, hostKey string) {
 	}
 
 	b.editWithMarkup(chatID, msgID, checker.FormatCheburcheckReport(summary), BackToMenuMarkup())
+}
+
+// stripCheburPort strips a trailing ":port" from a host:port pair (wave H4:
+// Cheburcheck probes bare hosts and has no port concept). The port must be
+// numeric — net.SplitHostPort alone would happily split "https://host/path"
+// into host "https". Anything else is returned trimmed as-is and
+// validateCheburHostInput decides its fate.
+func stripCheburPort(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if h, p, err := net.SplitHostPort(raw); err == nil && h != "" && isCheburNumericPort(p) {
+		return h
+	}
+	return raw
+}
+
+// isCheburNumericPort reports whether the port part looks like a TCP port
+// (digits only, 1-5 chars).
+func isCheburNumericPort(p string) bool {
+	if p == "" || len(p) > 5 {
+		return false
+	}
+	for _, r := range p {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// validateCheburHostInput rejects manual Cheburcheck input that cannot be a
+// probe target (wave H4, RU errors): empty input, URLs/schemes/paths,
+// whitespace and multi-colon garbage. A bare host (domain or IP) passes.
+func validateCheburHostInput(raw, host string) error {
+	if host == "" {
+		return errors.New("Пустой ввод. Отправьте хост (домен или IP) или host:port, например example.com")
+	}
+	if strings.ContainsAny(host, " \t") || strings.Contains(host, "/") || strings.Contains(host, "://") {
+		return errors.New("Не похоже на хост. Отправьте домен или IP без схемы и пути, например example.com или 1.2.3.4")
+	}
+	// A host:port pair must split cleanly; multi-colon IPv6 without brackets
+	// and other colon garbage are rejected.
+	if strings.Count(raw, ":") > 1 {
+		if _, _, err := net.SplitHostPort(raw); err != nil {
+			return errors.New("Не удалось разобрать адрес. Отправьте хост или host:port, например example.com или 1.2.3.4:443")
+		}
+	}
+	return nil
+}
+
+// handleCheburHostInput consumes the manual host input armed by the
+// «✍️ Проверить свой хост» button (wave H4, route menu:cheburin): the armed
+// single-shot waiting state (waitingCheburHost, admin-gated in
+// handleMessage) delivers the next plain text here; host[:port] is validated
+// (port stripped), then one-off CheckTarget → FormatCheburcheckReport reply.
+func (b *Bot) handleCheburHostInput(msg *telego.Message, raw string) {
+	t := targetFromMessage(msg)
+
+	host := stripCheburPort(raw)
+	if err := validateCheburHostInput(raw, host); err != nil {
+		b.send(t, "❌ "+err.Error())
+		return
+	}
+
+	chebClient := b.resolveCheburClient()
+	if !chebClient.HasCredentials() {
+		b.send(t, "Сканеры Cheburcheck не настроены (DefaultCheburScanners пуст)")
+		return
+	}
+
+	sentMsg, _ := b.sendAndReturn(t, fmt.Sprintf("⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
+		"Активный пробинг <code>%s</code>...\n"+
+		"Пожалуйста, подождите 5–20 секунд...", escapeHTML(host)))
+
+	ctx, cancel := context.WithTimeout(b.ctx, 20*time.Second)
+	defer cancel()
+
+	summary, err := chebClient.CheckTarget(ctx, host)
+	if err != nil {
+		errMsg := fmt.Sprintf("❌ <b>Ошибка Cheburcheck:</b> %s", escapeHTML(err.Error()))
+		if sentMsg != nil {
+			b.editWithMarkup(t.ChatID, sentMsg.GetMessageID(), errMsg, nil)
+		} else {
+			b.send(t, errMsg)
+		}
+		return
+	}
+
+	report := checker.FormatCheburcheckReport(summary)
+	if sentMsg != nil {
+		b.editWithMarkup(t.ChatID, sentMsg.GetMessageID(), report, nil)
+	} else {
+		b.send(t, report)
+	}
 }

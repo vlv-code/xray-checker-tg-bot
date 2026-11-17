@@ -37,13 +37,14 @@ func cheburHostsFromSnapshot(proxies []metrics.ProxyMetric) []string {
 }
 
 // getCheburMenuText renders the Cheburcheck submenu header: a one-line
-// description of the active RF probing, the /cheburcheck usage hint, an
+// description of the active probing (wave H3: «Cheburcheck — активный
+// пробинг блокировок», no 🧀/«РФ»), the /cheburcheck usage hint, an
 // empty-state note when no host exists (the list is host-based since wave G1)
 // and — when neither the CHEBURCHECK_API_KEY nor per-scanner tokens are
 // configured — an explicit unconfigured notice. Static RU text only (no
 // external strings are interpolated), so no escapeHTML call sites are needed.
 func (b *Bot) getCheburMenuText(hostCount int) string {
-	text := "🧀 <b>Активный пробинг блокировок РФ (Cheburcheck)</b>\n\n" +
+	text := "<b>Cheburcheck — активный пробинг блокировок</b>\n\n" +
 		"Сканеры из России отправляют реальные пробы к хосту и показывают тип блокировки " +
 		"(SNI, ТСПУ, подмена DNS, CDN).\n\n" +
 		"Выберите хост из списка ниже или отправьте команду с любым хостом:\n" +

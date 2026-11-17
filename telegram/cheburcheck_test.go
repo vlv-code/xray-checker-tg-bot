@@ -22,7 +22,8 @@ import (
 // host-based menu): an injected chebur client must be used, the host resolved
 // from the menu key must be probed on the BARE host (no port in /check
 // target), the per-scanner token must be sent, and the final report must
-// carry the 🧀 header with the wave G summary-first format.
+// carry the plain HTML header (wave H3 register 2026-11-17: the former 🧀
+// header is dropped) with the summary-first format.
 func TestHandleCheburcheckHost_UsesInjectedClient(t *testing.T) {
 	var mu sync.Mutex
 	var checkTargets []string
@@ -92,10 +93,13 @@ func TestHandleCheburcheckHost_UsesInjectedClient(t *testing.T) {
 		t.Fatal("expected editMessageText calls, got none")
 	}
 	final, _ := edits[len(edits)-1].Params["text"].(string)
-	for _, want := range []string{"🧀", "1.2.3.4", "Ответы: 1 из 1", "Не ограничен"} {
+	for _, want := range []string{"<b>Cheburcheck</b>: <code>1.2.3.4</code>", "1.2.3.4", "Ответы: 1 из 1", "Не ограничен"} {
 		if !strings.Contains(final, want) {
 			t.Errorf("final report missing %q, got: %s", want, final)
 		}
+	}
+	if strings.Contains(final, "🧀") {
+		t.Errorf("wave H3: report must not carry the 🧀 header, got: %s", final)
 	}
 }
 

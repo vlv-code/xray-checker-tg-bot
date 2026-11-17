@@ -97,6 +97,16 @@ type Bot struct {
 	// waitingNodeRename holds the chat awaiting a rename text input (Wave G5a):
 	// chatID -> node name being renamed from the cfg screen «✏️ Переименовать».
 	waitingNodeRename map[int64]string
+	// waitingCheburHost holds the chat awaiting a manual Cheburcheck host
+	// input (Wave H4): chatID -> true while the «✍️ Проверить свой хост»
+	// flow (route menu:cheburin) is armed; single-shot, consumed by the next
+	// plain text message. Guarded by waitingNodeAddMu like the other maps.
+	waitingCheburHost map[int64]bool
+	// waitingCheckHostHost holds the chat awaiting a custom Check-Host host
+	// input (Wave H6): chatID -> true while the «➕ Добавить хост» flow
+	// (route menu:checkhostadd) is armed; single-shot, consumed by the next
+	// plain text message. Guarded by waitingNodeAddMu like the other maps.
+	waitingCheckHostHost map[int64]bool
 
 	version            string
 	releaseCheckMu     sync.Mutex
@@ -137,28 +147,30 @@ func New(token string, targets []ChatTarget, source metrics.MetricsSource, notif
 	logger.Info("Telegram bot authorized as @%s", user.Username)
 
 	return &Bot{
-		api:               api,
-		ctx:               ctx,
-		cancel:            cancel,
-		targets:           targets,
-		allowedChatIDs:    allowed,
-		adminUserIDs:      make(map[int64]bool),
-		source:            source,
-		subs:              subs,
-		notifyOnRecovery:  notifyOnRecovery,
-		commandsEnabled:   commandsEnabled,
-		tracker:           NewAlertTracker(),
-		eventBuffer:       NewEventBuffer(),
-		lastSeen:          make(map[string]bool),
-		lastFlapAlert:     make(map[string]time.Time),
-		lastNodeHealth:    make(map[string]nodeHealthState),
-		lastMenuMsg:       make(map[string]int),
-		msgSeq:            make(map[string]int64),
-		subFreshness:      make(map[string]SubFreshness),
-		waitingNodeAdd:    make(map[int64]bool),
-		waitingNodeSub:    make(map[int64]string),
-		waitingNodeRename: make(map[int64]string),
-		stopChan:          make(chan struct{}),
+		api:                  api,
+		ctx:                  ctx,
+		cancel:               cancel,
+		targets:              targets,
+		allowedChatIDs:       allowed,
+		adminUserIDs:         make(map[int64]bool),
+		source:               source,
+		subs:                 subs,
+		notifyOnRecovery:     notifyOnRecovery,
+		commandsEnabled:      commandsEnabled,
+		tracker:              NewAlertTracker(),
+		eventBuffer:          NewEventBuffer(),
+		lastSeen:             make(map[string]bool),
+		lastFlapAlert:        make(map[string]time.Time),
+		lastNodeHealth:       make(map[string]nodeHealthState),
+		lastMenuMsg:          make(map[string]int),
+		msgSeq:               make(map[string]int64),
+		subFreshness:         make(map[string]SubFreshness),
+		waitingNodeAdd:       make(map[int64]bool),
+		waitingNodeSub:       make(map[int64]string),
+		waitingNodeRename:    make(map[int64]string),
+		waitingCheburHost:    make(map[int64]bool),
+		waitingCheckHostHost: make(map[int64]bool),
+		stopChan:             make(chan struct{}),
 	}, nil
 }
 

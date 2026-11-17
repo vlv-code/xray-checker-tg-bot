@@ -1005,8 +1005,8 @@ func (b *Bot) handleDeepDiagnostics(chatID int64, msgID int, stableID string, pa
 		text := b.formatDeepDiagnostics(targetMetric, health, ch)
 		if rep != nil && rep.Chebur != nil {
 			// Cheburcheck enrichment below the Check-Host block (escaped HTML).
-			// Wave G3: the flag emoji is replaced by the 🧀 chebur icon.
-			text += "\n🧀 <b>CHEBURCHECK (активный пробинг РФ):</b>\n" + formatCheburDiagBlock(rep.Chebur)
+			// Wave H3: the header dropped the 🧀 icon and the «РФ» mention.
+			text += "\n<b>CHEBURCHECK (активный пробинг):</b>\n" + formatCheburDiagBlock(rep.Chebur)
 		}
 		b.editWithMarkup(chatID, msgID, text, DeepDiagnosticsMarkup(stableID, curPage))
 	}()

@@ -33,7 +33,7 @@ Agent instructions: [AGENTS.md](AGENTS.md) | Policy: [.agents/project_knowledge/
 * 🤖 **Telegram Bot on `mymmrac/telego`**: Interactive inline keyboard menu, instant outage and recovery alerts.
 * ⚡ **Multi-Stage Diagnostics (`/diag`)**: Pinpoints exact point of failure (DNS, TCP, TLS, Xray session reset, CDN blocking).
 * 🌐 **Check-Host.net Integration**: Automatic multi-node reachability checks from Russia and worldwide locations during outages.
-* 🧀 **Cheburcheck Active RF Probing**: active blocking probes from Russian scanner nodes (per-scanner tokens configured in code, no API key) via the `/cheburcheck <host>` command, the «🧀 Cheburcheck» menu button, and offline-node diagnostics enrichment. Setting `CHEBURCHECK_API_KEY` switches probing to API-key mode: all public scanners run in one Bearer-authenticated stream and per-scanner tokens are ignored (the key wins).
+* **Cheburcheck Active Probing**: active blocking probes from Russian scanner nodes (per-scanner tokens configured in code, no API key) via the `/cheburcheck <host>` command, the «Cheburcheck» menu button (with the «✍️ Проверить свой хост» manual input), and offline-node diagnostics enrichment. Setting `CHEBURCHECK_API_KEY` switches probing to API-key mode: all public scanners run in one Bearer-authenticated stream and per-scanner tokens are ignored (the key wins).
 * ⏱️ **Runtime Interval Tuning**: `/interval <seconds>` command and interactive menu presets.
 * 🔄 **Auto-Reloading Subscriptions**: Multiple subscription URLs (Base64, JSON, share links) with automated periodic sync.
 * 📊 **Prometheus Metrics**: Exports `/metrics` for Grafana scraping and supports Prometheus Pushgateway.
@@ -57,7 +57,7 @@ All features are accessible via the interactive **`/menu`** or direct chat comma
 | `/togglehost <host>` | Enable or disable checking for all proxies sharing a specific host |
 | `/checkhost <host[:port]>` | Global reachability audit of any host/IP across worldwide Check-Host nodes |
 | `/checkhost_bg [on\|off\|1h\|run]` | Manage background Check-Host auditing and RU reachability alerts |
-| `/cheburcheck <host>` | Active RF blocking probe via Cheburcheck scanners (per-scanner tokens, no API key) |
+| `/cheburcheck <host>` | Active blocking probe via Cheburcheck scanners (per-scanner tokens, no API key) |
 | `/interval [seconds]` | View or change proxy check interval dynamically (e.g. `/interval 60`) |
 | `/tz [timezone]` | View or set bot timezone for quiet hours and digests (e.g. `/tz Europe/Moscow`) |
 | `/checkupdate` | Check for new GitHub releases of Xray Checker and view changelog |

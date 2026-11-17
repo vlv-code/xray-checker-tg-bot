@@ -117,6 +117,13 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 
 	switch cb.Data {
 	case "menu:main":
+		// Wave H4: leaving for the main menu disarms a pending manual
+		// Cheburcheck host input (mirrors the wave G5a rename disarm).
+		b.waitingNodeAddMu.Lock()
+		if b.waitingCheburHost != nil {
+			delete(b.waitingCheburHost, chatID)
+		}
+		b.waitingNodeAddMu.Unlock()
 		b.editWithMarkup(chatID, msgID, b.getMenuText(), MainMenuMarkup())
 	case "menu:settings":
 		b.editWithMarkup(chatID, msgID, b.getSettingsText(), SettingsMenuMarkup(b.subs != nil))
@@ -230,10 +237,17 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(),
 			CheckHostMenuMarkup(snapshot, 1, menuTotalPages(len(snapshot), menuListPageSize)))
 	case "menu:chebur":
-		// EXACT match only (order invariant): the per-host probe route is the
-		// "menu:cheburh:" prefix branch and the pager the "menu:cheburpg:"
-		// prefix branch in the default clause below — neither can collide with
-		// this bare exact case.
+		// EXACT match only (order invariant, mirrors menu:chebur): the per-host
+		// probe route is the "menu:cheburh:" prefix branch, the pager the
+		// "menu:cheburpg:" prefix branch in the default clause below, and the
+		// manual-input route the exact case "menu:cheburin" next — none can
+		// collide with this bare exact case. Re-entering the submenu disarms a
+		// pending manual-input state (wave H4).
+		b.waitingNodeAddMu.Lock()
+		if b.waitingCheburHost != nil {
+			delete(b.waitingCheburHost, chatID)
+		}
+		b.waitingNodeAddMu.Unlock()
 		snapshot := b.source.MetricsSnapshot()
 		hosts := cheburHostsFromSnapshot(snapshot)
 		b.editWithMarkup(chatID, msgID, b.getCheburMenuText(len(hosts)),
