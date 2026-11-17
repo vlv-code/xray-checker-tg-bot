@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -139,19 +138,106 @@ func (c *CheburcheckClient) HasCredentials() bool {
 }
 
 // CheburCDNControl aggregates one scanner's CDN control-server probe outcome
-// (the optional SSE result field `cdn_unbounded`). KB reference
-// (https://cheburcheck.ru/kb/probing): every control CDN server renders as a
-// segment with the statuses «Успешно», «Блокировка после ClientHello»,
-// «Таймаут получения данных», «Ошибка подключения» — mapped here to
-// OK/ClientHello/Timeout/Error. The KB documents those STATUSES but not the
-// SSE payload schema, so the field is parsed defensively
-// (parseCheburCDNControl) and report lines stay hidden when the field is
-// absent across results (wave H5, user decision D2).
+// (wave I F2, real model). Source: the REAL SSE schema live-captured
+// 2026-11-17 — each result carries host_results entries
+// {"host":"Blacklist"|"Whitelist","host_id":"…","probe_evidence":{"bytes":N,
+// "type":"Good"|"ClientHello"|"DataTimeout"|"ConnectionError"}}; counts are
+// bucketed per family (Blacklist = «заблок. диапазоны», Whitelist =
+// «доступные») and per evidence type (site statuses: Good → «Успешно» → ✅,
+// ClientHello → «Блокировка после ClientHello», DataTimeout → «Таймаут
+// данных», ConnectionError → «Ошибка подключения»; the KB
+// https://cheburcheck.ru/kb/probing documents the STATUSES but not the SSE
+// payload schema). Unknown evidence types and unknown host families are
+// bucketed under their own raw names so a schema extension can never break
+// the stream or the report. A result without host_results carries nil.
 type CheburCDNControl struct {
-	OK          int `json:"ok"`
-	ClientHello int `json:"client_hello"`
-	Timeout     int `json:"timeout"`
-	Error       int `json:"error"`
+	Blacklist map[string]int            `json:"blacklist,omitempty"`
+	Whitelist map[string]int            `json:"whitelist,omitempty"`
+	Other     map[string]map[string]int `json:"other,omitempty"` // unknown families → type → count
+}
+
+// cheburEvidenceBucket normalizes one probe_evidence.type spelling: the site
+// status «Таймаут данных» arrived as DataTimeout in the 2026-11-17 capture;
+// a hypothetical "Timeout" spelling folds into the same bucket so both
+// render as one таймаут count. Everything else keeps its raw name.
+func cheburEvidenceBucket(t string) string {
+	if t == "Timeout" {
+		return "DataTimeout"
+	}
+	return t
+}
+
+// cheburHostResult is one SSE host_results entry (real schema, live capture
+// 2026-11-17).
+type cheburHostResult struct {
+	Host          string `json:"host"`
+	HostID        string `json:"host_id"`
+	ProbeEvidence struct {
+		Type  string `json:"type"`
+		Bytes int    `json:"bytes"`
+	} `json:"probe_evidence"`
+}
+
+// cheburDNSObservation is one dns.observations entry; only the spoofing flag
+// is consumed (metadata/outcome shapes are the resolver API's own business).
+type cheburDNSObservation struct {
+	SuspectedSpoofing bool `json:"suspected_spoofing"`
+}
+
+// cheburDNSInfo is the REAL SSE `dns` object (live capture 2026-11-17):
+// {"observations":[…],"spoofing_detected":bool,…}. A result is DNS-spoofed
+// when ANY observation carries suspected_spoofing=true.
+type cheburDNSInfo struct {
+	Observations []cheburDNSObservation `json:"observations"`
+}
+
+// cheburCDNControlFromHostResults buckets one result's host_results entries
+// into the per-family/per-type counts. Entries with an empty evidence type
+// are skipped (no status reported); empty families yield empty maps so the
+// report can still distinguish "family present but zero-countable".
+func cheburCDNControlFromHostResults(entries []cheburHostResult) *CheburCDNControl {
+	ctrl := &CheburCDNControl{
+		Blacklist: make(map[string]int, 4),
+		Whitelist: make(map[string]int, 4),
+		Other:     make(map[string]map[string]int),
+	}
+	for _, h := range entries {
+		t := cheburEvidenceBucket(h.ProbeEvidence.Type)
+		if t == "" {
+			continue
+		}
+		switch h.Host {
+		case "Blacklist":
+			ctrl.Blacklist[t]++
+		case "Whitelist":
+			ctrl.Whitelist[t]++
+		default:
+			if ctrl.Other[h.Host] == nil {
+				ctrl.Other[h.Host] = make(map[string]int, 4)
+			}
+			ctrl.Other[h.Host][t]++
+		}
+	}
+	return ctrl
+}
+
+// add sums another scanner's CDN control counts into this one (report-level
+// aggregation across results).
+func (x *CheburCDNControl) add(o *CheburCDNControl) {
+	for t, n := range o.Blacklist {
+		x.Blacklist[t] += n
+	}
+	for t, n := range o.Whitelist {
+		x.Whitelist[t] += n
+	}
+	for fam, types := range o.Other {
+		if x.Other[fam] == nil {
+			x.Other[fam] = make(map[string]int, len(types))
+		}
+		for t, n := range types {
+			x.Other[fam][t] += n
+		}
+	}
 }
 
 // CheburProbeResult is one scanner's active-probe outcome.
@@ -163,13 +249,14 @@ type CheburProbeResult struct {
 	ASN      string   `json:"asn,omitempty"`
 	Verdicts []string `json:"verdicts"`
 	Cached   bool     `json:"cached,omitempty"`
-	// DNSSpoofed is the defensive parse of the optional SSE `dns` flag
-	// (nil = field absent or unrecognizable). Verdicts stay authoritative:
+	// DNSSpoofed is the parse of the optional SSE `dns` object (nil = field
+	// absent; otherwise ANY observations[].suspected_spoofing=true — wave I
+	// F3, real schema live capture 2026-11-17). Verdicts stay authoritative:
 	// the flag only speaks when a scanner's verdict list is silent (see
 	// aggregate).
 	DNSSpoofed *bool `json:"dns_spoofed,omitempty"`
-	// CDNControl is the defensive parse of the optional SSE `cdn_unbounded`
-	// counters (nil = field absent or unrecognizable).
+	// CDNControl aggregates the per-result host_results CDN control evidence
+	// (nil = no host_results entries; wave I F2 real model).
 	CDNControl *CheburCDNControl `json:"cdn_control,omitempty"`
 }
 
@@ -182,7 +269,7 @@ type CheburcheckSummary struct {
 	Target       string              `json:"target"`
 	ID           string              `json:"id,omitempty"`
 	OnlineProbes int                 `json:"onlineProbes,omitempty"` // started event
-	Answered     int                 `json:"answered,omitempty"`     // scanners that delivered results (done.response_count)
+	Answered     int                 `json:"answered,omitempty"`     // scanners that delivered results: len(Results) — done.response_count is NOT used (wave I F1: done may never arrive within client timeouts)
 	KindCounts   map[string]int      `json:"kindCounts,omitempty"`   // per verdict kind; multi-verdict scanners counted in EACH kind
 	Results      []CheburProbeResult `json:"results,omitempty"`      // per-scanner rows (kept for detail)
 	Verdict      string              `json:"verdict"`                // site-style RU overall
@@ -211,98 +298,25 @@ func (f *cheburFlexStr) UnmarshalJSON(b []byte) error {
 }
 
 // cheburSSEPayload covers started/result/done event bodies; unknown extra
-// fields are ignored by encoding/json. The optional result-only fields dns
-// and cdn_unbounded are captured raw and parsed defensively
-// (parseCheburDNSFlag / parseCheburCDNControl) — the KB documents neither
-// SSE schema.
+// fields are ignored by encoding/json (the real stream also carries a
+// boolean cdn_unblocked and dns metadata/outcome shapes this client never
+// reads). The REAL result-only fields (live capture 2026-11-17) are the
+// `dns` object (observations with suspected_spoofing) and `host_results`
+// (CDN control evidence) — both parse typed; absent fields stay nil so a
+// partial payload never fails the stream.
 type cheburSSEPayload struct {
-	ID            string          `json:"id"`
-	Target        string          `json:"target"`
-	OnlineProbes  int             `json:"online_probes"`
-	JobID         string          `json:"job_id"`
-	ProbeID       string          `json:"probe_id"`
-	Cached        bool            `json:"cached"`
-	Verdicts      []string        `json:"verdicts"`
-	Region        string          `json:"region"`
-	Provider      string          `json:"provider"`
-	ASN           cheburFlexStr   `json:"asn"`
-	Status        string          `json:"status"`
-	ResponseCount int             `json:"response_count"`
-	DNS           json.RawMessage `json:"dns"`
-	CDNUnbounded  json.RawMessage `json:"cdn_unbounded"`
-}
-
-// parseCheburDNSFlag defensively normalizes the optional SSE result field
-// `dns` (KB: DNS substitution is detected by comparing the response shape —
-// «код DNS и количество уникальных IPv4- и IPv6-адресов»; the SSE schema is
-// not documented). Accepted truthy forms: JSON true, non-zero number,
-// strings "true"/"yes"/"spoofed"/"dns_spoofing"/"blocked"; falsey: JSON
-// false, 0, "false"/"no"/""/"ok"/"clean". Anything else — null, unknown
-// wording, non-scalar — counts as absent.
-func parseCheburDNSFlag(raw json.RawMessage) (value, present bool) {
-	s := strings.TrimSpace(string(raw))
-	switch {
-	case s == "" || s == "null":
-		return false, false
-	case s == "true":
-		return true, true
-	case s == "false":
-		return false, true
-	}
-	if n, err := strconv.Atoi(s); err == nil {
-		return n != 0, true
-	}
-	var str string
-	if err := json.Unmarshal(raw, &str); err == nil {
-		switch strings.ToLower(strings.TrimSpace(str)) {
-		case "true", "yes", "spoofed", "dns_spoofing", "blocked":
-			return true, true
-		case "false", "no", "", "ok", "clean":
-			return false, true
-		}
-	}
-	return false, false
-}
-
-// parseCheburCDNControl defensively normalizes the optional SSE result field
-// `cdn_unbounded`: the accepted shape is a JSON object of per-status
-// counters (tolerant key spellings, string-encoded numbers tolerated);
-// null, strings, bools and unrecognized objects degrade to nil so a
-// malformed field can never fail the stream.
-func parseCheburCDNControl(raw json.RawMessage) *CheburCDNControl {
-	s := strings.TrimSpace(string(raw))
-	if s == "" || s == "null" {
-		return nil
-	}
-	var obj map[string]interface{}
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		return nil
-	}
-	pick := func(keys ...string) int {
-		for _, k := range keys {
-			if v, ok := obj[k]; ok {
-				switch n := v.(type) {
-				case float64:
-					return int(n)
-				case string:
-					if m, err := strconv.Atoi(strings.TrimSpace(n)); err == nil {
-						return m
-					}
-				}
-			}
-		}
-		return 0
-	}
-	ctrl := &CheburCDNControl{
-		OK:          pick("ok", "success", "successes", "success_count", "passed"),
-		ClientHello: pick("client_hello", "clienthello", "client_hello_block", "ch_block"),
-		Timeout:     pick("timeout", "timeouts", "timeout_count"),
-		Error:       pick("error", "errors", "error_count", "failed"),
-	}
-	if ctrl.OK == 0 && ctrl.ClientHello == 0 && ctrl.Timeout == 0 && ctrl.Error == 0 {
-		return nil
-	}
-	return ctrl
+	ID           string             `json:"id"`
+	Target       string             `json:"target"`
+	OnlineProbes int                `json:"online_probes"`
+	JobID        string             `json:"job_id"`
+	ProbeID      string             `json:"probe_id"`
+	Cached       bool               `json:"cached"`
+	Verdicts     []string           `json:"verdicts"`
+	Region       string             `json:"region"`
+	Provider     string             `json:"provider"`
+	ASN          cheburFlexStr      `json:"asn"`
+	DNS          *cheburDNSInfo     `json:"dns"`
+	HostResults  []cheburHostResult `json:"host_results"`
 }
 
 // parseCheburError converts a non-200 JSON {code,info} body into a typed error.
@@ -392,7 +406,6 @@ func (c *CheburcheckClient) CheckTarget(ctx context.Context, host string) (*Cheb
 		}
 		summary.Results = append(summary.Results, results...)
 		summary.OnlineProbes = stats.onlineProbes
-		summary.Answered = stats.answered
 	} else {
 		var lastErr error
 		succeeded := 0
@@ -410,12 +423,12 @@ func (c *CheburcheckClient) CheckTarget(ctx context.Context, host string) (*Cheb
 			}
 			succeeded++
 			// started reports the job-wide online-scanner count: identical
-			// across scanner streams, so keep the max (no double-count);
-			// each stream's done.response_count sums into Answered.
+			// across scanner streams, so keep the max (no double-count).
+			// Answered is derived once below from the delivered results —
+			// done.response_count is never trusted (wave I F1).
 			if stats.onlineProbes > summary.OnlineProbes {
 				summary.OnlineProbes = stats.onlineProbes
 			}
-			summary.Answered += stats.answered
 			summary.Results = append(summary.Results, results...)
 		}
 
@@ -427,6 +440,11 @@ func (c *CheburcheckClient) CheckTarget(ctx context.Context, host string) (*Cheb
 		}
 	}
 
+	// Wave I F1: Answered counts the scanners that DELIVERED results in
+	// whichever mode ran — the done event may never arrive within client
+	// timeouts (49-scanner jobs), and its response_count may diverge from
+	// what the client actually received.
+	summary.Answered = len(summary.Results)
 	c.aggregate(summary)
 	return summary, nil
 }
@@ -492,19 +510,19 @@ func (c *CheburcheckClient) probeScanner(ctx context.Context, id string, sc Scan
 	return c.consumeProbeStream(ctx, resp.Body, sc.Name)
 }
 
-// cheburStreamStats carries the per-stream bookkeeping from the started/done
-// SSE events: online_probes (the job-wide online-scanner count reported at
-// start) and response_count (results delivered when done fires).
+// cheburStreamStats carries the per-stream bookkeeping from the started SSE
+// event: the job-wide online-scanner count. The done event only marks the
+// stream end — its response_count is deliberately ignored (wave I F1:
+// Answered is derived from the delivered results).
 type cheburStreamStats struct {
 	onlineProbes int
-	answered     int
 }
 
 // consumeProbeStream parses the SSE event stream from body until done, ctx
 // cancellation or server-side close, mapping result events into
 // CheburProbeResult entries named scannerName (per-scanner credential name,
 // or "" in API-key mode where the stream aggregates all public scanners) and
-// reporting the started/done bookkeeping via cheburStreamStats.
+// reporting the started bookkeeping via cheburStreamStats.
 func (c *CheburcheckClient) consumeProbeStream(ctx context.Context, body io.Reader, scannerName string) ([]CheburProbeResult, cheburStreamStats, error) {
 	var results []CheburProbeResult
 	var stats cheburStreamStats
@@ -532,12 +550,24 @@ func (c *CheburcheckClient) consumeProbeStream(ctx context.Context, body io.Read
 				Verdicts: append([]string(nil), payload.Verdicts...),
 				Cached:   payload.Cached,
 			}
-			// Wave H5: optional dns / cdn_unbounded fields — defensive parse,
-			// absent/malformed data stays nil and never fails the stream.
-			if v, present := parseCheburDNSFlag(payload.DNS); present {
+			// Wave I F3: the real `dns` object — DNSSpoofed speaks only when
+			// the field is present (any observation suspected); absent field
+			// stays nil and never fails the stream.
+			if payload.DNS != nil {
+				v := false
+				for _, o := range payload.DNS.Observations {
+					if o.SuspectedSpoofing {
+						v = true
+						break
+					}
+				}
 				result.DNSSpoofed = &v
 			}
-			result.CDNControl = parseCheburCDNControl(payload.CDNUnbounded)
+			// Wave I F2: the real `host_results` evidence — bucketed counts,
+			// absent field stays nil.
+			if len(payload.HostResults) > 0 {
+				result.CDNControl = cheburCDNControlFromHostResults(payload.HostResults)
+			}
 			results = append(results, result)
 		} else if evName == "started" {
 			// started reports the job-wide online-scanner count; keep the max
@@ -548,7 +578,6 @@ func (c *CheburcheckClient) consumeProbeStream(ctx context.Context, body io.Read
 			}
 		} else if evName == "done" {
 			sawDone = true
-			stats.answered = payload.ResponseCount
 		}
 		evName, dataLines = "", nil
 	}
@@ -859,54 +888,146 @@ func cheburDetailSection(results []CheburProbeResult) string {
 	return sb.String()
 }
 
-// cheburCDNControlLine sums the CDN control-server counters over the results
-// that carry the optional SSE field `cdn_unbounded` (KB statuses: Успешно /
-// Блокировка после ClientHello / Таймаут получения данных / Ошибка
-// подключения — wave H5). The line stays hidden entirely when no result
-// carries the field or every counter is zero (defensive, user decision D2).
-func cheburCDNControlLine(results []CheburProbeResult) string {
-	var total CheburCDNControl
-	carried := false
-	for _, r := range results {
-		if r.CDNControl == nil {
-			continue
-		}
-		carried = true
-		total.OK += r.CDNControl.OK
-		total.ClientHello += r.CDNControl.ClientHello
-		total.Timeout += r.CDNControl.Timeout
-		total.Error += r.CDNControl.Error
+// cheburCDNTypeOrder fixes the display order of the evidence-type tokens in
+// a CDN family line (site style: successes first, then ClientHello blocks,
+// timeouts, connection errors; unknown types trail, sorted).
+var cheburCDNTypeOrder = []string{"Good", "ClientHello", "DataTimeout", "ConnectionError"}
+
+// cheburEvidenceLabel renders one evidence-type count (site status wording,
+// wave I F2): Good → «N✅», ClientHello → «N ClientHello», DataTimeout →
+// «N таймаута(-ов)», ConnectionError → «N ошибка(-и,-ок)»; unknown types
+// render their raw (escaped) name.
+func cheburEvidenceLabel(t string, n int) string {
+	switch t {
+	case "Good":
+		return fmt.Sprintf("%d✅", n)
+	case "ClientHello":
+		return fmt.Sprintf("%d ClientHello", n)
+	case "DataTimeout":
+		return fmt.Sprintf("%d %s", n, cheburPluralTimeouts(n))
+	case "ConnectionError":
+		return fmt.Sprintf("%d %s", n, cheburPluralEvidenceErrors(n))
+	default:
+		return fmt.Sprintf("%d %s", n, html.EscapeString(t))
 	}
-	if !carried {
+}
+
+// cheburCDNFamilyLine renders one family line: «CDN заблок. диапазоны: 8✅ ·
+// 2 ClientHello · 1 таймаут · 1 ошибка» — labels for the known families are
+// static (site wording); unknown families pass a pre-escaped label. Empty
+// counts yield "" so zero families never render.
+func cheburCDNFamilyLine(label string, counts map[string]int) string {
+	if len(counts) == 0 {
 		return ""
 	}
-	parts := make([]string, 0, 4)
-	if total.OK > 0 {
-		parts = append(parts, fmt.Sprintf("%d✅", total.OK))
+	parts := make([]string, 0, len(counts))
+	seen := make(map[string]bool, len(counts))
+	for _, t := range cheburCDNTypeOrder {
+		if n := counts[t]; n > 0 {
+			parts = append(parts, cheburEvidenceLabel(t, n))
+			seen[t] = true
+		}
 	}
-	if total.ClientHello > 0 {
-		parts = append(parts, fmt.Sprintf("%dClientHello", total.ClientHello))
+	unknown := make([]string, 0, len(counts))
+	for t := range counts {
+		if !seen[t] {
+			unknown = append(unknown, t)
+		}
 	}
-	if total.Timeout > 0 {
-		parts = append(parts, fmt.Sprintf("%dтаймаут", total.Timeout))
-	}
-	if total.Error > 0 {
-		parts = append(parts, fmt.Sprintf("%dошибок", total.Error))
+	sort.Strings(unknown)
+	for _, t := range unknown {
+		parts = append(parts, cheburEvidenceLabel(t, counts[t]))
 	}
 	if len(parts) == 0 {
 		return ""
 	}
-	return "CDN-контроль: " + strings.Join(parts, " · ")
+	return label + ": " + strings.Join(parts, " · ")
 }
 
-// cheburRegionsLine renders the dense «По регионам: Москва 4✅1⛔ · …» line
-// (wave H5): scanners aggregated per region — ✅ for ok-only scanners, ⛔ for
-// scanners with a real restriction (sni_block/tspu_block/dns_spoofing),
-// bare count when a region has neither; regions sorted by scanner count
-// (desc, then name asc), top-5 shown, the remainder folded into
-// «+N регионов».
+// cheburCDNControlLines sums the CDN control evidence over the results that
+// carry host_results (wave I F2 real model) and renders the TWO dense
+// site-style lines: blocked-range servers first, then accessible ones
+// (unknown families trail, sorted). The lines stay hidden entirely when no
+// result carries host_results data.
+func cheburCDNControlLines(results []CheburProbeResult) []string {
+	total := &CheburCDNControl{
+		Blacklist: make(map[string]int, 4),
+		Whitelist: make(map[string]int, 4),
+		Other:     make(map[string]map[string]int),
+	}
+	carried := false
+	for i := range results {
+		if results[i].CDNControl == nil {
+			continue
+		}
+		carried = true
+		total.add(results[i].CDNControl)
+	}
+	if !carried {
+		return nil
+	}
+	var lines []string
+	if line := cheburCDNFamilyLine("CDN заблок. диапазоны", total.Blacklist); line != "" {
+		lines = append(lines, line)
+	}
+	if line := cheburCDNFamilyLine("CDN доступные", total.Whitelist); line != "" {
+		lines = append(lines, line)
+	}
+	fams := make([]string, 0, len(total.Other))
+	for fam := range total.Other {
+		fams = append(fams, fam)
+	}
+	sort.Strings(fams)
+	for _, fam := range fams {
+		if line := cheburCDNFamilyLine("CDN "+html.EscapeString(fam), total.Other[fam]); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// cheburPluralTimeouts is the RU plural: 1 таймаут, 2–4 таймаута, otherwise
+// таймаутов (11–14 included).
+func cheburPluralTimeouts(n int) string {
+	if n%10 == 1 && n%100 != 11 {
+		return "таймаут"
+	}
+	if n%10 >= 2 && n%10 <= 4 && (n%100 < 12 || n%100 > 14) {
+		return "таймаута"
+	}
+	return "таймаутов"
+}
+
+// cheburPluralEvidenceErrors is the RU plural: 1 ошибка, 2–4 ошибки,
+// otherwise ошибок (11–14 included).
+func cheburPluralEvidenceErrors(n int) string {
+	if n%10 == 1 && n%100 != 11 {
+		return "ошибка"
+	}
+	if n%10 >= 2 && n%10 <= 4 && (n%100 < 12 || n%100 > 14) {
+		return "ошибки"
+	}
+	return "ошибок"
+}
+
+// cheburRegionIconOrder fixes the icon order inside one region segment of
+// the «По регионам» line: ✅ ok first (both pinned site examples — «4✅1⛔»
+// and wave I F4 «2✅1ℹ️» — lead with ✅), then ⛔ real restrictions, then the
+// informational ℹ️ CDN family, then ❓ unclear.
+var cheburRegionIconOrder = []string{"✅", "⛔", "ℹ️", "❓"}
+
+// cheburRegionsLine renders the dense «По регионам: Москва 2✅1ℹ️ · …» line:
+// scanners aggregated per region, each scanner classified by its dominant
+// verdict kind's icon (cheburKindIcon(cheburDominantVerdict(…))), every
+// region showing its verdict-mix icon counts (wave I F4 — NO iconless
+// segments: the old bare count could not tell a healthy region from an
+// undetermined one); regions sorted by scanner count (desc, then name asc),
+// top-5 shown, the remainder folded into «+N регионов».
 func cheburRegionsLine(results []CheburProbeResult) string {
-	type regStat struct{ total, ok, blocked int }
+	type regStat struct {
+		total int
+		icons map[string]int
+	}
 	stats := make(map[string]*regStat)
 	for _, r := range results {
 		if r.Region == "" {
@@ -914,27 +1035,11 @@ func cheburRegionsLine(results []CheburProbeResult) string {
 		}
 		st, seen := stats[r.Region]
 		if !seen {
-			st = &regStat{}
+			st = &regStat{icons: make(map[string]int, len(cheburRegionIconOrder))}
 			stats[r.Region] = st
 		}
 		st.total++
-		restricted, ok := false, false
-		for _, v := range r.Verdicts {
-			for _, want := range cheburRealRestrictionKinds {
-				if v == want {
-					restricted = true
-				}
-			}
-			if v == "ok" {
-				ok = true
-			}
-		}
-		switch {
-		case restricted:
-			st.blocked++
-		case ok:
-			st.ok++
-		}
+		st.icons[cheburKindIcon(cheburDominantVerdict(r.Verdicts))]++
 	}
 	if len(stats) == 0 {
 		return ""
@@ -955,17 +1060,11 @@ func cheburRegionsLine(results []CheburProbeResult) string {
 		if i == topN {
 			break
 		}
-		st := stats[name]
 		seg := html.EscapeString(name) + " "
-		switch {
-		case st.ok > 0 && st.blocked > 0:
-			seg += fmt.Sprintf("%d✅%d⛔", st.ok, st.blocked)
-		case st.ok > 0:
-			seg += fmt.Sprintf("%d✅", st.ok)
-		case st.blocked > 0:
-			seg += fmt.Sprintf("%d⛔", st.blocked)
-		default:
-			seg += fmt.Sprintf("%d", st.total)
+		for _, icon := range cheburRegionIconOrder {
+			if n := stats[name].icons[icon]; n > 0 {
+				seg += fmt.Sprintf("%d%s", n, icon)
+			}
 		}
 		parts = append(parts, seg)
 	}
@@ -990,11 +1089,13 @@ func cheburPluralRegions(n int) string {
 
 // FormatCheburcheckReport renders the summary as Telegram HTML, summary-first
 // (wave H5 compact-full format; replaces the wave G 🧀 header — authorized
-// H3 rework 2026-11-17): plain header, overall status, answered ratio,
-// per-kind counts with site labels, the always-on DNS substitution ratio
-// («у 0 из N» is site-parity), the optional CDN control totals and region
-// breakdown lines, then the compact grouped per-scanner detail. Every
-// external string is escaped exactly once.
+// H3 rework 2026-11-17): plain header, overall status, answered ratio
+// (Answered = delivered results, wave I F1), per-kind counts with site
+// labels, the always-on DNS substitution ratio («у 0 из N» is site-parity),
+// the two CDN control lines (wave I F2 real host_results model), the region
+// breakdown line with per-region verdict-mix icons (wave I F4), then the
+// compact grouped per-scanner detail. Every external string is escaped
+// exactly once.
 func FormatCheburcheckReport(s *CheburcheckSummary) string {
 	if s == nil {
 		return ""
@@ -1021,7 +1122,7 @@ func FormatCheburcheckReport(s *CheburcheckSummary) string {
 	if probed > 0 {
 		sb.WriteString(fmt.Sprintf("Подмена DNS: %d из %d\n", s.KindCounts["dns_spoofing"], probed))
 	}
-	if line := cheburCDNControlLine(s.Results); line != "" {
+	for _, line := range cheburCDNControlLines(s.Results) {
 		sb.WriteString(line + "\n")
 	}
 	if line := cheburRegionsLine(s.Results); line != "" {

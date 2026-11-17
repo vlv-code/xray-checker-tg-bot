@@ -261,13 +261,16 @@ func TestCheburcheck_SSEParserEdgeCases(t *testing.T) {
 	t.Run("result before started", func(t *testing.T) {
 		cl := newMock(t,
 			cheburSSE("result", `{"job_id":"j","probe_id":"p1","verdicts":["ok"]}`)+
-				cheburSSE("done", `{"id":"edge-id","response_count":1}`))
+				// Replaced-test register (wave I F1): response_count is
+				// deliberately divergent (7 results reported by done, only 1
+				// delivered) — Answered must count delivered results.
+				cheburSSE("done", `{"id":"edge-id","response_count":7}`))
 		s, err := cl.CheckTarget(context.Background(), "example.com")
 		if err != nil {
 			t.Fatalf("results before started must still be collected, got error: %v", err)
 		}
 		// No started event -> OnlineProbes stays 0 (omitempty drops it from
-		// JSON); done.response_count still feeds Answered.
+		// JSON); Answered = len(results), done.response_count is ignored.
 		if len(s.Results) != 1 || s.KindCounts["ok"] != 1 || s.Answered != 1 || s.OnlineProbes != 0 {
 			t.Fatalf("expected 1 ok result with answered=1 online=0, got %+v", s)
 		}
@@ -303,8 +306,12 @@ func TestCheburcheck_SSEParserEdgeCases(t *testing.T) {
 		if len(s.Results) != 1 {
 			t.Fatalf("expected collected result after cut stream, got %d", len(s.Results))
 		}
-		if s.OnlineProbes != 2 || s.Answered != 0 {
-			t.Fatalf("cut stream without done must not fake an answer: online=%d answered=%d", s.OnlineProbes, s.Answered)
+		// Replaced-test register (wave I F1): the old pin expected Answered==0
+		// without done — that was the user-reported bug («Ответы: 0 из 15
+		// сканеров» while 14 verdicts were collected). Answered counts the
+		// scanners that DELIVERED results, done or not.
+		if s.OnlineProbes != 2 || s.Answered != 1 {
+			t.Fatalf("cut stream must count delivered results as answered: online=%d answered=%d", s.OnlineProbes, s.Answered)
 		}
 	})
 
@@ -339,6 +346,97 @@ func TestCheburcheck_SSEParserEdgeCases(t *testing.T) {
 		}
 		if s.Verdict != "Не ограничен — ограничений не обнаружено" {
 			t.Errorf("expected unrestricted verdict for uncertain-only, got %q", s.Verdict)
+		}
+	})
+}
+
+// TestCheburcheck_AnsweredCountsResultsNotResponseCount pins the wave I F1
+// semantics (user-reported bug 2026-11-17: the bot showed «Ответы: 0 из 15
+// сканеров» while 14 verdicts were already collected — the old wiring took
+// Answered from done.response_count, but for 49-scanner jobs the done event
+// may never arrive within client timeouts): Answered = len(Results), the
+// scanners that actually DELIVERED results, in both key mode and scanner
+// mode. done.response_count is ignored — jobs can outlive the client
+// connection, so the server-side count may diverge arbitrarily.
+// started.online_probes keeps feeding OnlineProbes.
+func TestCheburcheck_AnsweredCountsResultsNotResponseCount(t *testing.T) {
+	newMock := func(t *testing.T, stream string, apiKey bool) *CheburcheckClient {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/check":
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "ans-id"})
+			case r.URL.Path == "/probe/ans-id":
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(stream))
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(srv.Close)
+		var cl *CheburcheckClient
+		if apiKey {
+			cl = NewCheburcheckClient(srv.URL, 2*time.Second, nil)
+			cl.SetAPIKey("test-key")
+		} else {
+			cl = NewCheburcheckClient(srv.URL, 2*time.Second, []ScannerCred{{Name: "edge", Token: "tok"}})
+		}
+		cl.limiter = nil
+		return cl
+	}
+
+	t.Run("cut before done counts delivered results (scanner mode)", func(t *testing.T) {
+		cl := newMock(t,
+			cheburSSE("started", `{"id":"ans-id","target":"example.com","online_probes":49}`)+
+				cheburSSE("result", `{"probe_id":"p1","verdicts":["ok"]}`)+
+				cheburSSE("result", `{"probe_id":"p2","verdicts":["sni_block"]}`)+
+				cheburSSE("result", `{"probe_id":"p3","verdicts":["ok"]}`),
+			false)
+		s, err := cl.CheckTarget(context.Background(), "example.com")
+		if err != nil {
+			t.Fatalf("stream cut before done must not error, got: %v", err)
+		}
+		// The reported bug shape: 3 results delivered, no done — the report
+		// must read «Ответы: 3 из 49 сканеров», never 0.
+		if s.OnlineProbes != 49 || s.Answered != 3 {
+			t.Fatalf("Answered must equal delivered results without done: online=%d answered=%d", s.OnlineProbes, s.Answered)
+		}
+		out := FormatCheburcheckReport(s)
+		if !strings.Contains(out, "Ответы: 3 из 49 сканеров\n") {
+			t.Errorf("report must show delivered-result ratio, got:\n%s", out)
+		}
+	})
+
+	t.Run("done response_count divergent ignored (scanner mode)", func(t *testing.T) {
+		cl := newMock(t,
+			cheburSSE("started", `{"id":"ans-id","target":"example.com","online_probes":49}`)+
+				cheburSSE("result", `{"probe_id":"p1","verdicts":["ok"]}`)+
+				cheburSSE("result", `{"probe_id":"p2","verdicts":["ok"]}`)+
+				cheburSSE("done", `{"id":"ans-id","online_probes":49,"response_count":48,"status":"done"}`),
+			false)
+		s, err := cl.CheckTarget(context.Background(), "example.com")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.Answered != 2 {
+			t.Fatalf("done.response_count=48 must be ignored, Answered=len(results)=2, got %d", s.Answered)
+		}
+	})
+
+	t.Run("done response_count divergent ignored (key mode)", func(t *testing.T) {
+		cl := newMock(t,
+			cheburSSE("started", `{"id":"ans-id","target":"example.com","online_probes":49}`)+
+				cheburSSE("result", `{"probe_id":"p1","verdicts":["ok"]}`)+
+				cheburSSE("result", `{"probe_id":"p2","verdicts":["ok"]}`)+
+				cheburSSE("done", `{"id":"ans-id","online_probes":49,"response_count":99,"status":"done"}`),
+			true)
+		s, err := cl.CheckTarget(context.Background(), "example.com")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.Answered != 2 {
+			t.Fatalf("key mode: done.response_count=99 must be ignored, Answered=len(results)=2, got %d", s.Answered)
 		}
 	})
 }
@@ -632,9 +730,9 @@ func TestCheburcheck_PreStreamErrors(t *testing.T) {
 // H3/H5 rework register 2026-11-17: the 🧀 emoji is dropped and the dense
 // «Подмена DNS: X из N» ratio line is added): plain header, Статус line,
 // Ответы ratio, per-kind counts line with site labels, the DNS substitution
-// ratio, then the compact per-scanner section grouped by dominant verdict
-// («+N» for hidden scanners, (кеш) markers, 12-line cap with
-// «+ ещё N сканеров»).
+// ratio, the two CDN control lines (wave I F2 real host_results model), then
+// the compact per-scanner section grouped by dominant verdict («+N» for
+// hidden scanners, (кеш) markers, 12-line cap with «+ ещё N сканеров»).
 func TestFormatCheburcheckReport_SummaryFirstAndCompact(t *testing.T) {
 	t.Run("summary-first layout", func(t *testing.T) {
 		s := &CheburcheckSummary{
@@ -682,27 +780,40 @@ func TestFormatCheburcheckReport_SummaryFirstAndCompact(t *testing.T) {
 		}
 	})
 
-	t.Run("cdn control line from cdn_unbounded", func(t *testing.T) {
-		// Wave H5: the SSE result field cdn_unbounded carries the per-scanner
-		// CDN control-server outcome (KB statuses: Успешно / Блокировка после
-		// ClientHello / Таймаут получения данных / Ошибка подключения);
-		// summaries sum the counters of scanners that carry the field.
+	t.Run("cdn control lines from host_results totals", func(t *testing.T) {
+		// Wave I F2 (replaces the wave H5 cdn_unbounded subtest — register):
+		// per-scanner CDN control counts (real host_results model) are summed
+		// across results and render as TWO dense site-style lines, blocked
+		// ranges first.
 		s := &CheburcheckSummary{
 			Target:     "cdn.example",
-			KindCounts: map[string]int{"ok": 3},
+			KindCounts: map[string]int{"ok": 2},
 			Verdict:    "Не ограничен — ограничений не обнаружено",
 			Results: []CheburProbeResult{
-				{Region: "Москва", Verdicts: []string{"ok"}, CDNControl: &CheburCDNControl{OK: 12, ClientHello: 1, Timeout: 8, Error: 5}},
-				{Region: "СПб", Verdicts: []string{"ok"}}, // field absent for this scanner
+				{Region: "Москва", Verdicts: []string{"ok"}, CDNControl: &CheburCDNControl{
+					Blacklist: map[string]int{"Good": 8, "ClientHello": 2, "DataTimeout": 1},
+					Whitelist: map[string]int{"Good": 5},
+				}},
+				{Region: "СПб", Verdicts: []string{"ok"}, CDNControl: &CheburCDNControl{
+					Blacklist: map[string]int{"Good": 1, "ConnectionError": 1},
+				}},
 			},
 		}
 		out := FormatCheburcheckReport(s)
-		if !strings.Contains(out, "CDN-контроль: 12✅ · 1ClientHello · 8таймаут · 5ошибок\n") {
-			t.Errorf("cdn control totals must render as one dense line, got:\n%s", out)
+		wantBL := "CDN заблок. диапазоны: 9✅ · 2 ClientHello · 1 таймаут · 1 ошибка\n"
+		wantWL := "CDN доступные: 5✅\n"
+		if !strings.Contains(out, wantBL) {
+			t.Errorf("missing blocked-range CDN totals %q in:\n%s", wantBL, out)
+		}
+		if !strings.Contains(out, wantWL) {
+			t.Errorf("missing accessible CDN totals %q in:\n%s", wantWL, out)
+		}
+		if idxBL, idxWL := strings.Index(out, "CDN заблок. диапазоны"), strings.Index(out, "CDN доступные"); idxBL < 0 || idxWL < 0 || idxBL > idxWL {
+			t.Errorf("blocked-range line must precede the accessible line, got:\n%s", out)
 		}
 	})
 
-	t.Run("cdn control line hidden when absent across results", func(t *testing.T) {
+	t.Run("cdn control lines hidden when absent across results", func(t *testing.T) {
 		s := &CheburcheckSummary{
 			Target:     "x.example",
 			KindCounts: map[string]int{"ok": 1},
@@ -710,8 +821,8 @@ func TestFormatCheburcheckReport_SummaryFirstAndCompact(t *testing.T) {
 			Results:    []CheburProbeResult{{Region: "Москва", Verdicts: []string{"ok"}}},
 		}
 		out := FormatCheburcheckReport(s)
-		if strings.Contains(out, "CDN-контроль") {
-			t.Errorf("cdn control line must stay hidden when no result carries the field, got:\n%s", out)
+		if strings.Contains(out, "CDN заблок. диапазоны") || strings.Contains(out, "CDN доступные") {
+			t.Errorf("cdn control lines must stay hidden when no result carries host_results, got:\n%s", out)
 		}
 	})
 
@@ -803,6 +914,49 @@ func TestFormatCheburcheckReport_SummaryFirstAndCompact(t *testing.T) {
 	})
 }
 
+// TestCheburcheck_RegionsLineVerdictMixIcons pins wave I F4: EVERY region in
+// the «По регионам» line carries its verdict-mix icons with counts (✅ ok /
+// ⛔ real restriction / ℹ️ CDN family / ❓ unclear; icon order ✅ ⛔ ℹ️ ❓) —
+// the user's live paste showed ICONLESS regions (CDN-family and uncertain
+// scanners fell into a bare count, and a bare count cannot tell a healthy
+// region from an undetermined one). No iconless segments may render.
+func TestCheburcheck_RegionsLineVerdictMixIcons(t *testing.T) {
+	s := &CheburcheckSummary{
+		Target:  "geo.example",
+		Verdict: "Не ограничен — ограничений не обнаружено",
+	}
+	mk := func(dst []CheburProbeResult, region string, n int, verdicts []string) []CheburProbeResult {
+		for i := 0; i < n; i++ {
+			dst = append(dst, CheburProbeResult{Region: region, Verdicts: verdicts})
+		}
+		return dst
+	}
+	rs := []CheburProbeResult{}
+	rs = mk(rs, "Москва", 2, []string{"ok"})
+	rs = mk(rs, "Москва", 1, []string{"cdn_block"}) // ℹ️ CDN family — icon, not a bare count
+	rs = mk(rs, "СПб", 1, []string{"ok"})
+	rs = mk(rs, "СПб", 1, []string{"sni_block"})
+	rs = mk(rs, "Казань", 1, []string{"uncertain"}) // ❓ — icon, not a bare count
+	s.Results = rs
+	s.KindCounts = map[string]int{"ok": 3, "cdn_block": 1, "sni_block": 1, "uncertain": 1}
+
+	out := FormatCheburcheckReport(s)
+	// Sort: scanner count desc (Москва 3, СПб 2, Казань 1); every region
+	// shows its verdict-mix icons.
+	want := "По регионам: Москва 2✅1ℹ️ · СПб 1✅1⛔ · Казань 1❓\n"
+	if !strings.Contains(out, want) {
+		t.Errorf("regions line must carry per-region verdict-mix icons, got:\n%s", out)
+	}
+	// Adversarial: the old iconless shapes must not reappear (CDN-family
+	// scanners dropped from the segment, uncertain regions rendered as a
+	// bare count).
+	for _, bad := range []string{"Москва 2✅ ·", "Казань 1\n"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("iconless region segment %q must not render, got:\n%s", bad, out)
+		}
+	}
+}
+
 // TestFormatCheburcheckReport_EscapesExternalData pins the F6 lesson: every
 // external string (target, scanner name, region, provider, verdict fallback,
 // hand-set Verdict) is html-escaped exactly once in the Telegram HTML report.
@@ -846,87 +1000,269 @@ func TestFormatCheburcheckReport_EscapesExternalData(t *testing.T) {
 	}
 }
 
-// TestCheburcheck_SSE_DNSAndCDNFields (Wave H5): result events may carry the
-// optional `dns` flag and the `cdn_unbounded` CDN control-server counters.
-// The KB (https://cheburcheck.ru/kb/probing) documents the control-server
-// STATUSES («Успешно», «Блокировка после ClientHello», «Таймаут получения
-// данных», «Ошибка подключения») and the DNS comparison («форма ответа: код
-// DNS и количество уникальных IPv4- и IPv6-адресов») but NOT the SSE payload
-// schema — so both fields are parsed defensively and absent/malformed data
-// never fails the stream. Verdicts stay authoritative for KindCounts: the dns
-// flag only speaks when a scanner's verdict list is silent.
-func TestCheburcheck_SSE_DNSAndCDNFields(t *testing.T) {
+// cheburCap* lines are TRIMMED from the REAL cheburcheck.ru API-key SSE
+// stream, live-captured 2026-11-17 with the user's key (job 75a20dea-…,
+// online_probes=49, 48 result events + done). Trimming: dns.observations → 2
+// per result, host_results → ≤5 Blacklist + ≤3 Whitelist entries, 6 of 48
+// results kept (one per verdict kind mix) — the fixture contains no secrets
+// (asn / region / provider names only). The done event deliberately keeps the
+// REAL job-wide response_count=48 while the trimmed stream delivers only 6
+// results — the exact divergence class behind the user-reported «Ответы: 0
+// из 15 сканеров» bug (wave I pins Answered=len(results)).
+//
+// Totals across the 6 trimmed results (hand-checked):
+// Blacklist: Good 12, ClientHello 3, DataTimeout 10, ConnectionError 5;
+// Whitelist: Good 18. All dns observations carry suspected_spoofing=false.
+var (
+	cheburCapStarted = `{"id":"75a20dea-9722-4637-8215-190d889c9867","online_probes":49,"target":"mr-marakesh.duckdns.org"}`
+	cheburCapDone    = `{"id":"75a20dea-9722-4637-8215-190d889c9867","online_probes":49,"response_count":48,"status":"done"}`
+
+	cheburCapResults = []string{
+		// cdn_block, Тюменская область / Rostelecom
+		`{"asn":"AS12389","cached":true,"cdn_unblocked":false,"dns":{"observations":[{"metadata":{"ipv4_count":1,"ipv6_count":0,"response_codes":["NoError"]},"outcome":{"addresses":["193.8.114.37"],"type":"Answer"},"protocol":"Udp","provider":"google","suspected_spoofing":false},{"metadata":{"ipv4_count":1,"ipv6_count":0,"response_codes":["NoError"]},"outcome":{"addresses":["193.8.114.37"],"type":"Answer"},"protocol":"Tcp","provider":"google","suspected_spoofing":false}],"spoofing_detected":false},"host_results":[{"host":"Blacklist","host_id":"bhs-ovh","probe_evidence":{"bytes":13787,"type":"DataTimeout"}},{"host":"Blacklist","host_id":"fra-aws","probe_evidence":{"type":"Good"}},{"host":"Blacklist","host_id":"cloudflare1","probe_evidence":{"type":"ConnectionError"}},{"host":"Blacklist","host_id":"eri-ovh","probe_evidence":{"bytes":13787,"type":"DataTimeout"}},{"host":"Blacklist","host_id":"ams-constant","probe_evidence":{"bytes":15966,"type":"DataTimeout"}},{"host":"Whitelist","host_id":"yandex-mirror","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"msk2-selectel","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"neftm-mirror","probe_evidence":{"type":"Good"}}],"job_id":"75a20dea-9722-4637-8215-190d889c9867","probe_id":"4","provider":"Rostelecom","region":"Тюменская область","target_hop":4,"verdicts":["cdn_block"]}`,
+		// whitelist, Краснодарский край / Rostelecom
+		`{"asn":"AS12389","cached":true,"cdn_unblocked":false,"dns":{"observations":[{"metadata":{"ipv4_count":1,"ipv6_count":0,"response_codes":["NoError"]},"outcome":{"addresses":["193.8.114.37"],"type":"Answer"},"protocol":"Udp","provider":"google","suspected_spoofing":false},{"metadata":{"ipv4_count":1,"ipv6_count":0,"response_codes":["NoError"]},"outcome":{"addresses":["193.8.114.37"],"type":"Answer"},"protocol":"Tcp","provider":"google","suspected_spoofing":false}],"spoofing_detected":false},"host_results":[{"host":"Blacklist","host_id":"bhs-ovh","probe_evidence":{"type":"ConnectionError"}},{"host":"Blacklist","host_id":"ams-constant","probe_evidence":{"type":"Good"}},{"host":"Blacklist","host_id":"par-constant","probe_evidence":{"bytes":15966,"type":"DataTimeout"}},{"host":"Blacklist","host_id":"cloudflare1","probe_evidence":{"type":"ClientHello"}},{"host":"Blacklist","host_id":"eri-ovh","probe_evidence":{"type":"ConnectionError"}},{"host":"Whitelist","host_id":"yandex-mirror","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"msk2-selectel","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"neftm-mirror","probe_evidence":{"type":"Good"}}],"job_id":"75a20dea-9722-4637-8215-190d889c9867","probe_id":"12","provider":"Rostelecom","region":"Краснодарский край","target_hop":5,"verdicts":["whitelist"]}`,
+		// ok, Удмуртская Республика / MARK-ITT
+		`{"asn":"AS3226","cached":true,"cdn_unblocked":true,"dns":{"observations":[{"metadata":{"ipv4_count":1,"ipv6_count":0,"response_codes":["NoError"]},"outcome":{"addresses":["193.8.114.37"],"type":"Answer"},"protocol":"Udp","provider":"google","suspected_spoofing":false},{"metadata":{"ipv4_count":1,"ipv6_count":0,"response_codes":["NoError"]},"outcome":{"addresses":["193.8.114.37"],"type":"Answer"},"protocol":"Tcp","provider":"google","suspected_spoofing":false}],"spoofing_detected":false},"host_results":[{"host":"Blacklist","host_id":"bhs-ovh","probe_evidence":{"type":"Good"}},{"host":"Blacklist","host_id":"cloudflare1","probe_evidence":{"type":"ClientHello"}},{"host":"Blacklist","host_id":"eri-ovh","probe_evidence":{"type":"Good"}},{"host":"Blacklist","host_id":"ams-constant","probe_evidence":{"type":"Good"}},{"host":"Blacklist","host_id":"par-constant","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"yandex-mirror","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"msk2-selectel","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"neftm-mirror","probe_evidence":{"type":"Good"}}],"job_id":"75a20dea-9722-4637-8215-190d889c9867","probe_id":"13","provider":"MARK-ITT","region":"Удмуртская Республика","target_hop":2,"verdicts":["ok"]}`,
+		// cdn_block, Донецкая Народная Республика / Don Apex
+		`{"asn":"AS47235","cached":true,"cdn_unblocked":false,"dns":{"observations":[{"metadata":{"ipv4_count":1,"ipv6_count":0,"response_codes":["NoError"]},"outcome":{"addresses":["193.8.114.37"],"type":"Answer"},"protocol":"Udp","provider":"google","suspected_spoofing":false},{"metadata":{"ipv4_count":1,"ipv6_count":0,"response_codes":["NoError"]},"outcome":{"addresses":["193.8.114.37"],"type":"Answer"},"protocol":"Tcp","provider":"google","suspected_spoofing":false}],"spoofing_detected":false},"host_results":[{"host":"Blacklist","host_id":"bhs-ovh","probe_evidence":{"bytes":13787,"type":"DataTimeout"}},{"host":"Blacklist","host_id":"fra-aws","probe_evidence":{"type":"Good"}},{"host":"Blacklist","host_id":"cloudflare1","probe_evidence":{"type":"ConnectionError"}},{"host":"Blacklist","host_id":"eri-ovh","probe_evidence":{"bytes":13787,"type":"DataTimeout"}},{"host":"Blacklist","host_id":"ams-constant","probe_evidence":{"bytes":15966,"type":"DataTimeout"}},{"host":"Whitelist","host_id":"yandex-mirror","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"msk2-selectel","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"neftm-mirror","probe_evidence":{"type":"Good"}}],"job_id":"75a20dea-9722-4637-8215-190d889c9867","probe_id":"21","provider":"Don Apex","region":"Донецкая Народная Республика","target_hop":null,"verdicts":["cdn_block"]}`,
+		// ok, Новосибирская область / Novotelecom
+		`{"asn":"AS31200","cached":true,"cdn_unblocked":true,"dns":{"observations":[{"metadata":{"ipv4_count":1,"ipv6_count":0,"response_codes":["NoError"]},"outcome":{"addresses":["193.8.114.37"],"type":"Answer"},"protocol":"Udp","provider":"google","suspected_spoofing":false},{"metadata":{"ipv4_count":1,"ipv6_count":0,"response_codes":["NoError"]},"outcome":{"addresses":["193.8.114.37"],"type":"Answer"},"protocol":"Tcp","provider":"google","suspected_spoofing":false}],"spoofing_detected":false},"host_results":[{"host":"Blacklist","host_id":"bhs-ovh","probe_evidence":{"type":"Good"}},{"host":"Blacklist","host_id":"cloudflare1","probe_evidence":{"type":"ConnectionError"}},{"host":"Blacklist","host_id":"eri-ovh","probe_evidence":{"type":"Good"}},{"host":"Blacklist","host_id":"ams-constant","probe_evidence":{"type":"Good"}},{"host":"Blacklist","host_id":"par-constant","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"yandex-mirror","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"msk2-selectel","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"neftm-mirror","probe_evidence":{"type":"Good"}}],"job_id":"75a20dea-9722-4637-8215-190d889c9867","probe_id":"23","provider":"Novotelecom","region":"Новосибирская область","target_hop":null,"verdicts":["ok"]}`,
+		// uncertain, Московская область / Tonus (Play Telecom)
+		`{"asn":"AS47564","cached":true,"cdn_unblocked":false,"dns":{"observations":[{"metadata":{"ipv4_count":0,"ipv6_count":0,"response_codes":[]},"outcome":{"message":"lookup timed out","type":"Error"},"protocol":"Udp","provider":"google","suspected_spoofing":false},{"metadata":{"ipv4_count":1,"ipv6_count":0,"response_codes":["NoError"]},"outcome":{"addresses":["193.8.114.37"],"type":"Answer"},"protocol":"Tcp","provider":"google","suspected_spoofing":false}],"spoofing_detected":false},"host_results":[{"host":"Blacklist","host_id":"bhs-ovh","probe_evidence":{"bytes":13787,"type":"DataTimeout"}},{"host":"Blacklist","host_id":"ams-constant","probe_evidence":{"type":"Good"}},{"host":"Blacklist","host_id":"cloudflare1","probe_evidence":{"type":"ClientHello"}},{"host":"Blacklist","host_id":"eri-ovh","probe_evidence":{"bytes":13787,"type":"DataTimeout"}},{"host":"Blacklist","host_id":"par-constant","probe_evidence":{"bytes":15966,"type":"DataTimeout"}},{"host":"Whitelist","host_id":"yandex-mirror","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"msk2-selectel","probe_evidence":{"type":"Good"}},{"host":"Whitelist","host_id":"neftm-mirror","probe_evidence":{"type":"Good"}}],"job_id":"75a20dea-9722-4637-8215-190d889c9867","probe_id":"79","provider":"Tonus (Play Telecom)","region":"Московская область","target_hop":5,"verdicts":["uncertain"]}`,
+	}
+)
+
+// cheburCapStream renders the trimmed captured stream as SSE events.
+func cheburCapStream() string {
+	var sb strings.Builder
+	sb.WriteString(cheburSSE("started", cheburCapStarted))
+	for _, r := range cheburCapResults {
+		sb.WriteString(cheburSSE("result", r))
+	}
+	sb.WriteString(cheburSSE("done", cheburCapDone))
+	return sb.String()
+}
+
+// cheburCapMock serves the trimmed captured stream (wave I fixtures).
+func cheburCapMock(t *testing.T, id string) *CheburcheckClient {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/check":
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "h5job"})
-		case r.URL.Path == "/probe/h5job":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": id})
+		case r.URL.Path == "/probe/"+id:
 			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = w.Write([]byte(
-				cheburSSE("started", `{"id":"h5job","target":"example.com","online_probes":4}`) +
-					cheburSSE("result", `{"job_id":"j1","probe_id":"p1","verdicts":[],"dns":true,"cdn_unbounded":{"ok":12,"client_hello":1,"timeout":8,"error":5}}`) +
-					cheburSSE("result", `{"job_id":"j2","probe_id":"p2","verdicts":["ok"],"dns":false,"cdn_unbounded":null}`) +
-					cheburSSE("result", `{"job_id":"j3","probe_id":"p3","verdicts":["ok"],"cdn_unbounded":"garbage"}`) +
-					cheburSSE("result", `{"job_id":"j4","probe_id":"p4","verdicts":["ok"]}`) +
-					cheburSSE("done", `{"id":"h5job","status":"finished","response_count":4,"online_probes":4}`)))
+			_, _ = w.Write([]byte(cheburCapStream()))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
-	defer srv.Close()
-
-	cl := NewCheburcheckClient(srv.URL, 5*time.Second, []ScannerCred{{Name: "s", Token: "t"}})
+	t.Cleanup(srv.Close)
+	cl := NewCheburcheckClient(srv.URL, 5*time.Second, nil)
+	cl.SetAPIKey("test-key")
 	cl.limiter = nil
+	return cl
+}
 
-	summary, err := cl.CheckTarget(context.Background(), "example.com")
-	if err != nil {
-		t.Fatalf("CheckTarget failed: %v", err)
-	}
-	if len(summary.Results) != 4 {
-		t.Fatalf("expected 4 results, got %d", len(summary.Results))
-	}
+// TestCheburcheck_SSE_HostResultsCDNControlLines pins wave I F2: the REAL SSE
+// result schema (live capture 2026-11-17, see cheburCap* fixtures) carries the
+// CDN control evidence in per-result host_results entries —
+// {"host":"Blacklist"|"Whitelist","host_id":"…","probe_evidence":{"bytes":N,
+// "type":"Good"|"ClientHello"|"DataTimeout"|"ConnectionError"}} — and the
+// report renders TWO dense site-style lines, blocked-range servers first, then
+// the accessible ones, one «N<status>» token per evidence type. The old
+// cdn_unbounded object-parser is REMOVED: no such field exists in the real
+// stream (the real boolean is cdn_unblocked), so the old «CDN-контроль» line
+// could never render. Replaced-test register (wave I): the wave H5
+// cdn_unbounded pins (TestCheburcheck_SSE_DNSAndCDNFields + the
+// "cdn control line from cdn_unbounded" subtest) are REPLACED by these pins.
+func TestCheburcheck_SSE_HostResultsCDNControlLines(t *testing.T) {
+	t.Run("captured stream renders both family lines", func(t *testing.T) {
+		cl := cheburCapMock(t, "cap48")
+		s, err := cl.CheckTarget(context.Background(), "mr-marakesh.duckdns.org")
+		if err != nil {
+			t.Fatalf("CheckTarget failed: %v", err)
+		}
+		if len(s.Results) != 6 {
+			t.Fatalf("expected 6 trimmed-capture results, got %d", len(s.Results))
+		}
+		// F1 on real data: done says response_count=48, but only 6 results
+		// were delivered — the report must show 6 of 49 (the user's bug).
+		if s.Answered != 6 || s.OnlineProbes != 49 {
+			t.Fatalf("answered must equal delivered results: answered=%d online=%d", s.Answered, s.OnlineProbes)
+		}
+		out := FormatCheburcheckReport(s)
+		if !strings.Contains(out, "Ответы: 6 из 49 сканеров\n") {
+			t.Errorf("report must show delivered-result ratio, got:\n%s", out)
+		}
+		blLine := "CDN заблок. диапазоны: 12✅ · 3 ClientHello · 10 таймаутов · 5 ошибок\n"
+		wlLine := "CDN доступные: 18✅\n"
+		if !strings.Contains(out, blLine) {
+			t.Errorf("missing blocked-range CDN line %q in:\n%s", blLine, out)
+		}
+		if !strings.Contains(out, wlLine) {
+			t.Errorf("missing accessible CDN line %q in:\n%s", wlLine, out)
+		}
+		// Site order: blocked-range servers first, then accessible ones.
+		if idxBL, idxWL := strings.Index(out, "CDN заблок. диапазоны"), strings.Index(out, "CDN доступные"); idxBL < 0 || idxWL < 0 || idxBL > idxWL {
+			t.Errorf("blocked-range CDN line must precede the accessible one, got:\n%s", out)
+		}
+		// F3 cross-pin on real data: all captured observations are clean.
+		if !strings.Contains(out, "Подмена DNS: 0 из 6\n") {
+			t.Errorf("dns ratio must count the 6 delivered results, got:\n%s", out)
+		}
+		// The old cdn_unbounded label is gone.
+		if strings.Contains(out, "CDN-контроль") {
+			t.Errorf("old cdn_unbounded label must not render, got:\n%s", out)
+		}
+	})
 
-	// r1: dns=true + cdn counters parsed.
-	r1 := summary.Results[0]
-	if r1.DNSSpoofed == nil || !*r1.DNSSpoofed {
-		t.Errorf("dns:true must parse into DNSSpoofed, got %v", r1.DNSSpoofed)
-	}
-	if r1.CDNControl == nil || r1.CDNControl.OK != 12 || r1.CDNControl.ClientHello != 1 ||
-		r1.CDNControl.Timeout != 8 || r1.CDNControl.Error != 5 {
-		t.Errorf("cdn_unbounded counters must parse, got %+v", r1.CDNControl)
-	}
-	// Verdicts were silent and the dns flag spoke: count as dns_spoofing, not
-	// as uncertain.
-	if summary.KindCounts["dns_spoofing"] != 1 {
-		t.Errorf("silent verdicts + dns:true must count as dns_spoofing, got %v", summary.KindCounts)
-	}
-	if summary.KindCounts["uncertain"] != 0 {
-		t.Errorf("dns evidence must not fall into uncertain, got %v", summary.KindCounts)
-	}
+	t.Run("no host_results hides both lines", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/check":
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "nohr"})
+			case r.URL.Path == "/probe/nohr":
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(
+					cheburSSE("started", `{"id":"nohr","online_probes":1}`) +
+						cheburSSE("result", `{"probe_id":"p","verdicts":["ok"]}`) +
+						cheburSSE("done", `{"id":"nohr","response_count":1}`)))
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer srv.Close()
+		cl := NewCheburcheckClient(srv.URL, 2*time.Second, []ScannerCred{{Name: "s", Token: "t"}})
+		cl.limiter = nil
 
-	// r2: explicit dns=false parses as a present-false flag (no dns count).
-	if r2 := summary.Results[1]; r2.DNSSpoofed == nil || *r2.DNSSpoofed {
-		t.Errorf("dns:false must parse as a present-false flag, got %v", r2.DNSSpoofed)
-	}
+		s, err := cl.CheckTarget(context.Background(), "example.com")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := FormatCheburcheckReport(s)
+		if strings.Contains(out, "CDN заблок. диапазоны") || strings.Contains(out, "CDN доступные") {
+			t.Errorf("CDN lines must stay hidden without host_results data, got:\n%s", out)
+		}
+	})
 
-	// r3/r4: malformed and absent fields degrade to nil, stream unaffected.
-	if r3 := summary.Results[2]; r3.CDNControl != nil || r3.DNSSpoofed != nil {
-		t.Errorf("malformed cdn_unbounded must degrade to nil, got %+v", r3.CDNControl)
-	}
-	if r4 := summary.Results[3]; r4.CDNControl != nil || r4.DNSSpoofed != nil {
-		t.Errorf("absent fields must stay nil, got %+v/%v", r4.CDNControl, r4.DNSSpoofed)
-	}
+	t.Run("unknown evidence type gets its own escaped bucket", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/check":
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "weird"})
+			case r.URL.Path == "/probe/weird":
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(
+					cheburSSE("result", `{"probe_id":"u1","verdicts":["cdn_block"],"host_results":[{"host":"Blacklist","host_id":"weird-host","probe_evidence":{"bytes":10,"type":"Weird<v"}}]}`) +
+						cheburSSE("done", `{"id":"weird","response_count":1}`)))
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer srv.Close()
+		cl := NewCheburcheckClient(srv.URL, 2*time.Second, []ScannerCred{{Name: "s", Token: "t"}})
+		cl.limiter = nil
 
-	// The report renders the aggregated CDN line from the single carrying
-	// result and hides nothing else.
-	out := FormatCheburcheckReport(summary)
-	if !strings.Contains(out, "CDN-контроль: 12✅ · 1ClientHello · 8таймаут · 5ошибок\n") {
-		t.Errorf("report must render aggregated cdn control totals, got:\n%s", out)
+		s, err := cl.CheckTarget(context.Background(), "example.com")
+		if err != nil {
+			t.Fatalf("unknown evidence type must never fail the stream, got: %v", err)
+		}
+		out := FormatCheburcheckReport(s)
+		if !strings.Contains(out, "CDN заблок. диапазоны: 1 Weird&lt;v\n") {
+			t.Errorf("unknown evidence type must render its own escaped bucket, got:\n%s", out)
+		}
+		if strings.Contains(out, "Weird<v") {
+			t.Errorf("external evidence type must be html-escaped once, got:\n%s", out)
+		}
+	})
+}
+
+// TestCheburcheck_SSE_DNSObservationsSpoofing pins wave I F3 (replaces the
+// wave H5 scalar dns:true/false pins of TestCheburcheck_SSE_DNSAndCDNFields —
+// the REAL dns field, live-captured 2026-11-17, is an OBJECT
+// {"observations":[{"provider":…,"protocol":…,"suspected_spoofing":bool},…];
+// the old scalar parser could never match it). A result is DNS-spoofed when
+// ANY observation carries suspected_spoofing=true. Verdicts stay
+// authoritative: spoofing evidence only speaks when a scanner's verdict list
+// is silent (wave H5 rule, kept).
+func TestCheburcheck_SSE_DNSObservationsSpoofing(t *testing.T) {
+	newMock := func(t *testing.T, stream string) *CheburcheckClient {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/check":
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "dnso"})
+			case r.URL.Path == "/probe/dnso":
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(stream))
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(srv.Close)
+		cl := NewCheburcheckClient(srv.URL, 2*time.Second, []ScannerCred{{Name: "s", Token: "t"}})
+		cl.limiter = nil
+		return cl
 	}
-	if !strings.Contains(out, "Подмена DNS: 1 из 4\n") {
-		t.Errorf("dns ratio must reflect the dns evidence count, got:\n%s", out)
-	}
+	cleanDNS := `"dns":{"observations":[{"provider":"google","protocol":"Udp","suspected_spoofing":false}],"spoofing_detected":false}`
+
+	t.Run("clean observations count zero", func(t *testing.T) {
+		cl := newMock(t,
+			cheburSSE("result", `{"probe_id":"p1","verdicts":["ok"],`+cleanDNS+`}`)+
+				cheburSSE("result", `{"probe_id":"p2","verdicts":["ok"],`+cleanDNS+`}`)+
+				cheburSSE("done", `{"id":"dnso","response_count":2}`))
+		s, err := cl.CheckTarget(context.Background(), "example.com")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.KindCounts["ok"] != 2 || s.KindCounts["dns_spoofing"] != 0 {
+			t.Fatalf("clean observations must not count as dns_spoofing, got %v", s.KindCounts)
+		}
+		if out := FormatCheburcheckReport(s); !strings.Contains(out, "Подмена DNS: 0 из 2\n") {
+			t.Errorf("dns ratio line must render «0 из 2», got:\n%s", out)
+		}
+	})
+
+	t.Run("suspected spoofing without verdicts counts as dns_spoofing", func(t *testing.T) {
+		cl := newMock(t,
+			cheburSSE("result", `{"probe_id":"p1","verdicts":[],"dns":{"observations":[{"provider":"cloudflare","protocol":"Tcp","suspected_spoofing":true}]}}`)+
+				cheburSSE("result", `{"probe_id":"p2","verdicts":["ok"],`+cleanDNS+`}`)+
+				cheburSSE("done", `{"id":"dnso","response_count":2}`))
+		s, err := cl.CheckTarget(context.Background(), "example.com")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Silent verdict list + spoofing evidence → dns_spoofing (never
+		// uncertain); the verdict-carrying scanner stays ok.
+		if s.KindCounts["dns_spoofing"] != 1 || s.KindCounts["ok"] != 1 || s.KindCounts["uncertain"] != 0 {
+			t.Fatalf("suspected_spoofing must count as dns_spoofing for a silent scanner, got %v", s.KindCounts)
+		}
+		if out := FormatCheburcheckReport(s); !strings.Contains(out, "Подмена DNS: 1 из 2\n") {
+			t.Errorf("dns ratio must reflect the spoofing evidence, got:\n%s", out)
+		}
+	})
+
+	t.Run("dns field absent keeps the verdict-only line", func(t *testing.T) {
+		cl := newMock(t,
+			cheburSSE("result", `{"probe_id":"p0","verdicts":[]}`)+
+				cheburSSE("done", `{"id":"dnso","response_count":1}`))
+		s, err := cl.CheckTarget(context.Background(), "example.com")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s.KindCounts["uncertain"] != 1 {
+			t.Fatalf("no dns evidence must leave the uncertain bucket, got %v", s.KindCounts)
+		}
+		if out := FormatCheburcheckReport(s); !strings.Contains(out, "Подмена DNS: 0 из 1\n") {
+			t.Errorf("dns ratio line must stay with verdict-only counting, got:\n%s", out)
+		}
+	})
 }
 
 // TestCheburcheck_APIKeyModeSingleStreamAllScanners pins the API-key probe

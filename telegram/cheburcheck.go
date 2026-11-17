@@ -48,9 +48,11 @@ func (b *Bot) handleCheburcheckCommand(msg *telego.Message) {
 
 	sentMsg, _ := b.sendAndReturn(t, fmt.Sprintf("⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
 		"Активный пробинг <code>%s</code>...\n"+
-		"Пожалуйста, подождите 5–20 секунд...", escapeHTML(target)))
+		"Пожалуйста, подождите до 30 секунд...", escapeHTML(target)))
 
-	ctx, cancel := context.WithTimeout(b.ctx, 20*time.Second)
+	// Wave I F1: 30s budget — the 49-scanner real jobs exceed the old 20s,
+	// so the stream was cut before done and results were lost mid-flight.
+	ctx, cancel := context.WithTimeout(b.ctx, 30*time.Second)
 	defer cancel()
 
 	summary, err := chebClient.CheckTarget(ctx, target)
@@ -110,9 +112,10 @@ func (b *Bot) handleCheburcheckHost(chatID int64, msgID int, hostKey string) {
 
 	b.editWithMarkup(chatID, msgID, fmt.Sprintf("⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
 		"Активный пробинг <code>%s</code>...\n"+
-		"Пожалуйста, подождите 5–20 секунд...", escapeHTML(host)), BackToMenuMarkup())
+		"Пожалуйста, подождите до 30 секунд...", escapeHTML(host)), BackToMenuMarkup())
 
-	ctx, cancel := context.WithTimeout(b.ctx, 20*time.Second)
+	// Wave I F1: 30s budget (matches the manual command path — full streams).
+	ctx, cancel := context.WithTimeout(b.ctx, 30*time.Second)
 	defer cancel()
 
 	summary, err := chebClient.CheckTarget(ctx, host)
@@ -196,9 +199,10 @@ func (b *Bot) handleCheburHostInput(msg *telego.Message, raw string) {
 
 	sentMsg, _ := b.sendAndReturn(t, fmt.Sprintf("⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
 		"Активный пробинг <code>%s</code>...\n"+
-		"Пожалуйста, подождите 5–20 секунд...", escapeHTML(host)))
+		"Пожалуйста, подождите до 30 секунд...", escapeHTML(host)))
 
-	ctx, cancel := context.WithTimeout(b.ctx, 20*time.Second)
+	// Wave I F1: 30s budget (matches the manual command path — full streams).
+	ctx, cancel := context.WithTimeout(b.ctx, 30*time.Second)
 	defer cancel()
 
 	summary, err := chebClient.CheckTarget(ctx, host)
