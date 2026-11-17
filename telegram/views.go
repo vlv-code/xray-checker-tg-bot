@@ -106,14 +106,17 @@ func (b *Bot) getMenuText() string {
 			}
 			ns := nodeMap[n.Name]
 			nOnline := 0
-			nTotal := 0
+			nActive := 0
 			if ns != nil {
+				// nodeMap counts ACTIVE proxies only: disabled ones `continue`
+				// before the counters — do NOT subtract DisabledProxies again
+				// (double-subtract produced the impossible «3/2»).
 				nOnline = ns.online
-				nTotal = ns.total
+				nActive = ns.total
 			}
-			if nTotal == 0 && n.Total > 0 {
+			if nActive == 0 && n.Total > 0 {
 				nOnline = n.Online
-				nTotal = n.Total
+				nActive = n.Total - n.DisabledProxies
 			}
 
 			asnInfo := ""
@@ -121,13 +124,11 @@ func (b *Bot) getMenuText() string {
 				asnInfo = fmt.Sprintf(" (%s)", escapeHTML(n.ASN))
 			}
 
-			// Disabled proxies are excluded from the active denominator —
-			// they must not surface as failures (same semantics as nodeHealthBadge).
-			active := nTotal - n.DisabledProxies
 			paused := ""
 			if n.DisabledProxies > 0 {
 				paused = fmt.Sprintf(" · %d⏸", n.DisabledProxies)
 			}
+			active := nActive
 			if !n.Up {
 				fmt.Fprintf(&sb, "  %s 🖥 %s: 🔴 <b>оффлайн</b> <i>(потеряна связь)</i>\n", branch, escapeHTML(n.Name))
 			} else if active > 0 && nOnline == active {

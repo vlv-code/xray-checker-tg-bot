@@ -267,3 +267,29 @@ func (v *viewsTestNodeManager) RenameNode(oldName, newName string) error {
 func (v *viewsTestNodeManager) SetNodeEnabled(name string, enabled bool) error {
 	return fmt.Errorf("не поддерживается в этом тесте")
 }
+
+// TestGetMenuText_NoDoubleDisabledSubtract: the summary's per-node line must
+// not subtract DisabledProxies twice (nodeMap counts ACTIVE proxies only).
+// Regression for the deployed «⚠️ 3/2 онлайн (1 сбоит) · 1 ⏸» with a healthy
+// 3-of-3 node that has one manually excluded proxy (user report 2026-11-17).
+func TestGetMenuText_NoDoubleDisabledSubtract(t *testing.T) {
+	src := &mockSource{metrics: []metrics.ProxyMetric{
+		{StableID: "m1", Name: "master-p", Address: "1.1.1.1:443", Online: true},
+		{StableID: "c1", Name: "n1", Address: "2.2.2.2:443", NodeName: "colloc", Online: true},
+		{StableID: "c2", Name: "n2", Address: "3.3.3.3:443", NodeName: "colloc", Online: true},
+		{StableID: "c3", Name: "n3", Address: "4.4.4.4:443", NodeName: "colloc", Online: true},
+		{StableID: "c4", Name: "n4", Address: "5.5.5.5:443", NodeName: "colloc", Disabled: true},
+	}}
+	mgr := &viewsTestNodeManager{nodes: []NodeInfo{
+		{Name: "colloc", Up: true, Online: 3, Total: 4, DisabledProxies: 1, ASN: "AS60879"},
+	}}
+	b := &Bot{source: src, nodeMgr: mgr}
+
+	text := b.getMenuText()
+	if strings.Contains(text, "3/2") || strings.Contains(text, "сбоит") || strings.Contains(text, "⚠️") {
+		t.Errorf("healthy node must not render a failure fraction, got:\n%s", text)
+	}
+	if !strings.Contains(text, "3/3 онлайн") || !strings.Contains(text, "1⏸") {
+		t.Errorf("expected «🟢 3/3 онлайн · 1⏸», got:\n%s", text)
+	}
+}
