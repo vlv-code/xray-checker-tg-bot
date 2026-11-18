@@ -1,5 +1,7 @@
 ---
 name: record-observation
+license: MIT
+compatibility: "Requires Python 3.10+ and Git"
 description: >-
   Use this skill to record an undocumented bug, environment quirk, runtime edge-case,
   or non-obvious solution into the repository's `.agents/project_knowledge/observations.md` table.
@@ -37,7 +39,7 @@ This skill ensures disciplined, standardized addition of entries to the project 
    python scripts/record_obs.py --category "<category>" --path "<path_or_component>" --issue "<issue_summary>" --solution "<workaround_or_solution>" --actor-id "<actor_id>"
    ```
    * **Parameters:**
-     * `--category`: One of the canonical categories: `boundaries`, `ci`, `decommission`, `incident`, `orchestration`, `runtime`, `git`, `init`, `testing`, `architecture`.
+     * `--category`: One of the canonical categories: `build`, `runtime`, `deps`, `db`, `api`, `test`, `env`, `ci`, `boundaries`, `orchestration`, `decommission`, `incident`, `init`, `testing`, `git`, `architecture`.
      * `--path`: Component, script, or configuration path.
      * `--issue`: Brief summary of the bug or quirk (pipes `|` and newlines are safely escaped automatically).
      * `--solution`: Practical workaround or fix.

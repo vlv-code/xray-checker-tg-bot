@@ -1,5 +1,7 @@
 ---
 name: ground-meta-project
+license: MIT
+compatibility: "Requires Python 3.10+ and Git"
 description: >-
   Context recovery and drift diagnosis skill: restores goal, state, identity
   and authority after session changes, moves, updates or compaction; diagnoses
@@ -43,10 +45,13 @@ Read ONLY what the situation needs, by semantic section reference:
 - the live task: the CURRENT user request first; `tasks.md` second — a fresh
   request wins over a stale entry, but never silently cancels previously
   agreed restrictions; contradictions are surfaced explicitly;
+- the last `- [>]` checkpoint in `tasks.md` when resuming interrupted or
+  handed-off work (checkpoint convention per tasks.md rules);
 - relevant fragments of `architecture.md` / `boundaries.md`;
 - the assigned role's OWN `notes.md` (foreign passports are not loaded);
 - situation-relevant reports and observations (a found report is context,
   NOT an authorization).
+- a stashed facts digest (`python scripts/inspect_meta_project.py --facts-digest`) may substitute for re-reading unchanged slices — a digest mismatch names exactly which file to re-read.
 Prior-session chat is assumed unavailable; if the original task is not
 recoverable from the sources above, state the absence.
 

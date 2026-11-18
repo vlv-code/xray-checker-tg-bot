@@ -4,8 +4,8 @@ scripts/inspect_meta_project.py
 
 Deterministic repository inspection utility for Meta-Project (Zero External Dependencies, Python 3.10+ stdlib).
 Decouples repository survey from modification:
-- Classifies repository state into 7 canonical states (NONE, FOREIGN_RULES, HEALTHY_REGISTERED,
-  HEALTHY_NEW_HARNESS, LEGACY_UNREGISTERED, PARTIAL_CORRUPTED, INCOMPATIBLE_SCHEMA).
+- Classifies repository state into 8 canonical states (NONE, FOREIGN_RULES, HEALTHY_REGISTERED,
+  HEALTHY_NEW_HARNESS, CONTEXT_UNRESOLVED, LEGACY_UNREGISTERED, PARTIAL_CORRUPTED, INCOMPATIBLE_SCHEMA).
 - Evaluates 5-dimension Capability Matrix (read_instructions, local_checks, skills, roles, hooks).
 - Detects git worktrees, subproject roots, and foreign agent instructions.
 - Enforces strict Survey-First Zero-Write Invariant: produces zero disk modifications,
@@ -15,6 +15,7 @@ Decouples repository survey from modification:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -30,6 +31,12 @@ except ImportError:  # direct script execution: python scripts/inspect_meta_proj
     except ImportError:
         validate_identity_registry = None
 
+try:  # shared helpers (ADR #22): package-style import (tests: from
+    # scripts.inspect_meta_project import ...)
+    from scripts._common import _error_envelope
+except ImportError:  # direct script execution: python scripts/inspect_meta_project.py
+    from _common import _error_envelope
+
 
 def _registry_validation_errors(repo_root: Path) -> List[str]:
     """Returns registry validity errors, or [] when the validator is
@@ -43,6 +50,80 @@ def _registry_validation_errors(repo_root: Path) -> List[str]:
         return [f"registry validation failed unexpectedly: {exc}"]
 
 SUPPORTED_SCHEMA_VERSIONS = {"1.0.0", "1.1.0", "1.0", "1.1", "1"}
+
+
+# Wave G Lane I (facts digest): version of the digest payload contract.
+FACTS_DIGEST_VERSION = "1"
+
+# Knowledge slices fingerprinted by --facts-digest (registry included);
+# a slice that is absent hashes as null, never as an empty-file hash.
+FACTS_DIGEST_SLICES = (
+    ".agents/project_knowledge/architecture.md",
+    ".agents/project_knowledge/boundaries.md",
+    ".agents/project_knowledge/weak_spots.md",
+    ".agents/project_knowledge/observations.md",
+    ".agents/project_knowledge/tasks.md",
+    ".agents/meta-project.json",
+)
+
+
+def _sha256_file(path: Path) -> Optional[str]:
+    """sha256 hex digest of a file's raw bytes, or None when the file is
+    absent or unreadable (the digest must never raise)."""
+    if not path.is_file():
+        return None
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except Exception:
+        return None
+
+
+def compute_facts_digest(repo_root: Path, report: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build the Wave G Lane I facts digest from a finished inspection report
+    (Wave G plan §6.1). A compact, deterministic fingerprint of the
+    REPOSITORY — not the runtime: an agent stashes the serialized payload
+    and later diffs it cheaply instead of re-reading every slice; a digest
+    mismatch names exactly which file to re-read (ground-meta-project).
+
+    Contract:
+    - facts_digest_version: FACTS_DIGEST_VERSION (payload schema version);
+    - state: the classified canonical repository state;
+    - slices: per-file sha256 for the 5 knowledge slices + the registry
+      (absent slice -> null);
+    - capabilities: capability matrix as per-dimension status strings;
+    - harness/installation: echo of the runtime context flags (null when
+      not provided — the digest is still emitted, with state
+      CONTEXT_UNRESOLVED for an otherwise healthy repository).
+
+    Byte-stability: callers must serialize with json.dumps(..., sort_keys=True,
+    separators=(",", ":")) — fixed separators and key order make the output
+    byte-identical for identical inputs. Read-only: hashing reads bytes and
+    writes nothing (no disk cache — the stash lives with the agent).
+    """
+    repo_root = Path(repo_root).resolve()
+    slices: Dict[str, Optional[str]] = {}
+    for rel in FACTS_DIGEST_SLICES:
+        slices[rel] = _sha256_file(repo_root / rel)
+    capabilities = {
+        cap: info.get("status")
+        for cap, info in sorted(report["capabilities"].items())
+    }
+    runtime_context = report.get("runtime_context", {})
+    return {
+        "facts_digest_version": FACTS_DIGEST_VERSION,
+        "state": report["state"],
+        "slices": slices,
+        "capabilities": capabilities,
+        "harness": runtime_context.get("target_harness"),
+        "installation": runtime_context.get("target_installation"),
+    }
+
+
 CANONICAL_ACTIONS = {
     "NONE": "scaffold_clean",
     "FOREIGN_RULES": "preserve_and_merge",
@@ -480,6 +561,14 @@ def format_human_report(report: Dict[str, Any]) -> str:
 
 
 def main() -> int:
+    # Deterministic output encoding: section-symbol diagnostics (audit refs)
+    # must reach consumers as UTF-8 regardless of the Windows console/pipe
+    # code page (cp1251 would otherwise emit bare 0xA7 bytes).
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
     parser = argparse.ArgumentParser(
         description="Meta-Project Deterministic Repository Inspection Utility (Zero External Dependencies, Python 3.10+ stdlib)"
     )
@@ -508,6 +597,23 @@ def main() -> int:
         action="store_true",
         help="Strict audit assertion ensuring zero write operations are executed.",
     )
+    parser.add_argument(
+        "--facts-digest",
+        action="store_true",
+        help=(
+            "Print a deterministic compact JSON facts digest of the "
+            "repository instead of the full report: facts_digest_version, "
+            "classified state, per-slice sha256 for the 5 knowledge slices "
+            "and the registry (absent slice -> null), capability matrix "
+            "(per-dimension status), and the harness/installation echo. "
+            "Byte-stable for identical inputs. Composable with "
+            "--harness/--installation; the digest describes the REPOSITORY, "
+            "not the runtime — without --harness/--installation it is still "
+            "emitted, with state CONTEXT_UNRESOLVED for an otherwise healthy "
+            "repository. Read-only: no disk cache is written — stash the "
+            "output and diff it later."
+        ),
+    )
 
     args = parser.parse_args()
     repo_path = Path(args.repo_root)
@@ -517,6 +623,34 @@ def main() -> int:
         target_harness=args.harness,
         target_installation=args.installation,
     )
+
+    # Wave E diagnostic notice (presentation only): a CONTEXT_UNRESOLVED
+    # state is a canonical unresolved-context condition; the stdout report
+    # and rc=0 are unchanged.
+    if report["state"] == "CONTEXT_UNRESOLVED":
+        sys.stderr.write(_error_envelope(
+            "CONTEXT_UNRESOLVED",
+            ".agents/meta-project.json",
+            "runtime context not resolved from a healthy installation",
+            "an explicit --harness/--installation pair registered active "
+            "in the registry",
+            "no runtime context supplied or resolvable; refusing to "
+            "silently adopt an arbitrary active installation",
+            "re-run with --harness <id> --installation <id> (see "
+            ".agents/meta-project.json), or resolve context via the "
+            "ground-meta-project skill",
+        ) + "\n")
+
+    if args.facts_digest:
+        # Wave G Lane I: the digest is the whole payload (compact, sorted,
+        # fixed separators — byte-stable for identical inputs).
+        print(json.dumps(
+            compute_facts_digest(repo_path, report),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ))
+        return 0
 
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))

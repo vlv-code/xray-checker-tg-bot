@@ -8,11 +8,52 @@ Validates modified or specified files against repository boundaries.md.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import re
 import subprocess
+import json
 import sys
 from typing import Dict, List, Optional, Set, Tuple
+
+try:  # shared helpers (ADR #22): package-style import (tests: from
+    # scripts.check_boundaries import ...)
+    from scripts._common import _error_envelope
+except ImportError:  # direct script execution: python scripts/check_boundaries.py
+    from _common import _error_envelope
+
+
+# Scoped staged-mode override (Wave D T3.1): when the pre-commit hook would
+# otherwise block a user-sanctioned Red Zone change, the operator may run
+# `META_PROJECT_ALLOW_RED_ZONE=1 git commit ...`. Fail-closed default: the
+# gate admits Red Zone staged files ONLY on the explicit value "1"; any
+# other value (including unset/empty) keeps the refusal. Default Deny
+# (unmapped) paths are never admitted by this override.
+RED_ZONE_ENV_VAR = "META_PROJECT_ALLOW_RED_ZONE"
+
+# Wave H: SHA-bound maintainer sanction (roadmap 7.2.2 item 4, all three
+# requirements). The sanction is a JSON file carried by the INCOMING push
+# (.github/red-zone-sanction.json) but verified against the PRE-PUSH base
+# revision passed via --sanction-base-sha, so a new push shifts the base and
+# invalidates every older sanction automatically (requirement 3). "WHO" is
+# anchored on two independent checks: the sanction's authorized_by actor AND
+# the platform-provided push actor must both belong to the authorized
+# maintainer set below (the CODEOWNERS owner; requirement 1). Coverage is
+# explicit-path only - no wildcards, every violating Red Zone file must be
+# listed (requirement 2 / no over-broad grants). Default Deny (unmapped)
+# paths are never sanctionable.
+SANCTION_AUTHORIZED_ACTORS = frozenset({"vlv-code"})
+SANCTION_KIND = "red_zone_sanction"
+SANCTION_SCHEMA_VERSION = "1.0.0"
+
+
+def env_allows_red_zone() -> bool:
+    """Read the staged-mode Red Zone override env var (fail-closed).
+
+    Only the explicit value "1" enables the override; everything else
+    (unset, empty, "0", "true", typos) keeps the refusal.
+    """
+    return os.environ.get(RED_ZONE_ENV_VAR, "").strip() == "1"
 
 
 class BoundaryGateError(RuntimeError):
@@ -284,6 +325,11 @@ def check_architecture_drift(files: List[str]) -> Tuple[bool, List[str]]:
 
     code_files: List[str] = []
     for f in normalized_files:
+        # Bytecode caches and compiled artifacts are hygiene noise, never
+        # functional code (Wave D T3.2; consistent with the init skill's
+        # Zero Unmapped Dirs filter list and its baseline .gitignore).
+        if "__pycache__" in f.split("/") or f.endswith(".pyc"):
+            continue
         is_ignored_dir = any(f.startswith(p) for p in ignored_prefixes)
         # Exception: skills/ and scripts/ represent functional framework code
         is_framework_code = f.startswith("skills/") or f.startswith("scripts/")
@@ -395,12 +441,15 @@ if [ -f "$LEGACY_HOOK" ]; then
   fi
 fi
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+# Scoped override pass-through: META_PROJECT_ALLOW_RED_ZONE=1 (set by the
+# operator for a sanctioned commit) admits Red Zone staged files via the
+# gate's staged mode; the gate itself fails closed on any other value.
 if [ -f "$ROOT/scripts/check_boundaries.py" ]; then
-  python "$ROOT/scripts/check_boundaries.py" --staged
+  META_PROJECT_ALLOW_RED_ZONE="${META_PROJECT_ALLOW_RED_ZONE:-}" python "$ROOT/scripts/check_boundaries.py" --staged
   exit $?
 elif [ -f "$ROOT/.agents/scripts/check_boundaries.py" ]; then
   # Legacy pre-relocation deployment of the boundary gate.
-  python "$ROOT/.agents/scripts/check_boundaries.py" --staged
+  META_PROJECT_ALLOW_RED_ZONE="${META_PROJECT_ALLOW_RED_ZONE:-}" python "$ROOT/.agents/scripts/check_boundaries.py" --staged
   exit $?
 fi
 exit 0
@@ -570,8 +619,43 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=None,
         help="Root directory of the repository (default: current working directory)",
     )
+    parser.add_argument(
+        "--sanction-file",
+        type=str,
+        default=None,
+        help="Path to a red_zone_sanction JSON file carried by the incoming push (Wave H SHA-bound maintainer sanction)",
+    )
+    parser.add_argument(
+        "--sanction-base-sha",
+        type=str,
+        default=None,
+        help="The base revision this diff is evaluated against; the sanction must be bound to exactly this SHA",
+    )
+    parser.add_argument(
+        "--sanction-actor",
+        type=str,
+        default=None,
+        help="Platform-provided push actor (GitHub login); must match the sanction's authorized_by maintainer",
+    )
 
     args = parser.parse_args(argv)
+
+    # Wave P acceptance D7: the sanction flags are a mutual trio. A subset
+    # used to crash with a raw TypeError deep in the sanction reader
+    # (open(NoneType)); fail-closed stays, but the surface is a clean
+    # argparse usage error (rc=2) naming the missing flags.
+    sanction_trio = [args.sanction_file, args.sanction_base_sha, args.sanction_actor]
+    provided = [flag for flag, value in (
+        ("--sanction-file", args.sanction_file),
+        ("--sanction-base-sha", args.sanction_base_sha),
+        ("--sanction-actor", args.sanction_actor),
+    ) if value]
+    if any(sanction_trio) and len(provided) != 3:
+        parser.error(
+            "the sanction flags are a mutual trio: --sanction-file, "
+            "--sanction-base-sha and --sanction-actor must be supplied "
+            f"together; missing: {', '.join(set(('--sanction-file', '--sanction-base-sha', '--sanction-actor')) - set(provided))}"
+        )
 
     # Authoritative repository root for all modes and git operations (audit §2:
     # --repo-root must define the repository for every git invocation).
@@ -602,6 +686,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 break
 
     if not boundaries_path or not boundaries_path.is_file():
+        envelope_target = (
+            str(boundaries_path) if boundaries_path else "<default location>"
+        )
+        sys.stderr.write(_error_envelope(
+            "CONTEXT_UNRESOLVED",
+            envelope_target,
+            "boundaries.md file not found",
+            "a readable boundaries.md mapping every repository path to a zone",
+            "no boundaries policy file at the resolved location",
+            "pass --boundaries <path> or deploy "
+            ".agents/project_knowledge/boundaries.md",
+        ) + "\n")
         sys.stderr.write(f"Error: boundaries.md file not found at '{boundaries_path}'\n")
         return 1
 
@@ -643,6 +739,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 repo_root=repo_root,
             )
         except BoundaryGateError as exc:
+            sys.stderr.write(_error_envelope(
+                "CONTEXT_UNRESOLVED",
+                str(repo_root),
+                "git query failed; the gate fails closed",
+                "a resolvable git revision/status for the checked tree",
+                str(exc),
+                "re-run inside the repository (verify --repo-root and that "
+                "the diff target exists)",
+            ) + "\n")
             sys.stderr.write(f"[BOUNDARY GATE ERROR] {exc}\n")
             return 1
 
@@ -650,7 +755,104 @@ def main(argv: Optional[List[str]] = None) -> int:
         sys.stdout.write("Boundary Gate: No modified files detected. Clean.\n")
         return 0
 
-    passed, violations = evaluate_files(files, zones, allow_red_zone=args.allow_red_zone)
+    # Wave D T3.1: scoped staged-mode override. The pre-commit hook invokes
+    # the gate with --staged and cannot take extra flags, so a sanctioned
+    # Red Zone commit is admitted via META_PROJECT_ALLOW_RED_ZONE=1. The
+    # override is fail-closed (only "1" enables), applies to RED zone files
+    # only (Default Deny stays), and is scoped to --staged mode; the
+    # --allow-red-zone flag semantics are unchanged.
+    allow_red_zone = args.allow_red_zone
+    env_override_active = False
+    if not allow_red_zone and args.staged and env_allows_red_zone():
+        allow_red_zone = True
+        env_override_active = True
+
+    passed, violations = evaluate_files(files, zones, allow_red_zone=allow_red_zone)
+
+    # Wave H: SHA-bound maintainer sanction. Evaluated ONLY when Red Zone
+    # violations exist and all three sanction flags were provided. Fail-closed
+    # on every tamper pattern; Default Deny (unmapped/black) violations are
+    # never sanctionable.
+    sanction_flags_provided = any(
+        [
+            getattr(args, "sanction_file", None),
+            getattr(args, "sanction_base_sha", None),
+            getattr(args, "sanction_actor", None),
+        ]
+    )
+    if violations and sanction_flags_provided:
+        black_violations = [v for v in violations if v["zone"] == "black"]
+        red_violations = [v for v in violations if v["zone"] == "red"]
+        sanction_base = getattr(args, "sanction_base_sha", None) or ""
+        sanction_actor = getattr(args, "sanction_actor", None) or ""
+        admitted, reject_reason = False, ""
+        try:
+            with open(args.sanction_file, "r", encoding="utf-8") as fh:
+                sanction = json.load(fh)
+            if not isinstance(sanction, dict):
+                reject_reason = "sanction file is not a JSON object"
+            elif sanction.get("kind") != SANCTION_KIND:
+                reject_reason = f"sanction kind mismatch: expected '{SANCTION_KIND}'"
+            elif sanction.get("schema_version") != SANCTION_SCHEMA_VERSION:
+                reject_reason = "sanction schema_version mismatch"
+            elif sanction.get("base_sha") != sanction_base:
+                reject_reason = (
+                    "sanction is bound to a different base revision "
+                    f"(sanction: {sanction.get('base_sha')}, diff base: {sanction_base}); "
+                    "a new push invalidates older sanctions"
+                )
+            elif sanction.get("authorized_by") not in SANCTION_AUTHORIZED_ACTORS:
+                reject_reason = "sanction authorized_by is not an authorized maintainer"
+            elif sanction_actor != sanction.get("authorized_by"):
+                reject_reason = "push actor does not match the sanction's authorized maintainer"
+            else:
+                sanctioned_paths = sanction.get("paths")
+                if not isinstance(sanctioned_paths, list) or not sanctioned_paths:
+                    reject_reason = "sanction paths must be a non-empty explicit list"
+                else:
+                    uncovered = [
+                        v["file"]
+                        for v in red_violations
+                        if v["file"] not in sanctioned_paths
+                    ]
+                    if uncovered:
+                        reject_reason = (
+                            "Red Zone violation(s) not covered by the sanction: "
+                            + ", ".join(uncovered)
+                        )
+                    else:
+                        admitted = True
+        except (OSError, ValueError) as exc:
+            reject_reason = f"sanction file unreadable or malformed: {exc}"
+
+        if admitted:
+            violations = [v for v in violations if v["zone"] != "red"]
+            sys.stderr.write(
+                "[SANCTIONED] Red Zone changes admitted by a SHA-bound maintainer sanction:\n"
+            )
+            sys.stderr.write(f"   Authorized by: {sanction.get('authorized_by')}\n")
+            sys.stderr.write(f"   Bound revision: {sanction.get('base_sha')}\n")
+            for p in sorted(set(sanction.get("paths", []))):
+                sys.stderr.write(f"   Covered: {p}\n")
+            sys.stderr.write(
+                "   Note: this sanction expires with its bound revision; the next push requires a new sanction.\n\n"
+            )
+            passed = len(violations) == 0
+        elif red_violations:
+            sys.stderr.write(
+                _error_envelope(
+                    "SANCTION-REJECTED",
+                    args.sanction_file or "(no sanction file)",
+                    "SHA-bound maintainer sanction refused",
+                    "all three sanction requirements must hold: authorized maintainer, "
+                    "exact base revision binding, explicit path coverage",
+                    reject_reason or "sanction not admitted",
+                    "re-issue the sanction bound to the current base revision, "
+                    "or revert the Red Zone changes",
+                )
+                + "\n\n"
+            )
+            passed = len(violations) == 0
 
     has_drift, drift_files = check_architecture_drift(files)
     if has_drift:
@@ -662,10 +864,34 @@ def main(argv: Optional[List[str]] = None) -> int:
         sys.stdout.write("   Suggested action: Invoke 'sync-architecture' if components, entrypoints, or data flows were modified.\n\n")
 
     if passed:
+        if env_override_active:
+            # Name every admitted Red Zone file so the sanctioned override
+            # is visible in hook output, never silent.
+            for f in files:
+                zone, _ = classify_path(f, zones)
+                if zone == "red":
+                    sys.stdout.write(
+                        f"[ALLOWED] {f} (Red Zone override via "
+                        f"{RED_ZONE_ENV_VAR}=1)\n"
+                    )
         sys.stdout.write(f"Boundary Gate: Checked {len(files)} files. All files conform to allowed boundaries.\n")
         return 0
 
-    # Print violations report
+    # Print violations report (Wave E envelope first — presentation only;
+    # the structured refusal below and rc=1 are unchanged).
+    first_violation = violations[0]
+    sys.stderr.write(_error_envelope(
+        "BOUNDARY_VIOLATION",
+        first_violation["file"],
+        "boundary gate detected zone violations",
+        "changed files confined to Green/Yellow zones (Red Zone and "
+        "unmapped paths require direct user confirmation or a sanctioned "
+        "override)",
+        f"{len(violations)} violation(s), first: '{first_violation['file']}' "
+        f"(zone: {first_violation['zone']})",
+        "obtain direct user confirmation, re-run with a sanctioned "
+        "--allow-red-zone override, or revert the violating changes",
+    ) + "\n")
     sys.stderr.write("\n===========================================================\n")
     sys.stderr.write("[FAILURE] BOUNDARY GATE FAILURE: Zone Violations Detected\n")
     sys.stderr.write("===========================================================\n\n")

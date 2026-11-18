@@ -15,22 +15,38 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 from typing import Any, List, Optional, Set, Union
 
+try:  # shared helpers (ADR #22): package-style import (tests: from
+    # scripts.record_obs import ...)
+    from scripts._common import _error_envelope
+except ImportError:  # direct script execution: python scripts/record_obs.py
+    from _common import _error_envelope
+
+# Unified vocabulary (D8): union of the skill-doc list and the engine list.
+# Explicit domain tags already recorded in live knowledge bases stay accepted.
 CANONICAL_CATEGORIES: Set[str] = {
-    "boundaries",
+    "build",
+    "runtime",
+    "deps",
+    "db",
+    "api",
+    "test",
+    "env",
     "ci",
+    "boundaries",
+    "orchestration",
     "decommission",
     "incident",
-    "orchestration",
-    "runtime",
-    "git",
     "init",
     "testing",
+    "git",
     "architecture",
 }
 
 DEFAULT_OBSERVATIONS_PATH = Path(".agents/project_knowledge/observations.md")
+
 
 DEFAULT_HEADER = """# Agent Observations Base
 
@@ -59,18 +75,49 @@ def escape_pipes(text: str) -> str:
     return re.sub(r"(?<!\\)\|", r"\|", cleaned)
 
 
+def _unlink_lock_file(path: Path) -> None:
+    """
+    Best-effort removal of an advisory lock file after release (T4.2).
+    Windows-safe: a blocked waiter may still hold the file open, so a
+    sharing-violation unlink is retried once and then ignored — the lock is
+    advisory hygiene, never a correctness boundary.
+    """
+    for attempt in range(2):
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt == 0:
+                time.sleep(0.05)
+                continue
+
+
 @contextlib.contextmanager
-def file_lock(target: Union[str, os.PathLike[str], Any], blocking: bool = True):
+def file_lock(
+    target: Union[str, os.PathLike[str], Any],
+    blocking: bool = True,
+    cleanup: bool = False,
+):
     """
     Cross-platform file locking context manager (Windows msvcrt / Unix fcntl).
     Accepts an open file object or a Path/str path.
+
+    With cleanup=True and a Path/str target, the lock file is unlinked after
+    release (order: unlock -> close -> unlink) so no stale `<target>.lock`
+    persists between runs. Exclusivity while the lock is held is unchanged;
+    if acquisition itself fails, the lock file is left untouched (another
+    holder owns it).
     """
     opened_here = False
+    owned_path: Optional[Path] = None
     if isinstance(target, (str, os.PathLike)):
         p = Path(target)
         p.parent.mkdir(parents=True, exist_ok=True)
         f = open(p, "a+b")
         opened_here = True
+        owned_path = p
     else:
         f = target
 
@@ -91,6 +138,8 @@ def file_lock(target: Union[str, os.PathLike[str], Any], blocking: bool = True):
             finally:
                 if opened_here:
                     f.close()
+                    if cleanup and owned_path is not None:
+                        _unlink_lock_file(owned_path)
     else:
         import fcntl
 
@@ -104,6 +153,8 @@ def file_lock(target: Union[str, os.PathLike[str], Any], blocking: bool = True):
             finally:
                 if opened_here:
                     f.close()
+                    if cleanup and owned_path is not None:
+                        _unlink_lock_file(owned_path)
 
 
 def format_row(
@@ -233,7 +284,7 @@ def record_observation(
     # Use a lock file adjacent to the observations file
     lock_path = obs_path.with_name(f"{obs_path.name}.lock")
 
-    with file_lock(lock_path, blocking=True):
+    with file_lock(lock_path, blocking=True, cleanup=True):
         if not obs_path.exists() or obs_path.stat().st_size == 0:
             _atomic_write_text(obs_path, DEFAULT_HEADER + row + "\n")
         else:
@@ -315,6 +366,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[OK] Recorded observation: {appended_row}")
         return 0
     except ValueError as e:
+        message = str(e)
+        if message.startswith("Invalid category"):
+            envelope = _error_envelope(
+                "INVALID_CATEGORY",
+                str(Path(args.obs_file)),
+                "observation category is not canonical",
+                f"one of the canonical categories: "
+                f"{sorted(CANONICAL_CATEGORIES)}",
+                f"refused category: '{args.category}'",
+                "re-run with a canonical --category value (see the list in "
+                "the envelope; new domains must be canonized first)",
+            )
+        else:
+            envelope = _error_envelope(
+                "INTAKE_REJECTED",
+                str(Path(args.obs_file)),
+                "observation intake failed validation",
+                "a fully valid observation row (category, date, texts)",
+                message,
+                "fix the flagged field per the validation message below "
+                "and re-run",
+            )
+        print(envelope, file=sys.stderr)
         print(f"[ERROR] Validation failed: {e}", file=sys.stderr)
         return 1
     except Exception as e:

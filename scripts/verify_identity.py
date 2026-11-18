@@ -14,6 +14,12 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+try:  # shared helpers (ADR #22): package-style import (tests: from
+    # scripts.verify_identity import ...)
+    from scripts._common import _error_envelope
+except ImportError:  # direct script execution: python scripts/verify_identity.py
+    from _common import _error_envelope
+
 DEFAULT_REGISTRY_REL = Path(".agents/meta-project.json")
 
 VALID_SCENARIO_PROFILES = {
@@ -407,6 +413,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.actor:
         found, binding = resolve_actor_binding(root, args.actor)
         if not found:
+            sys.stderr.write(_error_envelope(
+                "IDENTITY_UNRESOLVED",
+                str(DEFAULT_REGISTRY_REL).replace("\\", "/"),
+                "actor_id is not resolvable against the registry",
+                f"'{args.actor}' present as an active binding in "
+                f"{DEFAULT_REGISTRY_REL}",
+                "no registry entry matches the qualified actor_id",
+                "fix the actor_id or register the binding via "
+                "manage-meta-project, then re-run scripts/verify_identity.py "
+                "--check",
+            ) + "\n")
             sys.stderr.write(f"[ERROR] Unresolved identity: actor_id '{args.actor}' not found in registry.\n")
             return 1
         # Admission control (audit §3): lookup success does not authorize
@@ -414,6 +431,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         registry, _ = load_registry(root)
         denial = evaluate_actor_admission(registry or {}, binding)
         if denial:
+            sys.stderr.write(_error_envelope(
+                "IDENTITY_UNRESOLVED",
+                str(DEFAULT_REGISTRY_REL).replace("\\", "/"),
+                "identity resolved but not admitted to act",
+                "both the actor binding and its installation 'active'",
+                f"admission denied: {denial}",
+                "activate the binding/installation via manage-meta-project "
+                "before performing runtime actions",
+            ) + "\n")
             sys.stderr.write(f"[ERROR] {denial}\n")
             return 1
         sys.stdout.write(f"[OK] Identity resolved and admitted: {args.actor} -> role={binding['role_id']}, installation={binding['installation_id']}, status={binding.get('status')}\n")
@@ -422,6 +448,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.check:
         valid, errors = validate_identity_registry(root)
         if not valid:
+            sys.stderr.write(_error_envelope(
+                "IDENTITY_UNRESOLVED",
+                str(DEFAULT_REGISTRY_REL).replace("\\", "/"),
+                "identity registry validation failed",
+                "a schema-valid registry in sync with role profiles",
+                f"{len(errors)} validation issue(s) detected",
+                "repair the registry/profiles per the issues listed below "
+                "(manage-meta-project), then re-run --check",
+            ) + "\n")
             sys.stderr.write(f"[ERROR] Identity verification failed ({len(errors)} issues):\n")
             for err in errors:
                 sys.stderr.write(f"  * {err}\n")

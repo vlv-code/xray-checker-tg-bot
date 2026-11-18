@@ -1,5 +1,7 @@
 ---
 name: sync-architecture
+license: MIT
+compatibility: "Requires Python 3.10+ and Git"
 description: >-
   Use this skill to analyze repository modules, dependencies, and entry points,
   and generate or update `.agents/project_knowledge/architecture.md`.

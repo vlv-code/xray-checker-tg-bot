@@ -16,6 +16,12 @@ import re
 import sys
 from typing import Any, List, Optional, Tuple, Union
 
+try:  # shared helpers (ADR #22): package-style import (tests: from
+    # scripts.compact_memory import ...)
+    from scripts._common import _error_envelope
+except ImportError:  # direct script execution: python scripts/compact_memory.py
+    from _common import _error_envelope
+
 
 @contextlib.contextmanager
 def file_lock(target: Union[str, os.PathLike[str], Any], blocking: bool = True):
@@ -68,6 +74,36 @@ ARCHIVE_NOTICE_LINE = (
     "> Historical observations compacted into `.agents/project_knowledge/archive/`."
 )
 _DATE_ROW_RE = re.compile(r"^\|\s*\d{4}-\d{2}-\d{2}\s*\|")
+_CHECKPOINT_ROW_RE = re.compile(r"^-\s*\[>\]", re.IGNORECASE)
+
+
+def _checkpoint_block_indices(lines: List[str]) -> set:
+    """Indices of lines belonging to `- [>]` checkpoint blocks (Wave E).
+
+    A `- [>]` row marks ACTIVE WORK (in-flight/handoff checkpoint with its
+    indented goal/decided/done/open/next block). The row itself plus every
+    following line indented deeper than the checkpoint row belongs to the
+    block; the first non-blank line at or below the checkpoint indentation
+    ends it (blank lines do not). Checkpoint block lines are NEVER
+    re-homed, archived, or compacted — only plain `- [x]` rows rotate."""
+    guarded: set = set()
+    in_block = False
+    block_indent = 0
+    for idx, line in enumerate(lines):
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        if _CHECKPOINT_ROW_RE.match(line.strip()):
+            in_block = True
+            block_indent = indent
+            guarded.add(idx)
+            continue
+        if in_block:
+            if indent > block_indent:
+                guarded.add(idx)
+            else:
+                in_block = False
+    return guarded
 
 
 def compact_observations(
@@ -188,14 +224,24 @@ def compact_tasks(
     """
     Compacts completed tasks (- [x]) in tasks.md when exceeding max_completed.
     Retains all pending tasks (- [ ]) and newest keep_completed completed tasks.
+
+    Wave E checkpoint invariant: `- [>]` checkpoint rows and their indented
+    checkpoint blocks are ACTIVE WORK — never re-homed/archived/compacted;
+    only `- [x]` compaction semantics apply to plain completed tasks (the
+    `- [x]` sub-items of an active checkpoint stay with their block).
+
     Returns (compacted, new_primary_content, archive_chunk).
     """
     lines = content.splitlines()
+    guarded_indices = _checkpoint_block_indices(lines)
     completed_indices: List[int] = []
 
     for idx, line in enumerate(lines):
         line_str = line.strip()
-        if re.match(r"^-\s*\[x\]", line_str, re.IGNORECASE):
+        if (
+            re.match(r"^-\s*\[x\]", line_str, re.IGNORECASE)
+            and idx not in guarded_indices
+        ):
             completed_indices.append(idx)
 
     if len(completed_indices) <= max_completed:
@@ -288,7 +334,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Audit §9: --dry-run must be strictly read-only — not even a .lock file
     # may be created; all writes and locks happen only in write mode.
     if obs_path.is_file():
-        obs_content = obs_path.read_text(encoding="utf-8")
+        try:
+            obs_content = obs_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            sys.stderr.write(_error_envelope(
+                "STALE_INPUT",
+                str(obs_path),
+                "observations input is not readable UTF-8 text",
+                "a readable UTF-8 observations.md intake file",
+                f"read/decode error: {exc}",
+                "repair or restore the corrupt observations file, then "
+                "re-run compaction",
+            ) + "\n")
+            return 1
         compacted, new_obs, archive_chunk = compact_observations(
             obs_content, max_rows=args.max_observations, keep_rows=args.keep_observations
         )
@@ -331,7 +389,19 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # 2. Compact tasks
     if tasks_path.is_file():
-        tasks_content = tasks_path.read_text(encoding="utf-8")
+        try:
+            tasks_content = tasks_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            sys.stderr.write(_error_envelope(
+                "STALE_INPUT",
+                str(tasks_path),
+                "tasks input is not readable UTF-8 text",
+                "a readable UTF-8 tasks.md intake file",
+                f"read/decode error: {exc}",
+                "repair or restore the corrupt tasks file, then re-run "
+                "compaction",
+            ) + "\n")
+            return 1
         compacted, new_tasks, archive_chunk = compact_tasks(
             tasks_content,
             max_completed=args.max_completed_tasks,

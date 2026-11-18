@@ -1,0 +1,269 @@
+{
+  "schema_version": "1.0.0",
+  "report_type": "update",
+  "project_id": "vlv-code/xray-checker-tg-bot",
+  "installation_id": "zc-main",
+  "harness_id": "zcode",
+  "actor_id": "vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-quality-guardian",
+  "run_id": "apply-20261118T052618Z-ee21f414",
+  "created_at": "2026-11-18T05:26:19Z",
+  "status": "completed",
+  "git_state": {
+    "commit_sha": "84c53ba4246e276ce35c8bb994bb2befddc4f251",
+    "branch": "main",
+    "is_clean": false,
+    "modified_files": [
+      ".agents/project_knowledge/observations.md",
+      ".agents/project_knowledge/weak_spots.md",
+      ".agents/skills/ground-meta-project/SKILL.md",
+      ".agents/skills/record-observation/SKILL.md",
+      ".agents/skills/sync-architecture/SKILL.md",
+      "README.md",
+      "README_RU.md",
+      "go.mod",
+      "go.sum",
+      "scripts/check_boundaries.py",
+      "scripts/compact_memory.py",
+      "scripts/inspect_meta_project.py",
+      "scripts/manage_reports.py",
+      "scripts/record_obs.py",
+      "scripts/update_meta_project.py",
+      "scripts/verify_identity.py",
+      "telegram/bot.go",
+      "telegram/bot_test.go",
+      "telegram/callbacks.go",
+      "telegram/callbacks_gate_test.go",
+      "telegram/chebur_menu_test.go",
+      "telegram/cheburcheck.go",
+      "telegram/cheburcheck_test.go",
+      "telegram/checkhost.go",
+      "telegram/checkhost_hosts_test.go",
+      "telegram/commands.go",
+      "telegram/config.go",
+      "telegram/config_test.go",
+      "telegram/diag_deep_test.go",
+      "telegram/diagnostics.go",
+      "telegram/menu.go",
+      "telegram/menu_diag_guard_test.go",
+      "telegram/menu_test.go",
+      "telegram/node_cfg_menu.go",
+      "telegram/node_cfg_menu_test.go",
+      "telegram/nodes_commands.go",
+      "telegram/nodes_commands_escape_test.go",
+      "telegram/nodes_commands_test.go",
+      "telegram/views.go",
+      "telegram/views_node_status_test.go",
+      ".agents/framework-lock.json",
+      ".agents/skills/decommission-meta-project/",
+      ".agents/skills/init-meta-project/",
+      ".agents/skills/manage-meta-project/",
+      ".agents/skills/scan-meta-project/",
+      ".agents/skills/tune-meta-project/",
+      ".agents/skills/update-meta-project/",
+      ".agents/update-journal.json",
+      "scripts/_common.py",
+      "scripts/sync_templates.py",
+      "telegram/icons.go",
+      "telegram/icons_test.go",
+      "telegram/views_kb1_pager_test.go",
+      "telegram/views_kb1_test.go",
+      "templates/"
+    ],
+    "git_state_error": null
+  },
+  "input_fingerprints": [
+    {
+      "path": ".agents/meta-project.json",
+      "sha256": "6485bb71c39aaefae66515b5a2ab14ccdea103ef940c2d347d86ef4177297f15"
+    },
+    {
+      "path": ".agents/project_knowledge/boundaries.md",
+      "sha256": "2fff24562a87366688f680c242bfe6d6c518ebc236b2f941b782046bbc97d09e"
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "14181fb542b4941925ff0f128f7a6aae3e382ce4fd7e02b1160552fae5bc6c16"
+    },
+    {
+      "path": ".agents/framework-lock.json",
+      "sha256": "1116d3d7f7119e357ff6b6d54c931f13d61c6d1a0e7fbe1491485eaf4804b72e"
+    }
+  ],
+  "versions": {
+    "before": "unknown",
+    "after": {
+      "framework_version": "1.0.0-alpha.7",
+      "commit_sha": "c39b8e2979004c72abf233f217fc1b4c01fc77b6"
+    }
+  },
+  "source": {
+    "ref": "main",
+    "commit_sha": "c39b8e2979004c72abf233f217fc1b4c01fc77b6",
+    "origin": "upstream"
+  },
+  "affected_components": [
+    {
+      "path": "scripts/_common.py",
+      "kind": "script",
+      "action": "adopt"
+    },
+    {
+      "path": "scripts/verify_identity.py",
+      "kind": "script",
+      "action": "adopt"
+    },
+    {
+      "path": "scripts/inspect_meta_project.py",
+      "kind": "script",
+      "action": "adopt"
+    },
+    {
+      "path": "scripts/manage_reports.py",
+      "kind": "script",
+      "action": "adopt"
+    },
+    {
+      "path": "scripts/record_obs.py",
+      "kind": "script",
+      "action": "adopt"
+    },
+    {
+      "path": "scripts/compact_memory.py",
+      "kind": "script",
+      "action": "adopt"
+    },
+    {
+      "path": "scripts/sync_templates.py",
+      "kind": "script",
+      "action": "create"
+    },
+    {
+      "path": "scripts/update_meta_project.py",
+      "kind": "script",
+      "action": "adopt"
+    },
+    {
+      "path": "skills/init-meta-project/SKILL.md",
+      "kind": "skill",
+      "action": "create"
+    },
+    {
+      "path": "skills/init-meta-project/resources/observations.md",
+      "kind": "resource",
+      "action": "create"
+    },
+    {
+      "path": "skills/init-meta-project/resources/weak_spots.md",
+      "kind": "resource",
+      "action": "create"
+    },
+    {
+      "path": "skills/init-meta-project/resources/architecture.md",
+      "kind": "resource",
+      "action": "create"
+    },
+    {
+      "path": "skills/init-meta-project/resources/tasks.md",
+      "kind": "resource",
+      "action": "create"
+    },
+    {
+      "path": "skills/init-meta-project/resources/AGENTS.md",
+      "kind": "resource",
+      "action": "create"
+    },
+    {
+      "path": "skills/init-meta-project/resources/record-observation-SKILL.md",
+      "kind": "resource",
+      "action": "create"
+    },
+    {
+      "path": "skills/init-meta-project/resources/sync-architecture-SKILL.md",
+      "kind": "resource",
+      "action": "create"
+    },
+    {
+      "path": "skills/init-meta-project/resources/ground-meta-project-SKILL.md",
+      "kind": "resource",
+      "action": "create"
+    },
+    {
+      "path": "skills/manage-meta-project/SKILL.md",
+      "kind": "skill",
+      "action": "create"
+    },
+    {
+      "path": "skills/manage-meta-project/resources/profile.md",
+      "kind": "resource",
+      "action": "create"
+    },
+    {
+      "path": "skills/manage-meta-project/resources/notes.md",
+      "kind": "resource",
+      "action": "create"
+    },
+    {
+      "path": "skills/manage-meta-project/resources/system_prompt.md",
+      "kind": "resource",
+      "action": "create"
+    },
+    {
+      "path": "skills/record-observation/SKILL.md",
+      "kind": "skill",
+      "action": "adopt"
+    },
+    {
+      "path": "skills/sync-architecture/SKILL.md",
+      "kind": "skill",
+      "action": "adopt"
+    },
+    {
+      "path": "skills/ground-meta-project/SKILL.md",
+      "kind": "skill",
+      "action": "adopt"
+    },
+    {
+      "path": "skills/update-meta-project/SKILL.md",
+      "kind": "skill",
+      "action": "create"
+    },
+    {
+      "path": "skills/decommission-meta-project/SKILL.md",
+      "kind": "skill",
+      "action": "create"
+    },
+    {
+      "path": "skills/scan-meta-project/SKILL.md",
+      "kind": "skill",
+      "action": "create"
+    },
+    {
+      "path": "skills/tune-meta-project/SKILL.md",
+      "kind": "skill",
+      "action": "create"
+    },
+    {
+      "path": "templates/AGENTS.md",
+      "kind": "template",
+      "action": "create"
+    },
+    {
+      "path": "templates/global/AGENTS.md",
+      "kind": "template",
+      "action": "create"
+    }
+  ],
+  "approved_plan_file": null,
+  "executed_migrations": [],
+  "preserved_adaptations": [],
+  "conflicts": [],
+  "checks": [
+    {
+      "name": "update_apply",
+      "command": "python scripts/update_meta_project.py apply",
+      "status": "pass",
+      "output_summary": "30 components affected, 0 conflicts, 0 needs-base, 0 protected-refused, journal written to .agents/update-journal.json"
+    }
+  ],
+  "remaining_manual_actions": []
+}

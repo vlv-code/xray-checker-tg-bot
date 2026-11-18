@@ -1,0 +1,223 @@
+{
+  "schema_version": "1.0.0",
+  "components": [
+    {
+      "path": "scripts/_common.py",
+      "kind": "script",
+      "base_sha256": "99a42aa285ede99951134720e114747feffece69aba04bbe651a41a0dcc2bef7",
+      "installed_sha256": "99a42aa285ede99951134720e114747feffece69aba04bbe651a41a0dcc2bef7",
+      "target": "scripts/_common.py"
+    },
+    {
+      "path": "scripts/verify_identity.py",
+      "kind": "script",
+      "base_sha256": "14ad2e030cd465669ca35a32367230910aaf1efa08ddefc258d24b0ec225a3da",
+      "installed_sha256": "14ad2e030cd465669ca35a32367230910aaf1efa08ddefc258d24b0ec225a3da",
+      "target": "scripts/verify_identity.py"
+    },
+    {
+      "path": "scripts/inspect_meta_project.py",
+      "kind": "script",
+      "base_sha256": "96a0cf965135ab0f3a31879ab44df33ba9f2b11b1a41d629861c67b29b42a9ff",
+      "installed_sha256": "96a0cf965135ab0f3a31879ab44df33ba9f2b11b1a41d629861c67b29b42a9ff",
+      "target": "scripts/inspect_meta_project.py"
+    },
+    {
+      "path": "scripts/manage_reports.py",
+      "kind": "script",
+      "base_sha256": "9ddbe5243b68c0d76f2eba57d241c605db7891de1a24c9c0550820952f59f845",
+      "installed_sha256": "9ddbe5243b68c0d76f2eba57d241c605db7891de1a24c9c0550820952f59f845",
+      "target": "scripts/manage_reports.py"
+    },
+    {
+      "path": "scripts/record_obs.py",
+      "kind": "script",
+      "base_sha256": "996498a11ee8126b46984f02e8f7403b76ac217917fe40157952d671a7234518",
+      "installed_sha256": "996498a11ee8126b46984f02e8f7403b76ac217917fe40157952d671a7234518",
+      "target": "scripts/record_obs.py"
+    },
+    {
+      "path": "scripts/compact_memory.py",
+      "kind": "script",
+      "base_sha256": "bb81997225796da2c4e10c0d48d82fee6a1bfe0dabb2703e6cb39c412434664c",
+      "installed_sha256": "bb81997225796da2c4e10c0d48d82fee6a1bfe0dabb2703e6cb39c412434664c",
+      "target": "scripts/compact_memory.py"
+    },
+    {
+      "path": "scripts/sync_templates.py",
+      "kind": "script",
+      "base_sha256": "e522f226adf4e09dcbb4fc9f5335fceb3d026de6b569d670d6fef04969d1f768",
+      "installed_sha256": "e522f226adf4e09dcbb4fc9f5335fceb3d026de6b569d670d6fef04969d1f768",
+      "target": "scripts/sync_templates.py"
+    },
+    {
+      "path": "scripts/update_meta_project.py",
+      "kind": "script",
+      "base_sha256": "41ba0d1ec69dfc3bea3570ffd0c0bff0c302b66f9fe6aa41b34497dde97d2612",
+      "installed_sha256": "41ba0d1ec69dfc3bea3570ffd0c0bff0c302b66f9fe6aa41b34497dde97d2612",
+      "target": "scripts/update_meta_project.py"
+    },
+    {
+      "path": "skills/init-meta-project/SKILL.md",
+      "kind": "skill",
+      "base_sha256": "48454edb878f8831cafed35d0e2c8db483fd4a8b9c576d2f84a5879ae7a76224",
+      "installed_sha256": "48454edb878f8831cafed35d0e2c8db483fd4a8b9c576d2f84a5879ae7a76224",
+      "target": ".agents/skills/init-meta-project/SKILL.md"
+    },
+    {
+      "path": "skills/init-meta-project/resources/observations.md",
+      "kind": "resource",
+      "base_sha256": "a7c8ba4fa56655cec9a433e35389e0f911860b50fafa350749e0c75ccee9213e",
+      "installed_sha256": "a7c8ba4fa56655cec9a433e35389e0f911860b50fafa350749e0c75ccee9213e",
+      "target": ".agents/skills/init-meta-project/resources/observations.md"
+    },
+    {
+      "path": "skills/init-meta-project/resources/weak_spots.md",
+      "kind": "resource",
+      "base_sha256": "90e4a718f105f9925e198b0ebdd393f58ce60bda98cb36c3396860af01478371",
+      "installed_sha256": "90e4a718f105f9925e198b0ebdd393f58ce60bda98cb36c3396860af01478371",
+      "target": ".agents/skills/init-meta-project/resources/weak_spots.md"
+    },
+    {
+      "path": "skills/init-meta-project/resources/architecture.md",
+      "kind": "resource",
+      "base_sha256": "035d58dde8e08f1849538135a7fc0d73f77501538efbfe7457d31e7618853b28",
+      "installed_sha256": "035d58dde8e08f1849538135a7fc0d73f77501538efbfe7457d31e7618853b28",
+      "target": ".agents/skills/init-meta-project/resources/architecture.md"
+    },
+    {
+      "path": "skills/init-meta-project/resources/tasks.md",
+      "kind": "resource",
+      "base_sha256": "5278d7c7fcba8150920b4243f5a17084727adfd5a112899b17e7c2eaf0602409",
+      "installed_sha256": "5278d7c7fcba8150920b4243f5a17084727adfd5a112899b17e7c2eaf0602409",
+      "target": ".agents/skills/init-meta-project/resources/tasks.md"
+    },
+    {
+      "path": "skills/init-meta-project/resources/AGENTS.md",
+      "kind": "resource",
+      "base_sha256": "483dd32fb875f8f192a88eba4b91cb1962a1cc5b4d2b77e3c22ea931c26caaa9",
+      "installed_sha256": "483dd32fb875f8f192a88eba4b91cb1962a1cc5b4d2b77e3c22ea931c26caaa9",
+      "target": ".agents/skills/init-meta-project/resources/AGENTS.md"
+    },
+    {
+      "path": "skills/init-meta-project/resources/record-observation-SKILL.md",
+      "kind": "resource",
+      "base_sha256": "090dbdcc9a7b18838e654ddcde2da4893371334b0e71ac402c4505460582375e",
+      "installed_sha256": "090dbdcc9a7b18838e654ddcde2da4893371334b0e71ac402c4505460582375e",
+      "target": ".agents/skills/init-meta-project/resources/record-observation-SKILL.md"
+    },
+    {
+      "path": "skills/init-meta-project/resources/sync-architecture-SKILL.md",
+      "kind": "resource",
+      "base_sha256": "77db6c4341e82f223e0998861c531c74c4bef27feed5bda233be6cce114143b1",
+      "installed_sha256": "77db6c4341e82f223e0998861c531c74c4bef27feed5bda233be6cce114143b1",
+      "target": ".agents/skills/init-meta-project/resources/sync-architecture-SKILL.md"
+    },
+    {
+      "path": "skills/init-meta-project/resources/ground-meta-project-SKILL.md",
+      "kind": "resource",
+      "base_sha256": "b07af4dfb04b988ff475636ffecf0dafbefbf37cbc23297f214bfe26af64e0bf",
+      "installed_sha256": "b07af4dfb04b988ff475636ffecf0dafbefbf37cbc23297f214bfe26af64e0bf",
+      "target": ".agents/skills/init-meta-project/resources/ground-meta-project-SKILL.md"
+    },
+    {
+      "path": "skills/manage-meta-project/SKILL.md",
+      "kind": "skill",
+      "base_sha256": "63c18d113f9d5af33c6dad564daa5458fdd395d1e69c9cd9578e2f003602be7b",
+      "installed_sha256": "63c18d113f9d5af33c6dad564daa5458fdd395d1e69c9cd9578e2f003602be7b",
+      "target": ".agents/skills/manage-meta-project/SKILL.md"
+    },
+    {
+      "path": "skills/manage-meta-project/resources/profile.md",
+      "kind": "resource",
+      "base_sha256": "928c3da2158771965f712f18288410a1856098b5a324a37ff2a287a432527068",
+      "installed_sha256": "928c3da2158771965f712f18288410a1856098b5a324a37ff2a287a432527068",
+      "target": ".agents/skills/manage-meta-project/resources/profile.md"
+    },
+    {
+      "path": "skills/manage-meta-project/resources/notes.md",
+      "kind": "resource",
+      "base_sha256": "caf99a02d20b78d0201feb684bcfb5134507a9ceeaf0d936197a50fb58d3bcd9",
+      "installed_sha256": "caf99a02d20b78d0201feb684bcfb5134507a9ceeaf0d936197a50fb58d3bcd9",
+      "target": ".agents/skills/manage-meta-project/resources/notes.md"
+    },
+    {
+      "path": "skills/manage-meta-project/resources/system_prompt.md",
+      "kind": "resource",
+      "base_sha256": "6166acee62145c44a1ecbbaa1ffdf9f506899bd23464043ec2eac00cb196ca73",
+      "installed_sha256": "6166acee62145c44a1ecbbaa1ffdf9f506899bd23464043ec2eac00cb196ca73",
+      "target": ".agents/skills/manage-meta-project/resources/system_prompt.md"
+    },
+    {
+      "path": "skills/record-observation/SKILL.md",
+      "kind": "skill",
+      "base_sha256": "090dbdcc9a7b18838e654ddcde2da4893371334b0e71ac402c4505460582375e",
+      "installed_sha256": "090dbdcc9a7b18838e654ddcde2da4893371334b0e71ac402c4505460582375e",
+      "target": ".agents/skills/record-observation/SKILL.md"
+    },
+    {
+      "path": "skills/sync-architecture/SKILL.md",
+      "kind": "skill",
+      "base_sha256": "77db6c4341e82f223e0998861c531c74c4bef27feed5bda233be6cce114143b1",
+      "installed_sha256": "77db6c4341e82f223e0998861c531c74c4bef27feed5bda233be6cce114143b1",
+      "target": ".agents/skills/sync-architecture/SKILL.md"
+    },
+    {
+      "path": "skills/ground-meta-project/SKILL.md",
+      "kind": "skill",
+      "base_sha256": "b07af4dfb04b988ff475636ffecf0dafbefbf37cbc23297f214bfe26af64e0bf",
+      "installed_sha256": "b07af4dfb04b988ff475636ffecf0dafbefbf37cbc23297f214bfe26af64e0bf",
+      "target": ".agents/skills/ground-meta-project/SKILL.md"
+    },
+    {
+      "path": "skills/update-meta-project/SKILL.md",
+      "kind": "skill",
+      "base_sha256": "93e9cc0ac740284a1b601ddb5fb331b5243332318619edf23b36608473a86194",
+      "installed_sha256": "93e9cc0ac740284a1b601ddb5fb331b5243332318619edf23b36608473a86194",
+      "target": ".agents/skills/update-meta-project/SKILL.md"
+    },
+    {
+      "path": "skills/decommission-meta-project/SKILL.md",
+      "kind": "skill",
+      "base_sha256": "8dffa3a47865f997d8495639afbfe9b45830e5d06b835e8281e1d209e3bfc3f8",
+      "installed_sha256": "8dffa3a47865f997d8495639afbfe9b45830e5d06b835e8281e1d209e3bfc3f8",
+      "target": ".agents/skills/decommission-meta-project/SKILL.md"
+    },
+    {
+      "path": "skills/scan-meta-project/SKILL.md",
+      "kind": "skill",
+      "base_sha256": "791bbab4b3957ccd563186198eebee05ddadc91e076d3d2959da6bfdbbd18ee0",
+      "installed_sha256": "791bbab4b3957ccd563186198eebee05ddadc91e076d3d2959da6bfdbbd18ee0",
+      "target": ".agents/skills/scan-meta-project/SKILL.md"
+    },
+    {
+      "path": "skills/tune-meta-project/SKILL.md",
+      "kind": "skill",
+      "base_sha256": "d55ed99798dd6d7de0a3629eef45e61437f782eeed06ad21a2be82accc8c531a",
+      "installed_sha256": "d55ed99798dd6d7de0a3629eef45e61437f782eeed06ad21a2be82accc8c531a",
+      "target": ".agents/skills/tune-meta-project/SKILL.md"
+    },
+    {
+      "path": "templates/AGENTS.md",
+      "kind": "template",
+      "base_sha256": "483dd32fb875f8f192a88eba4b91cb1962a1cc5b4d2b77e3c22ea931c26caaa9",
+      "installed_sha256": "483dd32fb875f8f192a88eba4b91cb1962a1cc5b4d2b77e3c22ea931c26caaa9",
+      "target": "templates/AGENTS.md"
+    },
+    {
+      "path": "templates/global/AGENTS.md",
+      "kind": "template",
+      "base_sha256": "62376fea2ea9166313f979a92315673f7d522b4740013db526f02317c30280c1",
+      "installed_sha256": "62376fea2ea9166313f979a92315673f7d522b4740013db526f02317c30280c1",
+      "target": "templates/global/AGENTS.md"
+    }
+  ],
+  "source": {
+    "repository": "C:/Users/ADM_ZH~1/AppData/Local/Temp/meta-project-upstream",
+    "ref": "main",
+    "commit_sha": "c39b8e2979004c72abf233f217fc1b4c01fc77b6",
+    "origin": "upstream",
+    "channel": "preview"
+  },
+  "installed_at": "2026-11-18T05:26:19Z"
+}
