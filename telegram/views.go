@@ -9,6 +9,7 @@ import (
 
 	"github.com/mymmrac/telego"
 
+	"xray-checker/checker"
 	"xray-checker/metrics"
 )
 
@@ -421,9 +422,45 @@ func statusOnlineRow(name string, latencyMs float64) string {
 	return fmt.Sprintf("%s <b>%s</b> — %s\n", renderIcon(IconStateOK), escapeHTML(name), fmtLatencyIcon(int64(latencyMs)))
 }
 
-// statusDownRow renders one offline-proxy row of the /status screen.
-func statusDownRow(name string) string {
-	return fmt.Sprintf("%s <b>%s</b> — недоступен\n", renderIcon(IconStateDown), escapeHTML(name))
+// FormatSoftHint renders a short RU soft-hint phrase for an offline proxy,
+// derived from the checker error category (checker/error_taxonomy.go), with a
+// fallback to the raw last error message truncated to ~60 runes.
+// Escape-once contract (wave M9.4): the returned string is ALWAYS HTML-escaped
+// here; callers embed it verbatim and must never re-escape it.
+func FormatSoftHint(category int, lastMsg string) string {
+	var phrase string
+	switch checker.ErrorCategory(category) {
+	case checker.CatTimeout:
+		phrase = "таймаут соединения"
+	case checker.CatDNSError:
+		phrase = "ошибка DNS"
+	case checker.CatTLSError:
+		phrase = "ошибка TLS"
+	case checker.CatConnRefused, checker.CatConnReset:
+		phrase = "сеть недоступна"
+	default:
+		msg := []rune(lastMsg)
+		if len(msg) == 0 {
+			return ""
+		}
+		if len(msg) > 60 {
+			msg = msg[:60]
+		}
+		return escapeHTML(string(msg))
+	}
+	return escapeHTML(phrase)
+}
+
+// statusDownRow renders one offline-proxy row of the /status screen with a
+// single short reason segment («причина: …») from FormatSoftHint — already
+// escaped, do NOT re-escape (escape-once contract). No reason segment is
+// added when neither a known category nor a message is available.
+func statusDownRow(pm metrics.ProxyMetric) string {
+	reason := FormatSoftHint(pm.LastErrorCategory, pm.LastErrorMsg)
+	if reason == "" {
+		return fmt.Sprintf("%s <b>%s</b> — недоступен\n", renderIcon(IconStateDown), escapeHTML(pm.Name))
+	}
+	return fmt.Sprintf("%s <b>%s</b> — недоступен · <i>причина: %s</i>\n", renderIcon(IconStateDown), escapeHTML(pm.Name), reason)
 }
 
 // statusDisabledRow renders one manually disabled proxy row of /status.
@@ -465,7 +502,7 @@ func (b *Bot) getStatusText() string {
 				online++
 				activeBody.WriteString(statusOnlineRow(pm.Name, pm.LatencyMs))
 			} else {
-				activeBody.WriteString(statusDownRow(pm.Name))
+				activeBody.WriteString(statusDownRow(pm))
 			}
 		}
 
@@ -515,7 +552,7 @@ func (b *Bot) getStatusText() string {
 			if pm.Online {
 				sb.WriteString(statusOnlineRow(pm.Name, pm.LatencyMs))
 			} else {
-				sb.WriteString(statusDownRow(pm.Name))
+				sb.WriteString(statusDownRow(pm))
 			}
 		}
 		sb.WriteString("\n")
@@ -554,7 +591,7 @@ func (b *Bot) getStatusText() string {
 				if pm.Online {
 					sb.WriteString(statusOnlineRow(pm.Name, pm.LatencyMs))
 				} else {
-					sb.WriteString(statusDownRow(pm.Name))
+					sb.WriteString(statusDownRow(pm))
 				}
 			}
 			sb.WriteString("\n")
@@ -581,7 +618,7 @@ func (b *Bot) getStatusText() string {
 			if pm.Online {
 				sb.WriteString(statusOnlineRow(pm.Name, pm.LatencyMs))
 			} else {
-				sb.WriteString(statusDownRow(pm.Name))
+				sb.WriteString(statusDownRow(pm))
 			}
 		}
 		sb.WriteString("\n")
@@ -1649,7 +1686,7 @@ func (b *Bot) getStatusPageText(page int) (string, int) {
 			if pm.Online {
 				sb.WriteString(statusOnlineRow(pm.Name, pm.LatencyMs))
 			} else {
-				sb.WriteString(statusDownRow(pm.Name))
+				sb.WriteString(statusDownRow(pm))
 			}
 		}
 		sb.WriteString("\n")

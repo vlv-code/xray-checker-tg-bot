@@ -357,13 +357,14 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 	}
 }
 
-// nodeLineFor renders the "via node" line for remote-proxy alerts; empty
-// for locally checked proxies.
+// nodeLineFor renders the "через node" line for remote-proxy alerts; empty
+// for locally checked proxies. Wave M9.2: RU connector («через») replaces
+// the retired English "via".
 func nodeLineFor(pm metrics.ProxyMetric) string {
 	if pm.NodeName == "" {
 		return ""
 	}
-	s := "\n📍 via " + escapeHTML(pm.NodeName)
+	s := "\n📍 через " + escapeHTML(pm.NodeName)
 	if pm.NodeASN != "" {
 		s += " · " + escapeHTML(pm.NodeASN)
 	}

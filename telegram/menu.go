@@ -84,6 +84,9 @@ func HostCallbackKey(host string) string {
 // Ноды and Настройки — removed from the settings screen), the Check-Host row
 // carries the 📡 antenna icon (🌐 is freed for web/dashboard mentions), and
 // the legend roles with pack icons render through the custom-emoji dual layer.
+// Wave M-D (M8): the Cheburcheck row carries the plain 🛡️ shield via
+// btnIcon(IconChebur, ...) — IconChebur.CustomID is "" (no clean pack shield),
+// so the button never gains an IconCustomEmojiID.
 func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
@@ -96,7 +99,7 @@ func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 			btnIcon(IconCheckHost, " Проверка Check-Host.net", "menu:checkhost"),
 		),
 		tu.InlineKeyboardRow(
-			btn("Cheburcheck", "menu:chebur"),
+			btnIcon(IconChebur, " Cheburcheck", "menu:chebur"),
 		),
 		tu.InlineKeyboardRow(
 			// Button text stays plain fallback-only even when IconNode gains a

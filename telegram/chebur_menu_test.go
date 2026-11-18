@@ -19,7 +19,9 @@ import (
 // exact callback menu:chebur on its own row BETWEEN the Check-Host row and the
 // Nodes row. Wave H3 register (authorized label rework 2026-11-17): the
 // former «🧀 Cheburcheck РФ» label is replaced by the plain «Cheburcheck» —
-// no emoji, no «РФ».
+// no emoji, no «РФ». Wave M-D (M8): the label gains the plain 🛡️ shield
+// fallback «🛡️ Cheburcheck» (IconChebur — no clean pack shield, CustomID "";
+// still no 🧀/«РФ»).
 func TestMainMenuHasCheburcheckButton(t *testing.T) {
 	markup := MainMenuMarkup()
 	cheburRow, checkhostRow, nodesRow := -1, -1, -1
@@ -39,8 +41,8 @@ func TestMainMenuHasCheburcheckButton(t *testing.T) {
 		t.Fatalf("expected MainMenuMarkup to contain a menu:chebur button")
 	}
 	label := markup.InlineKeyboard[cheburRow][0].Text
-	if label != "Cheburcheck" {
-		t.Errorf("expected plain 'Cheburcheck' button (wave H3: no emoji, no РФ), got %q", label)
+	if label != "🛡️ Cheburcheck" {
+		t.Errorf("expected plain '🛡️ Cheburcheck' button (wave H3: no 🧀/РФ; wave M-D: 🛡️ shield fallback), got %q", label)
 	}
 	if strings.Contains(label, "🧀") || strings.Contains(label, "🇷🇺") || strings.Contains(label, "РФ") {
 		t.Errorf("wave H3: main-menu button must be free of 🧀/🇷🇺/РФ, got %q", label)

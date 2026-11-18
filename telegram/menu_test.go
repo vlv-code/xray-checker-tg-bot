@@ -486,6 +486,42 @@ func TestMainMenuMarkup_StatsRowPromoted(t *testing.T) {
 	}
 }
 
+// TestMainMenuMarkup_CheburShieldIcon pins wave M-D item M8: the Cheburcheck
+// main-menu row carries the plain 🛡️ shield fallback via btnIcon (leading
+// space, like the sibling icon rows). The pack catalog («Telegram iOS Icons»,
+// fetched 2026-11-18) has NO clean shield custom emoji — all three shield
+// candidates carry glyphs colliding with existing legend roles (see the
+// IconChebur comment) — so even with the ✨ layer ON the button text stays the
+// plain fallback (button text has NO parse_mode; raw tg-emoji is banned) and
+// IconCustomEmojiID stays EMPTY, documenting the collision verdict against
+// anyone "completing" the role with a colliding pack id later.
+func TestMainMenuMarkup_CheburShieldIcon(t *testing.T) {
+	SetCustomEmojiEnabled(true)
+	t.Cleanup(func() { SetCustomEmojiEnabled(false) })
+
+	markup := MainMenuMarkup()
+	var chebur *telego.InlineKeyboardButton
+	for r := range markup.InlineKeyboard {
+		for c := range markup.InlineKeyboard[r] {
+			if markup.InlineKeyboard[r][c].CallbackData == "menu:chebur" {
+				chebur = &markup.InlineKeyboard[r][c]
+			}
+		}
+	}
+	if chebur == nil {
+		t.Fatalf("MainMenuMarkup lost the Cheburcheck button (menu:chebur)")
+	}
+	if chebur.Text != "🛡️ Cheburcheck" {
+		t.Errorf("Cheburcheck button Text = %q, want plain %q (Icon.Fallback + label in Text — never raw tg-emoji)", chebur.Text, "🛡️ Cheburcheck")
+	}
+	if strings.Contains(chebur.Text, "<tg-emoji") {
+		t.Errorf("Cheburcheck button Text must never carry a raw <tg-emoji> tag (no parse_mode on button text), got %q", chebur.Text)
+	}
+	if chebur.IconCustomEmojiID != "" {
+		t.Errorf("Cheburcheck button IconCustomEmojiID = %q, want empty — no clean shield in the pack (all three candidates collide with existing legend roles), plain 🛡️ fallback only", chebur.IconCustomEmojiID)
+	}
+}
+
 // TestSettingsMenuMarkup_DigestAndIconsToggles pins the two new settings
 // toggles (wave K-B3): «☀️ Дневная сводка: вкл/выкл» (route menu:nodes:digest)
 // and «✨ Иконки (анимация)» (route menu:toggle_icons), both state-aware via

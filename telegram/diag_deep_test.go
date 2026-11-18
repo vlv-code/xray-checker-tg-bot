@@ -106,8 +106,13 @@ func TestFormatSingleProxyDiag_SoftHintsAndFlapping(t *testing.T) {
 	b.formatSingleProxyDiagWithStats(&sb, onRep)
 	outOn := sb.String()
 
-	if !strings.Contains(outOn, "p95:") || !strings.Contains(outOn, "σ=") {
-		t.Errorf("expected p95 and jitter in output, got:\n%s", outOn)
+	// Wave M-C (registered pin change): jitter glyph unified to Σ everywhere
+	// (views.go already used Σ); «σ=» is retired.
+	if !strings.Contains(outOn, "p95:") || !strings.Contains(outOn, "Σ=") {
+		t.Errorf("expected p95 and jitter Σ= in output, got:\n%s", outOn)
+	}
+	if strings.Contains(outOn, "σ=") {
+		t.Errorf("jitter must render Σ=, legacy σ= found:\n%s", outOn)
 	}
 }
 

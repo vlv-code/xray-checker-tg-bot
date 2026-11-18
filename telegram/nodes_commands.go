@@ -372,6 +372,12 @@ func buildNodeRegisteredText(name, token, reportURL string) string {
 		copyIcon, copyIcon, copyIcon)
 }
 
+// handleNodeDel implements /nodedel <имя_ноды> (Wave M-A M1, U-1b): the
+// command no longer removes anything — it validates that the node exists and
+// renders the K-B2-style two-step confirm screen (nodeDelConfirmText /
+// nodeDelConfirmMarkup, sent via the same sendOrUpdateMenu path as /nodeadd).
+// The actual removal happens only in the explicit menu:nodes:ndel:<name>:yes
+// callback (callbacks.go, admin-gated via isMutatingCallback).
 func (b *Bot) handleNodeDel(msg *telego.Message, rawName string) {
 	name := strings.TrimSpace(rawName)
 	if name == "" {
@@ -382,11 +388,21 @@ func (b *Bot) handleNodeDel(msg *telego.Message, rawName string) {
 		b.replyCommand(msg, "Ноды не настроены.")
 		return
 	}
-	if err := b.nodeMgr.RemoveNode(name); err != nil {
-		b.replyCommand(msg, "❌ "+escapeHTML(err.Error()))
+	exists := false
+	for _, n := range b.nodeMgr.Nodes() {
+		if n.Name == name {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		b.replyCommand(msg, "❌ Нода <b>"+escapeHTML(name)+"</b> не найдена.")
 		return
 	}
-	b.replyCommand(msg, fmt.Sprintf("✅ Нода <b>%s</b> удалена с мастера.", escapeHTML(name)))
+	text := nodeDelConfirmText(name)
+	markup := nodeDelConfirmMarkup(name)
+	t := targetFromMessage(msg)
+	b.sendOrUpdateMenu(t, text, markup)
 }
 
 // handleNodeRename implements /noderename <old> <new> (Wave G5a).

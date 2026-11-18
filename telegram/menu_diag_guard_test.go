@@ -60,6 +60,9 @@ func callbackRoutes(data string) bool {
 		// listed so the no-dead-buttons sweep covers them.
 		"menu:nodes:ncfg:",
 		"menu:nodes:nreset:",
+		// Wave M-A register: the two-step node-delete route (confirm screen +
+		// explicit «:yes» removal) — listed alongside nreset, its pattern twin.
+		"menu:nodes:ndel:",
 		"menu:nodes:ren:",
 		"menu:nodes:tg:",
 		// Wave K-B3 register (B1 reconciliation): the /status pager and the

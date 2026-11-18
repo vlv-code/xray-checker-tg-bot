@@ -53,6 +53,14 @@ var (
 	// «внимание», «галочка») carry glyphs colliding with other roles, so the
 	// prohibition glyph «Ладонь запрет» (🚫) matches the ⛔ fallback semantics.
 	IconRFBlock = Icon{Fallback: "⛔", CustomID: "5938215362473496448"}
+	// Cheburcheck: no clean shield in pack — the only shield-named icons all
+	// carry glyphs colliding with existing legend roles («Щит питание»
+	// 6030537007350944596 = ⚡ vs IconLatency «Молния»; «Щит внимание»
+	// 6032636795387121097 = ⚠️ vs IconPartialFail «Внимание»; «Щит галочка»
+	// 6030445631921721471 = ✅ vs IconStepSuccess «Галочка»), so per the legend
+	// rule «если ни один не чист, CustomID=""» the role has no pack icon and
+	// renders the plain 🛡️ (catalog fetched 2026-11-18).
+	IconChebur  = Icon{Fallback: "🛡️", CustomID: ""}
 	IconLatency = Icon{Fallback: "⚡", CustomID: "5884428842780594914"}  // «Молния»
 	IconTime    = Icon{Fallback: "⏱️", CustomID: "5983150113483134607"} // «Часы»
 	IconMaster  = Icon{Fallback: "🏠", CustomID: "6042137469204303531"}  // «Дом» — master checker only

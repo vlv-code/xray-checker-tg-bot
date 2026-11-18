@@ -58,10 +58,19 @@ func (m *cfgRecordingManager) ManagedSubs(node string) ([]ManagedSubInfo, error)
 	return nil, nil
 }
 
-func (m *cfgRecordingManager) AddSub(node, url string) error                         { return nil }
-func (m *cfgRecordingManager) RemoveSub(node, url string) error                      { return nil }
-func (m *cfgRecordingManager) AddNode(name, token string) error                      { m.nodes[name] = true; return nil }
-func (m *cfgRecordingManager) RemoveNode(name string) error                          { delete(m.nodes, name); return nil }
+func (m *cfgRecordingManager) AddSub(node, url string) error    { return nil }
+func (m *cfgRecordingManager) RemoveSub(node, url string) error { return nil }
+func (m *cfgRecordingManager) AddNode(name, token string) error { m.nodes[name] = true; return nil }
+
+// RemoveNode mirrors the production contract (nodes.Registry): removing an
+// unknown node is an error (Wave M-A M1 exercises the ndel :yes error path).
+func (m *cfgRecordingManager) RemoveNode(name string) error {
+	if !m.nodes[name] {
+		return fmt.Errorf("нода %q не найдена", name)
+	}
+	delete(m.nodes, name)
+	return nil
+}
 func (m *cfgRecordingManager) NodeSnapshot(node string) []metrics.ProxyMetric        { return nil }
 func (m *cfgRecordingManager) NodeDiagReports(node string) []checker.ProxyDiagReport { return nil }
 
@@ -230,12 +239,14 @@ func TestMenuNodesCfgOpensNodeList(t *testing.T) {
 	}
 
 	// Unit: picker markup carries one button per node and a back row.
-	markup := NodesCfgListMarkup([]string{"m31a", "msk-1"})
+	// Wave M-A M6 pin replacement: the signature carries NodeInfo and each
+	// row is prefixed with the state circle (was []string / «🖥 m31a»).
+	markup := NodesCfgListMarkup([]NodeInfo{{Name: "m31a", Up: true}, {Name: "msk-1", Up: true}})
 	if !hasCallback(markup, "menu:nodes:cfg:m31a") || !hasCallback(markup, "menu:nodes:cfg:msk-1") {
 		t.Errorf("expected per-node buttons in picker markup, got %v", markupCallbacks(markup))
 	}
-	if markup.InlineKeyboard[0][0].Text != "🖥 m31a" {
-		t.Errorf("expected node button text «🖥 m31a», got %q", markup.InlineKeyboard[0][0].Text)
+	if markup.InlineKeyboard[0][0].Text != "🟢 🖥 m31a" {
+		t.Errorf("expected node button text «🟢 🖥 m31a», got %q", markup.InlineKeyboard[0][0].Text)
 	}
 	lastRow := markup.InlineKeyboard[len(markup.InlineKeyboard)-1]
 	backFound := false
@@ -597,7 +608,8 @@ func TestBackRowsUseIconBackWording(t *testing.T) {
 	b, _ := newCfgTestBot(t, api, nil, mgr)
 
 	surfaces := map[string]*telego.InlineKeyboardMarkup{
-		"NodesCfgListMarkup": NodesCfgListMarkup([]string{"m31a"}),
+		// Wave M-A M6 pin replacement: []string → []NodeInfo (status icons).
+		"NodesCfgListMarkup": NodesCfgListMarkup([]NodeInfo{{Name: "m31a", Up: true}}),
 	}
 	_, cfgMarkup := b.getNodeCfgScreen("m31a")
 	surfaces["NodeCfgMarkup"] = cfgMarkup
@@ -620,8 +632,9 @@ func TestBackRowsUseIconBackWording(t *testing.T) {
 			t.Errorf("%s: expected an «↩️» back row, got %v", name, markupCallbacks(m))
 		}
 	}
-	if row := NodesCfgListMarkup([]string{"m31a"}).InlineKeyboard[0][0].Text; row != "🖥 m31a" {
-		t.Errorf("node picker rows keep the 🖥 icon, got %q", row)
+	// Wave M-A M6 pin replacement: the row is «<state> 🖥 <name>» now.
+	if row := NodesCfgListMarkup([]NodeInfo{{Name: "m31a", Up: true}}).InlineKeyboard[0][0].Text; row != "🟢 🖥 m31a" {
+		t.Errorf("node picker rows keep the state+🖥 icon, got %q", row)
 	}
 }
 

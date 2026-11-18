@@ -249,6 +249,21 @@ func (b *Bot) handleCheckHostBgCommand(msg *telego.Message) {
 		})
 		b.send(t, "🔕 Алерты по недоступности из РФ <b>выключены</b>.")
 	case "run", "now":
+		// Wave M3/U-8: a manual run reports its completion into this chat —
+		// the launch notice stays as the placeholder and is edited into the
+		// report (a fresh completion message is sent when no placeholder was
+		// captured). The bg gate semantics are preserved: with
+		// CheckHostBgEnabled=false the run command remains the historical
+		// silent no-op (notice only, the gated RunCheckHostAudit).
+		if b.GetConfig().CheckHostBgEnabled {
+			sent, _ := b.sendAndReturn(t, "🚀 Запуск фоновой проверки Check-Host...")
+			placeholderID := 0
+			if sent != nil {
+				placeholderID = sent.GetMessageID()
+			}
+			b.runAuditNowAndReport(t.ChatID, placeholderID)
+			return
+		}
 		b.send(t, "🚀 Запуск фоновой проверки Check-Host...")
 		go b.RunCheckHostAudit()
 	default:
@@ -416,14 +431,86 @@ func (b *Bot) RunCheckHostAudit() {
 	b.runAuditNow()
 }
 
+// checkHostAuditStats is the minimal aggregate of one audit sweep (wave
+// M3/U-8): enough to build the manual-run completion report without changing
+// the background path's semantics (the scheduler ignores the return value).
+type checkHostAuditStats struct {
+	Ran       bool // false when the sweep was skipped: another audit is in flight
+	Probed    int  // targets that returned a summary from the Check-Host API
+	RUBlocked int  // targets with the RU-block signature (RU down + world up)
+}
+
+// ruHostPlural returns the RU plural noun for n hosts (хост/хоста/хостов).
+func ruHostPlural(n int) string {
+	if n%100 >= 11 && n%100 <= 14 {
+		return "хостов"
+	}
+	switch n % 10 {
+	case 1:
+		return "хост"
+	case 2, 3, 4:
+		return "хоста"
+	}
+	return "хостов"
+}
+
+// checkHostAuditReportText renders the RU completion report of a manual audit
+// run (wave M3/U-8); a skipped run (another audit already in flight) never
+// claims a completion.
+func checkHostAuditReportText(stats checkHostAuditStats) string {
+	if !stats.Ran {
+		return "⏳ Проверка Check-Host уже выполняется — дождитесь её завершения."
+	}
+	text := fmt.Sprintf("🚀 Проверка завершена: %d %s · блокировок РФ: %d",
+		stats.Probed, ruHostPlural(stats.Probed), stats.RUBlocked)
+	if stats.RUBlocked == 0 {
+		text += " · проблем не найдено"
+	}
+	return text
+}
+
+// runAuditNowAndReport runs the Check-Host audit for an explicit user request
+// (wave M3/U-8) and reports the completion aggregates back to the invoking
+// chat: the origin message is edited in place when the caller has one
+// (msgID > 0), otherwise the report is sent as a new message. The seq is
+// taken synchronously in the caller's goroutine (the menu:diag msg-seq
+// pattern), so a newer interaction with the same message reliably invalidates
+// the pending report edit. The scheduler path stays silent: RunCheckHostAudit
+// keeps calling runAuditNow without a report.
+func (b *Bot) runAuditNowAndReport(chatID int64, msgID int) {
+	seq := b.nextMsgSeq(chatID, msgID)
+	go b.runUpdateSafely(func() {
+		stats := b.runAuditNowWithStats()
+		if !b.isMsgSeqValid(chatID, msgID, seq) {
+			return
+		}
+		text := checkHostAuditReportText(stats)
+		if msgID > 0 {
+			b.edit(chatID, msgID, text)
+			return
+		}
+		b.send(b.targetForChat(chatID), text)
+	})
+}
+
 // runAuditNow performs the Check-Host audit unconditionally. Explicit
 // user-triggered runs (menu:checkhost:run_now button) must bypass the
 // background-enabled gate so the button never silently no-ops.
 func (b *Bot) runAuditNow() {
+	_ = b.runAuditNowWithStats()
+}
+
+// runAuditNowWithStats performs the audit exactly like runAuditNow and
+// additionally returns the minimal sweep aggregates for the manual-run
+// completion report (wave M3/U-8). The audit and alerting behavior is
+// unchanged — the counters are pure observations.
+func (b *Bot) runAuditNowWithStats() checkHostAuditStats {
+	var stats checkHostAuditStats
+
 	b.checkHostMu.Lock()
 	if b.checkHostRunning {
 		b.checkHostMu.Unlock()
-		return
+		return stats
 	}
 	b.checkHostRunning = true
 	b.checkHostMu.Unlock()
@@ -433,6 +520,8 @@ func (b *Bot) runAuditNow() {
 		b.checkHostRunning = false
 		b.checkHostMu.Unlock()
 	}()
+
+	stats.Ran = true
 
 	cfg := b.GetConfig()
 
@@ -518,7 +607,7 @@ func (b *Bot) runAuditNow() {
 	}
 
 	if len(targets) == 0 {
-		return
+		return stats
 	}
 
 	logger.Info("Starting periodic Check-Host audit for %d unique active targets", len(targets))
@@ -546,6 +635,7 @@ func (b *Bot) runAuditNow() {
 		if err != nil || summary == nil {
 			continue
 		}
+		stats.Probed++
 
 		alertKey := fmt.Sprintf("checkhost:%s", target.targetAddr)
 		now := time.Now()
@@ -561,6 +651,7 @@ func (b *Bot) runAuditNow() {
 		if !summary.RUAvailable {
 			// Unreachable from Russian federation nodes while reachable from
 			// world nodes: the RU-block signature.
+			stats.RUBlocked++
 			if !cfg.CheckHostAlertEnabled {
 				continue
 			}
@@ -642,6 +733,8 @@ func (b *Bot) runAuditNow() {
 			}
 		}
 	}
+
+	return stats
 }
 
 // ProcessNodeCheckHostAudits raises Check-Host RU-block alerts for hosts

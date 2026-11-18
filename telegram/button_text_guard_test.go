@@ -138,11 +138,12 @@ func guardInventoryButtons(t *testing.T) []telego.InlineKeyboardButton {
 	add(IncidentsFilterMarkup("m31a", tabs))
 
 	// --- node cfg cluster (node_cfg_menu.go) ---
-	add(NodesCfgListMarkup([]string{"m31a"}))
+	add(NodesCfgListMarkup([]NodeInfo{{Name: "m31a", Up: true}, {Name: "down1"}, {Name: "dis1", Up: true, Disabled: true}}))
 	add(NodeCfgMarkup("m31a", true, entries))
 	add(NodeCfgMarkup("m31a", false, entries))
 	add(nodeSubsConfirmMarkup("m31a", 0))
 	add(nodeResetConfirmMarkup("m31a"))
+	add(nodeDelConfirmMarkup("m31a")) // Wave M-A M1: /nodedel two-step confirm screen
 
 	// --- node commands (nodes_commands.go) ---
 	add(nodeAddCopyMarkup("m31a", "tok-1234567890abcdef", "https://master.example.com:2112/report"))

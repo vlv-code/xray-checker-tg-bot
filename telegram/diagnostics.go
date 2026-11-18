@@ -32,6 +32,33 @@ func (b *Bot) getCachedDiagnosticsReports() []checker.ProxyDiagReport {
 	return nil
 }
 
+// DiagCacheTimestamp reports when the diagnostics cache was last filled by
+// getDiagnosticsReports (the RunDiagnostics producer). ok=false when no
+// report has been cached yet. Wave M9.3: cached serve paths use it to render
+// the staleness line «данные от HH:MM».
+func (b *Bot) DiagCacheTimestamp() (time.Time, bool) {
+	if b.diagSource == nil {
+		return time.Time{}, false
+	}
+	b.diagMu.Lock()
+	defer b.diagMu.Unlock()
+	if b.cachedDiagAt.IsZero() {
+		return time.Time{}, false
+	}
+	return b.cachedDiagAt, true
+}
+
+// diagCacheAgeNote renders the staleness line for CACHED diagnostics outputs
+// («\n\n<i>данные от 15:04</i>»); empty when no cache exists. Freshly probed
+// renders pass "" — the line belongs to cache-served data only (wave M9.3).
+func (b *Bot) diagCacheAgeNote() string {
+	ts, ok := b.DiagCacheTimestamp()
+	if !ok {
+		return ""
+	}
+	return "\n\n<i>данные от " + ts.In(b.loc()).Format("15:04") + "</i>"
+}
+
 func (b *Bot) getDiagnosticsReports(force bool) []checker.ProxyDiagReport {
 	if b.diagSource == nil {
 		return nil
@@ -359,11 +386,11 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 				p95 := ls.Percentile(0.95)
 				p99 := ls.Percentile(0.99)
 				jitter := ls.StdDev()
-				fmt.Fprintf(sb, "  • Доступен: 🟢 %s (p95: %s, p99: %s, σ=%.0f)\n", fmtLatencyIcon(int64(latMs)), fmtLatencyUnit(int64(p95)), fmtLatencyUnit(int64(p99)), jitter)
+				fmt.Fprintf(sb, "  • Доступен: 🟢 %s (p95: %s, p99: %s, Σ=%.0f)\n", fmtLatencyIcon(int64(latMs)), fmtLatencyUnit(int64(p95)), fmtLatencyUnit(int64(p99)), jitter)
 			} else if ls.Count() >= 5 {
 				p95 := ls.Percentile(0.95)
 				jitter := ls.StdDev()
-				fmt.Fprintf(sb, "  • Доступен: 🟢 %s (p95: %s, σ=%.0f)\n", fmtLatencyIcon(int64(latMs)), fmtLatencyUnit(int64(p95)), jitter)
+				fmt.Fprintf(sb, "  • Доступен: 🟢 %s (p95: %s, Σ=%.0f)\n", fmtLatencyIcon(int64(latMs)), fmtLatencyUnit(int64(p95)), jitter)
 			} else {
 				fmt.Fprintf(sb, "  • Доступен: 🟢 %s\n", fmtLatencyIcon(int64(latMs)))
 			}
@@ -879,10 +906,10 @@ func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeH
 		if ls != nil && ls.Count() >= 5 {
 			fmt.Fprintf(&sb, "\n<b>СТАТИСТИКА ЗАДЕРЖКИ:</b>\n")
 			if ls.Count() >= 50 {
-				fmt.Fprintf(&sb, "  • p50: %.0f мс | p95: %.0f мс | p99: %.0f мс (σ=%.0f, n=%d)\n",
+				fmt.Fprintf(&sb, "  • p50: %.0f мс | p95: %.0f мс | p99: %.0f мс (Σ=%.0f, n=%d)\n",
 					ls.Percentile(0.50), ls.Percentile(0.95), ls.Percentile(0.99), ls.StdDev(), ls.Count())
 			} else {
-				fmt.Fprintf(&sb, "  • p50: %.0f мс | p95: %.0f мс (σ=%.0f, n=%d)\n",
+				fmt.Fprintf(&sb, "  • p50: %.0f мс | p95: %.0f мс (Σ=%.0f, n=%d)\n",
 					ls.Percentile(0.50), ls.Percentile(0.95), ls.StdDev(), ls.Count())
 			}
 		}

@@ -97,23 +97,32 @@ func nodeCfgEntryValues(entries []NodeSettingEntry) map[string]string {
 
 // NodesCfgListMarkup returns the node picker keyboard for the per-node
 // settings section (Wave H2/D4: the primary node-picker surface since the
-// global «Подписки нод» screen was removed): one «🖥 <name>» button per
-// node → menu:nodes:cfg:<name>, navigation row last.
-func NodesCfgListMarkup(nodes []string) *telego.InlineKeyboardMarkup {
+// global «Подписки нод» screen was removed): one «<icon> 🖥 <name>» button
+// per node → menu:nodes:cfg:<name>, navigation row last. Wave M-A M6: each
+// row is prefixed with the node's state circle — 🟢 up, 🔴 down, ⏸️ disabled
+// (disabled wins) — plain Icon.Fallback glyphs, consistent with the /nodes
+// health list and the deep-check legend (no pack icon exists for them).
+func NodesCfgListMarkup(nodes []NodeInfo) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
-	for _, name := range nodes {
-		cb, ok := cbNodeCfg("menu:nodes:cfg:", name)
+	for _, n := range nodes {
+		cb, ok := cbNodeCfg("menu:nodes:cfg:", n.Name)
 		if !ok {
 			continue
 		}
+		icon := IconStateOK.Fallback
+		if n.Disabled {
+			icon = IconDisabled.Fallback
+		} else if !n.Up {
+			icon = IconStateDown.Fallback
+		}
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn("🖥 "+name, cb),
+			btn(icon+" 🖥 "+n.Name, cb),
 		))
 	}
 	rows = append(rows,
 		tu.InlineKeyboardRow(
 			btn(IconBack.Render(false)+" Назад", "menu:nodes"),
-			btn("🏠 Главное меню", "menu:main"),
+			btn(mainMenuBtnText, "menu:main"), // Wave M4: unified ☰ label (🏠 is master-only per K-B3)
 		),
 	)
 	return tu.InlineKeyboard(rows...)
@@ -159,22 +168,36 @@ func NodeCfgMarkup(node string, enabled bool, entries []NodeSettingEntry) *teleg
 		))
 	}
 
-	if cb, ok := cbNodeCfg("menu:nodes:ncfg:", node, ":check_method:"+nextCheckMethod(vals["check_method"])); ok {
+	// Wave M-A M7: the labels show the current → next transition (the
+	// callbacks already carry the next value). Concurrency uses
+	// concurrencyLabel on BOTH sides so 0 renders «без лимита» either way.
+	methodNext := nextCheckMethod(vals["check_method"])
+	if cb, ok := cbNodeCfg("menu:nodes:ncfg:", node, ":check_method:"+methodNext); ok {
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn("♻️ Метод: "+vals["check_method"], cb),
+			btn("♻️ Метод: "+vals["check_method"]+" → "+methodNext, cb),
 		))
 	}
-	if cb, ok := cbNodeCfg("menu:nodes:ncfg:", node, ":check_interval:"+nextCheckInterval(vals["check_interval"])); ok {
+	intervalNext := nextCheckInterval(vals["check_interval"])
+	if cb, ok := cbNodeCfg("menu:nodes:ncfg:", node, ":check_interval:"+intervalNext); ok {
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn("⏱ Интервал: "+vals["check_interval"]+"с", cb),
+			btn("⏱ Интервал: "+vals["check_interval"]+"с → "+intervalNext+"с", cb),
 		))
 	}
-	if cb, ok := cbNodeCfg("menu:nodes:ncfg:", node, ":check_concurrency:"+nextCheckConcurrency(vals["check_concurrency"])); ok {
+	concNext := nextCheckConcurrency(vals["check_concurrency"])
+	if cb, ok := cbNodeCfg("menu:nodes:ncfg:", node, ":check_concurrency:"+concNext); ok {
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn("🧵 Параллелизм: "+concurrencyLabel(vals["check_concurrency"]), cb),
+			btn("🧵 Параллелизм: "+concurrencyLabel(vals["check_concurrency"])+" → "+concurrencyLabel(concNext), cb),
 		))
 	}
 
+	// Wave M-A M1: the destructive delete sits behind a two-step confirm —
+	// this row only opens the confirm screen (menu:nodes:ndel:<node>); the
+	// removal happens in the explicit «:yes» callback, admin-gated like nreset.
+	if cb, ok := cbNodeCfg("menu:nodes:ndel:", node); ok {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("🗑 Удалить ноду", cb),
+		))
+	}
 	if cb, ok := cbNodeCfg("menu:nodes:nreset:", node); ok {
 		rows = append(rows, tu.InlineKeyboardRow(
 			btn("↩️ Сбросить переопределения", cb),
@@ -182,7 +205,7 @@ func NodeCfgMarkup(node string, enabled bool, entries []NodeSettingEntry) *teleg
 	}
 	rows = append(rows, tu.InlineKeyboardRow(
 		btn(IconBack.Render(false)+" К списку нод", "menu:nodes:cfg"),
-		btn("🏠 Главное меню", "menu:main"),
+		btn(mainMenuBtnText, "menu:main"), // Wave M4: unified ☰ label (🏠 is master-only per K-B3)
 	))
 	return tu.InlineKeyboard(rows...)
 }
@@ -220,14 +243,10 @@ func (b *Bot) getNodesCfgListView() (string, *telego.InlineKeyboardMarkup) {
 	if len(nodes) == 0 {
 		return "⚙️ <b>Настройки нод</b>\n\nНоды не настроены.\nСначала подключите ноду через меню нод (<code>/nodeadd</code>).", NodesCfgListMarkup(nil)
 	}
-	names := make([]string, 0, len(nodes))
-	for _, n := range nodes {
-		names = append(names, n.Name)
-	}
 	text := "⚙️ <b>Настройки нод</b>\n\n" +
 		"Выберите ноду, чтобы посмотреть и изменить её локальные настройки " +
 		"(переопределения мастера, подписки, исключения):"
-	return text, NodesCfgListMarkup(names)
+	return text, NodesCfgListMarkup(nodes)
 }
 
 // nodeCfgCyclesFit reports whether all three quick-action cycle callbacks
@@ -289,7 +308,8 @@ func (b *Bot) getNodeCfgScreen(node string) (string, *telego.InlineKeyboardMarku
 	_, exclOK := cbNodeCfg("menu:nodes:excl:", node)
 	_, toggleOK := cbNodeCfg("menu:nodes:tg:", node, ":off")
 	_, renameOK := cbNodeCfg("menu:nodes:ren:", node)
-	if !exclOK || !nodeCfgCyclesFit(node, entries) || !toggleOK || !renameOK {
+	_, delOK := cbNodeCfg("menu:nodes:ndel:", node) // Wave M-A M1: delete row joins the unified hint
+	if !exclOK || !nodeCfgCyclesFit(node, entries) || !toggleOK || !renameOK || !delOK {
 		sb.WriteString("\n(длинное имя ноды — используйте /nodeset; часть кнопок недоступна)\n")
 	}
 
@@ -416,7 +436,7 @@ func (b *Bot) getNodeExclusionsView(node string, page int, notice string) (strin
 	if cb, ok := cbNodeCfg("menu:nodes:cfg:", node); ok {
 		navRow = append(navRow, btn(IconBack.Render(false)+" К настройкам ноды", cb))
 	}
-	navRow = append(navRow, btn("🏠 Главное меню", "menu:main"))
+	navRow = append(navRow, btn(mainMenuBtnText, "menu:main")) // Wave M4: unified ☰ label (🏠 is master-only per K-B3)
 	rows = append(rows, tu.InlineKeyboardRow(navRow...))
 
 	if hintNeeded {
@@ -569,6 +589,49 @@ func nodeResetConfirmMarkup(node string) *telego.InlineKeyboardMarkup {
 	var rows [][]telego.InlineKeyboardButton
 	if cb, ok := nodeResetConfirmCallback(node); ok {
 		rows = append(rows, tu.InlineKeyboardRow(btn("✅ Да, сбросить", cb)))
+	}
+	cancelCb, cancelOK := cbNodeCfg("menu:nodes:cfg:", node)
+	if !cancelOK {
+		cancelCb = "menu:nodes:cfg"
+	}
+	rows = append(rows, tu.InlineKeyboardRow(btn(IconBack.Render(false)+" Отмена", cancelCb)))
+	return tu.InlineKeyboard(rows...)
+}
+
+// nodeDelConfirmCallback composes the explicit ndel confirm callback
+// `menu:nodes:ndel:<node>:yes` (Wave M-A M1, same two-step pattern as nreset).
+func nodeDelConfirmCallback(node string) (string, bool) {
+	return cbNodeCfg("menu:nodes:ndel:", node, ":yes")
+}
+
+// nodeDelConfirmText renders the node-delete confirm screen: «Точно удалить
+// ноду <name> с мастера?» with the escaped name echo and the honest effect
+// notice. Wording follows what nodeMgr.RemoveNode actually does (nodes
+// Registry): the node's token is revoked (it loses access), the persisted
+// record with its settings overrides and enabled state is deleted, and the
+// node's live snapshot/reports disappear from the master's lists and metrics.
+// There is no separate persistent node history/stats store, so no such claim
+// is made.
+func nodeDelConfirmText(node string) string {
+	return fmt.Sprintf("🗑 <b>Удаление ноды</b>\n\n"+
+		"Точно удалить ноду <code>%s</code> с мастера?\n\n"+
+		"Нода потеряет доступ к мастеру (токен отзывается), её локальные "+
+		"настройки и переопределения будут удалены, а текущие данные ноды "+
+		"исчезнут из списков и метрик мастера.\n\n"+
+		"<i>Действие необратимо — чтобы подключить ноду снова, зарегистрируйте "+
+		"её заново (/nodeadd).</i>",
+		escapeHTML(node))
+}
+
+// nodeDelConfirmMarkup returns the [🗑 Да, удалить] / [↩️ Отмена] rows;
+// cancel returns to the node's cfg screen (static picker fallback when the
+// name would overflow the 64-byte callback limit); the confirm row is
+// omitted under the same omit discipline (menu:nodes:ndel:<name>:yes must
+// fit 64 bytes).
+func nodeDelConfirmMarkup(node string) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+	if cb, ok := nodeDelConfirmCallback(node); ok {
+		rows = append(rows, tu.InlineKeyboardRow(btn("🗑 Да, удалить", cb)))
 	}
 	cancelCb, cancelOK := cbNodeCfg("menu:nodes:cfg:", node)
 	if !cancelOK {

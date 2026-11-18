@@ -26,6 +26,7 @@ func TestIconLegendTable(t *testing.T) {
 		{IconHardError, "IconHardError", "❌", "5774077015388852135"},
 		{IconCheckHost, "IconCheckHost", "📡", "6048723247501938454"},
 		{IconRFBlock, "IconRFBlock", "⛔", "5938215362473496448"},
+		{IconChebur, "IconChebur", "🛡️", ""},
 		{IconLatency, "IconLatency", "⚡", "5884428842780594914"},
 		{IconTime, "IconTime", "⏱️", "5983150113483134607"},
 		{IconMaster, "IconMaster", "🏠", "6042137469204303531"},
@@ -50,8 +51,13 @@ func TestIconLegendTable(t *testing.T) {
 
 // TestIconLegendMissingRoles documents, explicitly, the roles for which the
 // pack catalog (fetched 2026-11-18) has NO suitable icon: green circle, red
-// circle, pause, server.rack. These must stay CustomID "" so users always see
-// a semantically correct plain emoji.
+// circle, pause, server.rack, and the shield (the pack's only shield-named
+// icons — «Щит питание» 6030537007350944596, «Щит внимание»
+// 6032636795387121097, «Щит галочка» 6030445631921721471 — all carry glyphs
+// colliding with existing legend roles ⚡/⚠️/✅, so none is clean; collision
+// verdict 2026-11-18). These must stay CustomID "" so users always see a
+// semantically correct plain emoji — do NOT "complete" IconChebur with a
+// colliding pack id.
 func TestIconLegendMissingRoles(t *testing.T) {
 	for _, tc := range []struct {
 		icon Icon
@@ -61,6 +67,7 @@ func TestIconLegendMissingRoles(t *testing.T) {
 		{IconStateDown, "IconStateDown"},
 		{IconDisabled, "IconDisabled"},
 		{IconNode, "IconNode"},
+		{IconChebur, "IconChebur"},
 	} {
 		if tc.icon.CustomID != "" {
 			t.Errorf("%s: CustomID = %q, want empty (no pack icon for this role)", tc.name, tc.icon.CustomID)

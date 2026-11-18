@@ -49,6 +49,9 @@ func isMutatingCallback(data string) bool {
 	return strings.HasPrefix(data, "menu:nodes:delsub:") ||
 		strings.HasPrefix(data, "menu:nodes:ncfg:") ||
 		strings.HasPrefix(data, "menu:nodes:nx:") ||
+		// Wave M-A M1: two-step node delete — the prefix covers BOTH steps (the
+		// confirm-screen tap and the explicit «:yes» removal), like nreset.
+		strings.HasPrefix(data, "menu:nodes:ndel:") ||
 		strings.HasPrefix(data, "menu:nodes:nreset:") ||
 		strings.HasPrefix(data, "menu:nodes:ren:") ||
 		strings.HasPrefix(data, "menu:nodes:tg:") ||
@@ -70,6 +73,9 @@ func isToastCallbackData(data string) bool {
 		strings.HasPrefix(data, "menu:toggle_host:") ||
 		strings.HasPrefix(data, "menu:nodes:ncfg:") ||
 		strings.HasPrefix(data, "menu:nodes:nx:") ||
+		// Wave M-A M1: the ndel route answers with its own toasts (confirm
+		// prompt, «🗑 Нода удалена», or the ❌ error alert).
+		strings.HasPrefix(data, "menu:nodes:ndel:") ||
 		strings.HasPrefix(data, "menu:nodes:nreset:") ||
 		strings.HasPrefix(data, "menu:nodes:ren:") ||
 		strings.HasPrefix(data, "menu:nodes:tg:") ||
@@ -97,7 +103,10 @@ func isToastCallbackData(data string) bool {
 func isPendingKeepRoute(data string) bool {
 	switch data {
 	case "menu:noop",
-		"menu:checkhost:run_now": // toast + background audit, screen untouched
+		// Wave M3/U-8: the run_now route still counts as a keep-route — its
+		// immediate handling is a toast only (the completion report edits the
+		// message asynchronously, seconds later, without any input flow).
+		"menu:checkhost:run_now":
 		return true
 	}
 	return strings.HasPrefix(data, "menu:diag:noop:")
@@ -153,6 +162,12 @@ func toggleDebounceCheck(chatID int64, msgID int, data string) bool {
 	}
 	return false
 }
+
+// promptTTLHint is the uniform TTL hint appended to every input-arming prompt
+// screen (wave M5/N-2): the armed text input expires lazily after
+// pendingInputTTL (5 minutes), and the «🚫 Отмена» row is rendered below the
+// prompt text.
+const promptTTLHint = "\n\n⏱ Ввод активен 5 минут · 🚫 Отмена — ниже"
 
 func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	if cb.Message == nil {
@@ -347,7 +362,8 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		}
 		text := "➕ <b>Добавление подписки</b>\n\n" +
 			"Отправьте URL подписки ответным сообщением в этот чат (например: <code>https://example.com/sub</code>).\n\n" +
-			"<i>Или выполните команду:</i> <code>/addsub &lt;URL&gt;</code>"
+			"<i>Или выполните команду:</i> <code>/addsub &lt;URL&gt;</code>" +
+			promptTTLHint
 		b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
 			tu.InlineKeyboardRow(
 				btnIcon(IconBack, " К списку подписок", "menu:subs"),
@@ -396,7 +412,8 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		text := "➕ <b>Добавление хоста в Check-Host</b>\n\n" +
 			"Отправьте хост ответным сообщением: домен или IP, можно с портом.\n" +
 			"Например: <code>example.com</code> или <code>1.2.3.4:443</code>.\n\n" +
-			"Хосты из подписок (авто) дублировать не нужно — они уже проверяются."
+			"Хосты из подписок (авто) дублировать не нужно — они уже проверяются." +
+			promptTTLHint
 		b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
 			tu.InlineKeyboardRow(
 				btnIcon(IconBack, " К списку хостов", "menu:checkhost"),
@@ -428,7 +445,8 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		b.armPending(chatID, pendingKindCheburHost, "")
 		text := "✍️ <b>Проверить свой хост</b>\n\n" +
 			"Отправьте хост для активного пробинга: домен или IP, можно с портом — порт будет отброшен.\n" +
-			"Например: <code>example.com</code> или <code>1.2.3.4:443</code>."
+			"Например: <code>example.com</code> или <code>1.2.3.4:443</code>." +
+			promptTTLHint
 		b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
 			tu.InlineKeyboardRow(
 				btnIcon(IconBack, " К Cheburcheck", "menu:chebur"),
@@ -452,8 +470,14 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		b.editWithMarkup(chatID, msgID, b.getCheckHostSettingsText(), CheckHostSettingsMarkup(b.GetConfig()))
 	case "menu:checkhost:run_now":
 		// Explicit user-triggered run: bypasses the CheckHostBgEnabled gate.
+		// Wave M3/U-8: the completion aggregates are reported back onto this
+		// message. The wrapper is called (not `go`ed) so it captures the
+		// msg-seq synchronously in this handler goroutine — a newer
+		// interaction with this message then suppresses the stale report;
+		// the audit itself runs in its background goroutine, keeping the
+		// update loop non-blocking (toast stays).
 		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🚀 Запуск фоновой проверки Check-Host..."))
-		go b.runAuditNow()
+		b.runAuditNowAndReport(chatID, msgID)
 	case "menu:checkupdate":
 		_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🔍 Проверяю релизы на GitHub..."))
 		go func() {
@@ -512,7 +536,8 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		text := "➕ <b>Подключение новой ноды</b>\n\n" +
 			"Как назвать новую ноду?\n" +
 			"Отправьте имя ноды ответным сообщением (латиница, цифры, дефис, например: <code>msk-1</code>, <code>vps-germany</code>).\n\n" +
-			"<i>Или выполните команду:</i> <code>/nodeadd &lt;имя_ноды&gt;</code>"
+			"<i>Или выполните команду:</i> <code>/nodeadd &lt;имя_ноды&gt;</code>" +
+			promptTTLHint
 		b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
 			tu.InlineKeyboardRow(
 				btnIcon(IconBack, " К нодам", "menu:nodes"),
@@ -568,7 +593,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			text := fmt.Sprintf("➕ <b>Назначение подписки для ноды</b> <code>%s</code>\n\n"+
 				"Отправьте URL подписки ответным сообщением в этот чат (например: <code>https://example.com/sub/token</code>).\n\n"+
 				"<i>Или выполните команду:</i> <code>/nodeaddsub %s &lt;URL&gt;</code>",
-				escapeHTML(nodeName), escapeHTML(nodeName))
+				escapeHTML(nodeName), escapeHTML(nodeName)) + promptTTLHint
 			// Wave L-1: the «Отмена» button clears the pending input (toast,
 			// no navigation); the back row keeps the way to the node's subs
 			// screen, composed via cbNodeCfg with the static picker fallback
@@ -719,6 +744,39 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				text, markup := b.getNodeCfgScreen(nodeName)
 				b.editWithMarkup(chatID, msgID, text, markup)
 			}
+		} else if strings.HasPrefix(cb.Data, "menu:nodes:ndel:") {
+			// Wave M-A M1 (U-1b): two-step node delete, mirroring the nreset
+			// pattern. Mutating (admin-gated via isMutatingCallback): the bare
+			// route renders the «Точно удалить ноду…?» confirm screen (M1's
+			// helpers); only the explicit «:yes» callback removes the node
+			// through nodeMgr — the token is revoked and the persisted record
+			// with its settings overrides is deleted (nodes.Registry).
+			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:ndel:")
+			confirming := strings.HasSuffix(nodeName, ":yes")
+			nodeName = strings.TrimSuffix(nodeName, ":yes")
+			if b.nodeMgr != nil {
+				if !confirming {
+					b.editWithMarkup(chatID, msgID,
+						nodeDelConfirmText(nodeName),
+						nodeDelConfirmMarkup(nodeName))
+					return
+				}
+				if err := b.nodeMgr.RemoveNode(nodeName); err != nil {
+					logger.Warn("Telegram: node delete failed for %s: %v", nodeName, err)
+					if b.api != nil {
+						_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("❌ "+err.Error()).WithShowAlert())
+					}
+					text, markup := b.getNodeCfgScreen(nodeName)
+					b.editWithMarkup(chatID, msgID, text, markup)
+					return
+				}
+				if b.api != nil {
+					_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🗑 Нода удалена"))
+				}
+				b.editWithMarkup(chatID, msgID,
+					fmt.Sprintf("✅ Нода <b>%s</b> удалена с мастера.", escapeHTML(nodeName)),
+					NodesMainMenuMarkup())
+			}
 		} else if strings.HasPrefix(cb.Data, "menu:nodes:tg:") {
 			// Wave G5b: enable/disable node toggle. Mutating (admin-gated via
 			// isMutatingCallback) and self-toasting (isToastCallbackData). The
@@ -766,7 +824,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				"(латиница, цифры, дефис, до 32 символов, например: <code>germany-2</code>).\n\n"+
 				"Токен, подписки и настройки ноды перенесутся автоматически.\n\n"+
 				"<i>Или выполните команду:</i> <code>/noderename %s &lt;новое_имя&gt;</code>",
-				escapeHTML(nodeName), escapeHTML(nodeName))
+				escapeHTML(nodeName), escapeHTML(nodeName)) + promptTTLHint
 			// Wave L-1: the «Отмена» button clears the pending input (toast,
 			// no navigation); the back row keeps the way to the node cfg
 			// screen, composed via cbNodeCfg; over-limit names fall back to
@@ -929,13 +987,14 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				page = 1
 			}
 
-			renderDetails := func(reports []checker.ProxyDiagReport) {
+			renderDetails := func(reports []checker.ProxyDiagReport, cacheNote string) {
 				tabs := b.getNodeTabs(target)
 				if b.isRichMode() {
 					rich, totalPages := b.buildDiagnosticsDetailsRichMessageWithTarget(reports, target, page)
 					b.showRichReport(ct, msgID, rich, DiagnosticsPaginationMarkupWithTabs(target, page, totalPages, tabs))
 				} else {
 					pageText, totalPages := b.getDiagnosticsPageTextWithTarget(reports, target, page)
+					pageText += cacheNote
 					b.editWithMarkup(chatID, msgID, pageText, DiagnosticsPaginationMarkupWithTabs(target, page, totalPages, tabs))
 				}
 			}
@@ -943,7 +1002,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			if target == "local" || target == "" {
 				// Fast path: fresh cache — render immediately, no network.
 				if cached := b.getCachedDiagnosticsReports(); len(cached) > 0 {
-					renderDetails(cached)
+					renderDetails(cached, b.diagCacheAgeNote())
 					return
 				}
 				// Cold cache: a full probe sweep takes tens of seconds, so run
@@ -956,12 +1015,12 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 					if !b.isMsgSeqValid(chatID, msgID, seq) {
 						return
 					}
-					renderDetails(reports)
+					renderDetails(reports, "")
 				})
 				return
 			}
 			// Remote node reports come from memory (no probe sweep).
-			renderDetails(b.getNodeDiagnosticsReports(target))
+			renderDetails(b.getNodeDiagnosticsReports(target), "")
 		} else if strings.HasPrefix(cb.Data, "menu:stats:incpg:") {
 			// Wave K-B1 integration (I2): the incident journal pager —
 			// route «menu:stats:incpg:<filter>:<page>»; the tab keyboard is
@@ -1004,7 +1063,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				page = 1
 			}
 
-			renderPickDeep := func(reports []checker.ProxyDiagReport) {
+			renderPickDeep := func(reports []checker.ProxyDiagReport, cacheNote string) {
 				pageSize := diagPageSize
 				if b.isRichMode() {
 					pageSize = diagRichDetailsPageSize
@@ -1020,6 +1079,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				pageReports := reports[start:end]
 				text := "🔬 <b>Углубленная проверка соединения</b>\n\n" +
 					"Выберите прокси-хост для глубокого тестирования сетевых этапов (DNS, TCP, TLS, HTTP-мишени, Check-Host):"
+				text += cacheNote
 				tabs := b.getNodeTabs(target)
 				markup := PickDeepDiagnosticsMarkupWithTabs(target, tabs, pageReports, page)
 				b.editWithMarkup(chatID, msgID, text, markup)
@@ -1028,7 +1088,7 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			if target == "local" || target == "" {
 				// Fast path: fresh cache — render immediately, no network.
 				if cached := b.getCachedDiagnosticsReports(); len(cached) > 0 {
-					renderPickDeep(cached)
+					renderPickDeep(cached, b.diagCacheAgeNote())
 					return
 				}
 				// Cold cache: run the probe sweep in the background like
@@ -1040,12 +1100,12 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 					if !b.isMsgSeqValid(chatID, msgID, seq) {
 						return
 					}
-					renderPickDeep(reports)
+					renderPickDeep(reports, "")
 				})
 				return
 			}
 			// Remote node reports come from memory (no probe sweep).
-			renderPickDeep(b.getNodeDiagnosticsReports(target))
+			renderPickDeep(b.getNodeDiagnosticsReports(target), "")
 		} else if strings.HasPrefix(cb.Data, "menu:diag:deep:") {
 			rest := strings.TrimPrefix(cb.Data, "menu:diag:deep:")
 			parts := strings.Split(rest, ":")

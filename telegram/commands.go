@@ -395,14 +395,24 @@ func (b *Bot) replyDiagnostics(t ChatTarget, arg string) {
 }
 
 func (b *Bot) replyDigest(t ChatTarget) {
+	b.sendWithMarkup(t, b.digestText(), BackToMenuMarkup())
+}
+
+// digestText renders the /digest body. Wave M2 (U-7) honesty fix: the line
+// «Средний аптайм (24ч)» must carry the rolling 24h figure
+// (UptimePercent24hAll over ACTIVE proxies) — the previous implementation fed
+// the ALL-TIME average (getAverageUptimePercent) under the 24ч label.
+func (b *Bot) digestText() string {
 	snapshot := b.source.MetricsSnapshot()
 	online := 0
 	totalActive := 0
+	activeIDs := make([]string, 0, len(snapshot))
 	for _, pm := range snapshot {
 		if pm.Disabled {
 			continue
 		}
 		totalActive++
+		activeIDs = append(activeIDs, pm.StableID)
 		if pm.Online {
 			online++
 		}
@@ -412,11 +422,12 @@ func (b *Bot) replyDigest(t ChatTarget) {
 		"• Текущий статус: <b>%d/%d онлайн</b>\n"+
 		"• Время: <b>%s</b>\n", online, totalActive, b.now().Format("15:04:05 02.01.2006"))
 
-	if avg, ok := b.getAverageUptimePercent(); ok {
-		text += fmt.Sprintf("• Средний аптайм (24ч): <b>%.1f%%</b>\n", avg)
+	if b.statsStore != nil && b.statsStore.GetRollingStats() != nil {
+		avg24 := b.statsStore.GetRollingStats().UptimePercent24hAll(b.now(), activeIDs)
+		text += fmt.Sprintf("• Средний аптайм (24ч): <b>%.1f%%</b>\n", avg24)
 	}
 
-	b.sendWithMarkup(t, text, BackToMenuMarkup())
+	return text
 }
 
 func (b *Bot) sendMorningDigest(now time.Time) {
