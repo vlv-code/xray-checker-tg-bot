@@ -44,6 +44,7 @@ type BotConfig struct {
 	ReleaseAlertsEnabled      bool     `json:"release_alerts_enabled"`
 	ReleaseCheckIntervalHours int      `json:"release_check_interval_hours,omitempty"`
 	LastNotifiedReleaseTag    string   `json:"last_notified_release_tag,omitempty"`
+	CustomEmoji               bool     `json:"custom_emoji,omitempty"` // animated custom-emoji icons (Bot API 9.4); bot-runtime setting, default false
 }
 
 // locCache memoizes parsed time zones: Location() is called on every message

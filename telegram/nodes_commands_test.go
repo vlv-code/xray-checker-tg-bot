@@ -53,18 +53,24 @@ func TestFormatAge(t *testing.T) {
 }
 
 type fakeNodeManager struct {
-	nodes        map[string]string   // name -> token
-	subs         map[string][]string // name -> URLs
-	overridden   map[string]bool     // settings override marks
-	disabled     map[string]bool     // G5b: name -> disabled state
-	renames      []string            // G5a: "old->new" records
-	enabledCalls []string            // G5b: "name=true|false" records
+	nodes        map[string]string    // name -> token
+	subs         map[string][]string  // name -> URLs
+	overridden   map[string]bool      // settings override marks
+	disabled     map[string]bool      // G5b: name -> disabled state
+	renames      []string             // G5a: "old->new" records
+	enabledCalls []string             // G5b: "name=true|false" records
+	lastReport   map[string]time.Time // K-B2: name -> last report time (age column)
 }
 
 func (f *fakeNodeManager) Nodes() []NodeInfo {
 	var out []NodeInfo
 	for name := range f.nodes {
-		out = append(out, NodeInfo{Name: name, Up: true, Disabled: f.disabled[name]})
+		n := NodeInfo{Name: name, Up: true, Disabled: f.disabled[name]}
+		if lr, ok := f.lastReport[name]; ok && !lr.IsZero() {
+			n.EverReported = true
+			n.LastReport = lr
+		}
+		out = append(out, n)
 	}
 	return out
 }
@@ -168,8 +174,8 @@ func TestHandleNodeAddSubURL(t *testing.T) {
 	b := &Bot{
 		nodeMgr:        fnm,
 		allowedChatIDs: map[int64]bool{123: true},
-		waitingNodeSub: map[int64]string{123: "m31a"},
 	}
+	b.armPending(123, pendingKindNodeSub, "m31a")
 
 	// Message with raw URL
 	msg := &telego.Message{
@@ -188,9 +194,9 @@ func TestHandleNodeAddSubURL(t *testing.T) {
 		t.Fatalf("expected sub to be added, got: %v", subs)
 	}
 
-	// Verify that waiting state was cleared
-	if b.waitingNodeSub[123] != "" {
-		t.Errorf("expected waitingNodeSub to be cleared, got %q", b.waitingNodeSub[123])
+	// Verify that the pending input was consumed
+	if b.hasPending(123) {
+		t.Errorf("expected the pending input to be cleared")
 	}
 }
 
@@ -204,7 +210,6 @@ func TestNodeSubsCallbacks(t *testing.T) {
 	b := &Bot{
 		nodeMgr:        fnm,
 		allowedChatIDs: map[int64]bool{123: true},
-		waitingNodeSub: make(map[int64]string),
 	}
 
 	cbMsg := &telego.Message{
@@ -212,29 +217,33 @@ func TestNodeSubsCallbacks(t *testing.T) {
 		MessageID: 456,
 	}
 
-	// 1. menu:nodes:addsub:m31a sets waitingNodeSub
+	// 1. menu:nodes:addsub:m31a arms the pending input with the node payload
 	b.handleCallbackQuery(&telego.CallbackQuery{
 		ID:      "q1",
 		Data:    "menu:nodes:addsub:m31a",
 		Message: cbMsg,
 	})
-	if b.waitingNodeSub[123] != "m31a" {
-		t.Errorf("expected waitingNodeSub to be m31a, got %q", b.waitingNodeSub[123])
+	kind, payload, ok := b.takePending(123)
+	if !ok || kind != pendingKindNodeSub || payload != "m31a" {
+		t.Errorf("expected the armed nodesub input (m31a), got ok=%v kind=%q payload=%q", ok, kind, payload)
 	}
+	b.armPending(123, pendingKindNodeSub, "m31a")
 
-	// 2. menu:nodes:subnode:m31a clears waitingNodeSub (Wave H2/D4 register:
-	// the former menu:nodes:subs disarm route was removed; the manage screen
-	// re-entry keeps the same disarm semantics)
+	// 2. menu:nodes:subnode:m31a clears the pending input (Wave H2/D4
+	// register: the former menu:nodes:subs disarm route was removed; the
+	// manage screen re-entry keeps the same disarm semantics — wave L-1 hook)
 	b.handleCallbackQuery(&telego.CallbackQuery{
 		ID:      "q2",
 		Data:    "menu:nodes:subnode:m31a",
 		Message: cbMsg,
 	})
-	if b.waitingNodeSub[123] != "" {
-		t.Errorf("expected waitingNodeSub to be cleared on menu:nodes:subnode:m31a, got %q", b.waitingNodeSub[123])
+	if b.hasPending(123) {
+		t.Errorf("expected the pending input to be cleared on menu:nodes:subnode:m31a")
 	}
 
-	// 3. menu:nodes:delsub:m31a:0 removes the subscription
+	// 3. Wave K-B2 two-step delete (wired by K-B3): the first
+	//    menu:nodes:delsub:m31a:0 tap renders the confirm screen and removes
+	//    NOTHING; the explicit «:yes» callback performs the removal.
 	b.handleCallbackQuery(&telego.CallbackQuery{
 		ID:      "q3",
 		Data:    "menu:nodes:delsub:m31a:0",
@@ -244,8 +253,20 @@ func TestNodeSubsCallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ManagedSubs failed: %v", err)
 	}
+	if len(subs) != 1 {
+		t.Fatalf("first delsub tap must only confirm (no removal), got %d subs", len(subs))
+	}
+	b.handleCallbackQuery(&telego.CallbackQuery{
+		ID:      "q4",
+		Data:    "menu:nodes:delsub:m31a:0:yes",
+		Message: cbMsg,
+	})
+	subs, err = fnm.ManagedSubs("m31a")
+	if err != nil {
+		t.Fatalf("ManagedSubs failed: %v", err)
+	}
 	if len(subs) != 0 {
-		t.Fatalf("expected 0 subs after deletion, got %d", len(subs))
+		t.Fatalf("expected 0 subs after the confirming :yes tap, got %d", len(subs))
 	}
 }
 
@@ -368,5 +389,214 @@ func TestProcessNodeCheckHostAudits(t *testing.T) {
 	b.ProcessNodeCheckHostAudits("n1", up)
 	if b.tracker.HasAlert(1, 0, key) {
 		t.Fatal("alert must be resolved after RU recovery")
+	}
+}
+
+// --- Wave K-B2: compact /nodeadd reply with copy-text rows ---
+
+// nodeAddCopyTexts returns the copy-text payload of every button whose label
+// contains the given substring (helper for the copy-row assertions).
+func nodeAddCopyTexts(markup *telego.InlineKeyboardMarkup, labelPart string) []string {
+	var out []string
+	for _, row := range markup.InlineKeyboard {
+		for _, b := range row {
+			if b.CopyText != nil && strings.Contains(b.Text, labelPart) {
+				out = append(out, b.CopyText.Text)
+			}
+		}
+	}
+	return out
+}
+
+// findButtonText returns the text of the first button whose label contains
+// the given substring ("" for the first button overall).
+func findButtonText(markup *telego.InlineKeyboardMarkup, labelPart string) string {
+	for _, row := range markup.InlineKeyboard {
+		for _, b := range row {
+			if strings.Contains(b.Text, labelPart) {
+				return b.Text
+			}
+		}
+	}
+	return ""
+}
+
+// TestBuildNodeRegisteredTextCompact pins the Wave K-B2 text contract: the
+// registration header and the copy-button guidance survive, and the giant
+// <pre> dump is gone (the values moved into the copy rows; escape guarantees
+// are pinned by nodes_commands_escape_test.go).
+func TestBuildNodeRegisteredTextCompact(t *testing.T) {
+	text := buildNodeRegisteredText("n1", strings.Repeat("t", 64), "https://m.example/r")
+	if !strings.Contains(text, "успешно зарегистрирована") {
+		t.Errorf("registration header must survive, got:\n%s", text)
+	}
+	if strings.Contains(text, "<pre>") {
+		t.Errorf("giant <pre> dump must be gone, got:\n%s", text)
+	}
+	if !strings.Contains(text, "скопиру") {
+		t.Errorf("copy-button guidance expected, got:\n%s", text)
+	}
+	if !strings.Contains(text, "Docker") {
+		t.Errorf("docker launch instruction expected, got:\n%s", text)
+	}
+}
+
+// TestNodeAddCopyMarkup pins the Wave K-B2 /nodeadd keyboard: copy-text rows
+// for the token, the report URL and the docker run one-liner (RAW payloads —
+// copy text must NOT be HTML-escaped), short-form value previews in the
+// labels, the passive «🔄 Обновить» re-render row (was «🩺 Проверить связь»),
+// «↩️» back wording, and every callback within the 64-byte limit.
+func TestNodeAddCopyMarkup(t *testing.T) {
+	token := strings.Repeat("a1b2", 16) // 64 hex chars
+	rawURL := "https://master.example/report?a=1&b=2"
+	m := nodeAddCopyMarkup("n1", token, rawURL)
+
+	// Token row: label carries the value short form, payload is the raw token.
+	tokTexts := nodeAddCopyTexts(m, "Токен ноды")
+	if len(tokTexts) != 1 || tokTexts[0] != token {
+		t.Fatalf("expected one raw-token copy row, got %v", tokTexts)
+	}
+	tokLabel := findButtonText(m, "Токен ноды")
+	if !strings.Contains(tokLabel, token[:8]) || !strings.Contains(tokLabel, "…") {
+		t.Errorf("token label must include the value short form, got %q", tokLabel)
+	}
+
+	// URL row: RAW URL (literal &, never &amp; in the copy payload).
+	urlTexts := nodeAddCopyTexts(m, "URL отчёта")
+	if len(urlTexts) != 1 || urlTexts[0] != rawURL {
+		t.Fatalf("expected one raw-URL copy row, got %v", urlTexts)
+	}
+	if urlLabel := findButtonText(m, "URL отчёта"); !strings.Contains(urlLabel, "master.example") {
+		t.Errorf("URL label must include the host short form, got %q", urlLabel)
+	}
+
+	// Command row: a single part while the one-liner fits the 256-char cap.
+	cmdTexts := nodeAddCopyTexts(m, "Команда запуска")
+	if len(cmdTexts) != 1 {
+		t.Fatalf("expected a single command copy row, got %d", len(cmdTexts))
+	}
+	cmd := cmdTexts[0]
+	if len(cmd) > 256 {
+		t.Errorf("copy payload exceeds the 256-char cap: %d", len(cmd))
+	}
+	if !strings.HasPrefix(cmd, "docker run -d --name xray-node-n1 ") ||
+		!strings.Contains(cmd, " -e REPORT_URL="+rawURL+" ") ||
+		!strings.Contains(cmd, " -e REPORT_TOKEN="+token+" ") ||
+		!strings.HasSuffix(cmd, " ghcr.io/vlv-code/xray-checker-tg-bot:latest") {
+		t.Errorf("command copy payload malformed: %q", cmd)
+	}
+	if cmdLabel := findButtonText(m, "Команда запуска"); !strings.Contains(cmdLabel, "xray-node-n1") {
+		t.Errorf("command label must include the container short form, got %q", cmdLabel)
+	}
+
+	// Passive re-render honesty (K-B2 deliverable 3): «🔄 Обновить», and the
+	// diagnostic-sounding «Проверить связь» wording is gone.
+	if findButtonText(m, "🔄 Обновить") == "" || !hasCallback(m, "menu:nodes:health") {
+		t.Errorf("expected the «🔄 Обновить» row targeting menu:nodes:health, got %v", markupCallbacks(m))
+	}
+	if findButtonText(m, "Проверить связь") != "" {
+		t.Errorf("dishonest «Проверить связь» wording must be gone")
+	}
+
+	// Back-row wording (K-B2 deliverable 4): «↩️ К списку нод», no «🔙».
+	for _, row := range m.InlineKeyboard {
+		for _, b := range row {
+			if strings.HasPrefix(b.Text, "🔙") {
+				t.Errorf("«🔙» wording must be gone, got %q", b.Text)
+			}
+		}
+	}
+	if back := findButtonText(m, "К списку нод"); !strings.HasPrefix(back, "↩️") {
+		t.Errorf("back row must use «↩️» wording, got %q", back)
+	}
+	if !hasCallback(m, "menu:nodes") || !hasCallback(m, "menu:main") {
+		t.Errorf("navigation callbacks must survive, got %v", markupCallbacks(m))
+	}
+	for _, cb := range markupCallbacks(m) {
+		if len(cb) > 64 {
+			t.Errorf("callback_data exceeds 64 bytes: %q (%d)", cb, len(cb))
+		}
+	}
+}
+
+// TestNodeAddCopyMarkupSplitsLongCommand: a one-liner that exceeds the
+// 256-char copy-text cap (max-length node name + long report URL) is split
+// into paste-ordered continuation parts («часть 1/2», «часть 2/2»), each
+// within the cap, whose reconstruction equals the full command; an
+// over-cap URL omits its copy row and the command parts degrade to the
+// hint row instead of a dead button.
+func TestNodeAddCopyMarkupSplitsLongCommand(t *testing.T) {
+	token := strings.Repeat("f", 64)
+	longName := strings.Repeat("n", 32)
+	longURL := "https://master.example.com/very/long/report/path?a=1&b=2&c=3&d=4&e=5&f=6"
+	full := nodeAddDockerCommand(longName, longURL, token)
+	if len(full) <= 256 {
+		t.Fatalf("fixture must overflow the 256-char cap, got %d", len(full))
+	}
+	m := nodeAddCopyMarkup(longName, token, longURL)
+
+	parts := nodeAddCopyTexts(m, "Команда запуска")
+	if len(parts) < 2 {
+		t.Fatalf("expected split command parts, got %d", len(parts))
+	}
+	var rebuilt string
+	for i, p := range parts {
+		if len(p) > 256 {
+			t.Errorf("part %d exceeds the cap: %d", i+1, len(p))
+		}
+		if i < len(parts)-1 {
+			if !strings.HasSuffix(p, " \\") {
+				t.Fatalf("continuation part %d must end with a backslash continuation, got %q", i+1, p)
+			}
+			rebuilt += p[:len(p)-2] + " "
+		} else {
+			rebuilt += p
+		}
+		if want := fmt.Sprintf("часть %d/%d", i+1, len(parts)); !strings.Contains(findButtonText(m, want), want) {
+			t.Errorf("part %d label must carry its ordinal %q", i+1, want)
+		}
+	}
+	if rebuilt != full {
+		t.Errorf("paste reconstruction mismatch:\n got %q\nwant %q", rebuilt, full)
+	}
+
+	// Pathological URL (>256 chars): the URL copy row is omitted and the
+	// command rows degrade to the hint row (no dead buttons).
+	hugeURL := "https://m.example/" + strings.Repeat("x", 260)
+	mHuge := nodeAddCopyMarkup("n1", token, hugeURL)
+	if got := nodeAddCopyTexts(mHuge, "URL отчёта"); len(got) != 0 {
+		t.Errorf("over-cap URL copy row must be omitted, got %v", got)
+	}
+	if got := nodeAddCopyTexts(mHuge, "Команда запуска"); len(got) != 0 {
+		t.Errorf("unsplittable command copy rows must be omitted, got %v", got)
+	}
+	if findButtonText(mHuge, "не поместилась") == "" {
+		t.Errorf("expected the over-cap hint row, got %v", markupCallbacks(mHuge))
+	}
+}
+
+// TestReplyNodesReportAgeIcon pins the Wave K-B2 legend on the /nodes list:
+// the report-age column uses ⏱️ fmtAgeIcon (RU units), not the compact
+// formatAge latin units.
+func TestReplyNodesReportAgeIcon(t *testing.T) {
+	ft, api := newFakeTelegramBot(t)
+	fnm := &fakeNodeManager{
+		nodes:      map[string]string{"m31a": "t1"},
+		lastReport: map[string]time.Time{"m31a": time.Now().Add(-2 * time.Minute)},
+	}
+	b, _ := newCfgTestBot(t, api, nil, fnm)
+
+	b.replyNodes(ChatTarget{ChatID: 12345})
+
+	sent := append(ft.callsOf("sendMessage"), ft.callsOf("editMessageText")...)
+	if len(sent) == 0 {
+		t.Fatal("expected /nodes to send a message")
+	}
+	text, _ := sent[0].Params["text"].(string)
+	if !strings.Contains(text, "отчёт ⏱️ 2 мин") {
+		t.Errorf("expected the ⏱️ fmtAgeIcon age column («отчёт ⏱️ 2 мин»), got: %s", text)
+	}
+	if strings.Contains(text, "2m00s") {
+		t.Errorf("latin formatAge units must be gone from the age column, got: %s", text)
 	}
 }

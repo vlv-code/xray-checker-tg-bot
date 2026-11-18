@@ -19,7 +19,10 @@ import (
 )
 
 func (b *Bot) getCheckHostMenuText() string {
-	return "🌐 <b>Глобальная проверка доступности через Check-Host.net</b>\n\n" +
+	// Wave K-B3: the Check-Host header carries the 📡 antenna icon through
+	// the dual layer (raw tg-emoji while enabled — the text is static, so no
+	// escapeHTML pass ever touches the tag).
+	return renderIcon(IconCheckHost) + " <b>Глобальная проверка доступности через Check-Host.net</b>\n\n" +
 		"Список хостов: из подписок (помечены «авто», удалить нельзя) и добавленные вручную. " +
 		"Выберите хост для проверки через узлы по всему миру (Россия, Европа, США, Азия).\n\n" +
 		"Или отправьте команду с любым хостом:\n" +
@@ -206,13 +209,13 @@ func (b *Bot) getCheckHostSettingsText() string {
 		intHours = 1
 	}
 
-	return fmt.Sprintf("🌐 <b>Настройки фоновой проверки Check-Host</b>\n\n"+
+	return fmt.Sprintf("%s <b>Настройки фоновой проверки Check-Host</b>\n\n"+
 		"• Фоновая проверка: <b>%s</b>\n"+
 		"• Периодичность: <b>каждые %d ч.</b>\n"+
 		"• Алерты по РФ: <b>%s</b>\n\n"+
 		"Периодическая проверка хостов из российских и зарубежных локаций через Check-Host.net. Оповещает при блокировках или сетевых сбоях в РФ.\n\n"+
 		"<i>Отключённые в настройках хосты автоматически пропускаются.</i>",
-		bgStatus, intHours, alertStatus)
+		renderIcon(IconCheckHost), bgStatus, intHours, alertStatus)
 }
 
 func (b *Bot) handleCheckHostBgCommand(msg *telego.Message) {
@@ -286,8 +289,8 @@ func validateCheckHostHostInput(raw string) (string, error) {
 
 // handleCheckHostHostInput consumes the manual host input armed by the
 // «➕ Добавить хост» button (Wave H6, route menu:checkhostadd): the armed
-// single-shot waiting state (waitingCheckHostHost, admin-gated in
-// handleMessage) delivers the next plain text here; host[:port] is validated
+// pendingInput FSM entry (wave L-1, admin-gated in handleMessage) delivers
+// the next plain text here; host[:port] is validated
 // (numeric-port rule), deduped against the union (auto hosts are refused with
 // a RU notice) and persisted via updateConfig — the only config writer.
 func (b *Bot) handleCheckHostHostInput(msg *telego.Message, raw string) {
@@ -329,7 +332,7 @@ func (b *Bot) handleCheckHostHostInput(msg *telego.Message, raw string) {
 		"Теперь он есть в списке Check-Host и войдёт в фоновую проверку доступности из РФ.", escapeHTML(host)),
 		tu.InlineKeyboard(
 			tu.InlineKeyboardRow(
-				btn("🌐 К списку хостов", "menu:checkhost"),
+				btn("📡 К списку хостов", "menu:checkhost"),
 			),
 		))
 }
@@ -351,7 +354,8 @@ func (b *Bot) handleCheckHostDel(chatID int64, msgID int, cb *telego.CallbackQue
 	}
 	if target == "" {
 		if b.api != nil {
-			_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("❌ Хост не найден среди добавленных"))
+			// Wave K-B3: the not-found error toast is an alert.
+			_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("❌ Хост не найден среди добавленных").WithShowAlert())
 		}
 		return
 	}
@@ -388,7 +392,8 @@ func (b *Bot) handleCheckHostDel(chatID int64, msgID int, cb *telego.CallbackQue
 	})
 	if !removed {
 		if b.api != nil {
-			_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("❌ Не удалось удалить хост"))
+			// Wave K-B3: the removal-failure error toast is an alert.
+			_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("❌ Не удалось удалить хост").WithShowAlert())
 		}
 		return
 	}

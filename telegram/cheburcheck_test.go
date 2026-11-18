@@ -323,3 +323,131 @@ func TestFormatCheburDiagBlock_CountsLine(t *testing.T) {
 		}
 	}
 }
+
+// decodedReplyMarkup decodes the reply_markup param of one recorded fake-API
+// call into an InlineKeyboardMarkup (nil when absent or unparsable).
+func decodedReplyMarkup(t *testing.T, call fakeAPICall) *telego.InlineKeyboardMarkup {
+	t.Helper()
+	raw, ok := call.Params["reply_markup"]
+	if !ok || raw == nil {
+		return nil
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("failed to re-marshal reply_markup: %v", err)
+	}
+	var mk telego.InlineKeyboardMarkup
+	if err := json.Unmarshal(data, &mk); err != nil {
+		t.Fatalf("failed to decode reply_markup: %v", err)
+	}
+	return &mk
+}
+
+// TestCheburProbeResultKeepsListPage (wave K-B3): the Cheburcheck probe flow
+// remembers the host-list page the user browsed (the submenu open and the
+// menu:cheburpg:<page> pager both record it), and BOTH the «⏳» placeholder
+// and the final report carry the «📡 К списку хостов» button back to that
+// page (menu:cheburpg:<page>); chats without a recorded page fall back to 1.
+func TestCheburProbeResultKeepsListPage(t *testing.T) {
+	var mu sync.Mutex
+	var checkTargets []string
+	chebMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if r.URL.Path == "/check" {
+			checkTargets = append(checkTargets, r.URL.Query().Get("target"))
+		}
+		mu.Unlock()
+		switch {
+		case r.URL.Path == "/check":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "pgjob"})
+		case r.URL.Path == "/probe/pgjob":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte(
+				"event: started\ndata: {\"id\":\"pgjob\",\"target\":\"h\",\"online_probes\":1}\n\n" +
+					"event: result\ndata: {\"job_id\":\"j\",\"probe_id\":\"p1\",\"verdicts\":[\"ok\"]}\n\n" +
+					"event: done\ndata: {\"id\":\"pgjob\",\"status\":\"finished\",\"response_count\":1,\"online_probes\":1}\n\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer chebMock.Close()
+
+	chebClient := checker.NewCheburcheckClient(chebMock.URL, 5*time.Second,
+		[]checker.ScannerCred{{Name: "test-scanner", Token: "tok-1"}})
+
+	ft, api := newFakeTelegramBot(t)
+	b, _ := newGateTestBot(t, api, nil)
+	b.cheburClient = chebClient
+
+	waitEdits := func(want int) []fakeAPICall {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if len(ft.callsOf("editMessageText")) >= want {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return ft.callsOf("editMessageText")
+	}
+
+	// 1. Browsing to page 2 records the page for the chat.
+	b.handleCallbackQuery(gateCallback(9999, "menu:cheburpg:2"))
+	if got := b.lastCheburPage(12345); got != 2 {
+		t.Fatalf("menu:cheburpg:2 must record page 2 for the chat, got %d", got)
+	}
+
+	// 2. Probing a host from that page keeps it in BOTH the placeholder and
+	//    the result markup («📡 К списку хостов» -> menu:cheburpg:2). The
+	//    first recorded edit is the pager render itself — the probe adds the
+	//    placeholder and the report on top.
+	b.handleCheburcheckHost(12345, 10, "1.1.1.1")
+	edits := waitEdits(3)
+	if len(edits) < 3 {
+		t.Fatalf("expected pager render + placeholder + report edits, got %d", len(edits))
+	}
+	for i, call := range edits[len(edits)-2:] {
+		mk := decodedReplyMarkup(t, call)
+		if mk == nil {
+			t.Fatalf("edit %d carries no reply_markup", i)
+		}
+		if !hasCallback(mk, "menu:cheburpg:2") {
+			t.Errorf("edit %d must keep the list page (menu:cheburpg:2), got %v", i, markupCallbacks(mk))
+		}
+		if !hasButtonText(mk, "📡 К списку хостов") {
+			t.Errorf("edit %d must carry «📡 К списку хостов», got %v", i, markupCallbacks(mk))
+		}
+		if !hasCallback(mk, "menu:main") {
+			t.Errorf("edit %d must keep a main-menu button, got %v", i, markupCallbacks(mk))
+		}
+	}
+
+	// 3. A chat without a recorded page falls back to page 1.
+	ft2, api2 := newFakeTelegramBot(t)
+	b2, _ := newGateTestBot(t, api2, nil)
+	b2.cheburClient = chebClient
+	if got := b2.lastCheburPage(12345); got != 1 {
+		t.Fatalf("default chebur page must be 1, got %d", got)
+	}
+	b2.handleCheburcheckHost(12345, 10, "1.1.1.1")
+	edits2 := waitEdits2(ft2, 2)
+	if len(edits2) < 2 {
+		t.Fatalf("expected placeholder + report edits on the fresh bot, got %d", len(edits2))
+	}
+	mk := decodedReplyMarkup(t, edits2[len(edits2)-1])
+	if mk == nil || !hasCallback(mk, "menu:cheburpg:1") {
+		t.Errorf("fallback result must return to menu:cheburpg:1, got %v", markupCallbacks(mk))
+	}
+}
+
+// waitEdits2 polls a second fake API for the wanted number of edits.
+func waitEdits2(ft *fakeTelegramAPI, want int) []fakeAPICall {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(ft.callsOf("editMessageText")) >= want {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return ft.callsOf("editMessageText")
+}

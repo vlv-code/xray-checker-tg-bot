@@ -110,9 +110,13 @@ func (b *Bot) handleCheburcheckHost(chatID int64, msgID int, hostKey string) {
 		return
 	}
 
+	// Wave K-B3: the placeholder AND the result keep the way back to the
+	// browsed host-list page («📡 К списку хостов» → menu:cheburpg:<page>).
+	resultMarkup := CheburResultMarkup(b.lastCheburPage(chatID))
+
 	b.editWithMarkup(chatID, msgID, fmt.Sprintf("⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
 		"Активный пробинг <code>%s</code>...\n"+
-		"Пожалуйста, подождите до 30 секунд...", escapeHTML(host)), BackToMenuMarkup())
+		"Пожалуйста, подождите до 30 секунд...", escapeHTML(host)), resultMarkup)
 
 	// Wave I F1: 30s budget (matches the manual command path — full streams).
 	ctx, cancel := context.WithTimeout(b.ctx, 30*time.Second)
@@ -123,11 +127,11 @@ func (b *Bot) handleCheburcheckHost(chatID int64, msgID int, hostKey string) {
 		return
 	}
 	if err != nil {
-		b.editWithMarkup(chatID, msgID, fmt.Sprintf("❌ <b>Ошибка Cheburcheck:</b> %s", escapeHTML(err.Error())), BackToMenuMarkup())
+		b.editWithMarkup(chatID, msgID, fmt.Sprintf("❌ <b>Ошибка Cheburcheck:</b> %s", escapeHTML(err.Error())), resultMarkup)
 		return
 	}
 
-	b.editWithMarkup(chatID, msgID, checker.FormatCheburcheckReport(summary), BackToMenuMarkup())
+	b.editWithMarkup(chatID, msgID, checker.FormatCheburcheckReport(summary), resultMarkup)
 }
 
 // stripCheburPort strips a trailing ":port" from a host:port pair (wave H4:
@@ -179,9 +183,9 @@ func validateCheburHostInput(raw, host string) error {
 
 // handleCheburHostInput consumes the manual host input armed by the
 // «✍️ Проверить свой хост» button (wave H4, route menu:cheburin): the armed
-// single-shot waiting state (waitingCheburHost, admin-gated in
-// handleMessage) delivers the next plain text here; host[:port] is validated
-// (port stripped), then one-off CheckTarget → FormatCheburcheckReport reply.
+// pendingInput FSM entry (wave L-1, admin-gated in handleMessage) delivers
+// the next plain text here; host[:port] is validated (port stripped), then
+// one-off CheckTarget → FormatCheburcheckReport reply.
 func (b *Bot) handleCheburHostInput(msg *telego.Message, raw string) {
 	t := targetFromMessage(msg)
 

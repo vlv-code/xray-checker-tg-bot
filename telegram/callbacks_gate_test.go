@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -156,6 +157,12 @@ func TestIsMutatingCallback_Classification(t *testing.T) {
 		"menu:nodes:toggle_sync",
 		"menu:nodes:toggle_alerts",
 		"menu:nodes:toggle_proxy_alerts",
+		// Wave K-B3: the digest and custom-emoji settings toggles persist
+		// config, and the «➕ Добавить подписку» arm ends in a persisted
+		// subscription write — all three are mutations.
+		"menu:nodes:digest",
+		"menu:toggle_icons",
+		"menu:subsadd",
 		// Wave H6: the custom Check-Host host add/del routes persist config.
 		"menu:checkhostadd",
 		"menu:checkhostdel:9.9.9.9:443",
@@ -176,7 +183,10 @@ func TestIsMutatingCallback_Classification(t *testing.T) {
 
 	informational := []string{
 		"menu:main", "menu:settings", "menu:status",
-		"menu:diag", "menu:diag:summary", "menu:diag:rich",
+		// Wave K-B3 register: the dead route menu:diag:rich is removed from
+		// callbacks.go together with its inventory entry — no emitter and no
+		// handler remain.
+		"menu:diag", "menu:diag:summary",
 		"menu:stats", "menu:stats:incidents", "menu:stats:top",
 		"menu:stats:protocols", "menu:stats:heatmap",
 		"menu:timezone", "menu:quiet", "menu:alert_mode",
@@ -190,6 +200,9 @@ func TestIsMutatingCallback_Classification(t *testing.T) {
 		// pager routes (functional screen) stay open to non-admins.
 		"menu:nodes:cfg:node-1", "menu:nodes:excl:node-1", "menu:nodes:exclpg:node-1:2",
 		"menu:noop", "menu:diag:noop:2:3",
+		// Wave L-1 register: the «Отмена» input-cancel route only clears the
+		// per-chat pendingInput — a clear is harmless, so it stays open.
+		"menu:cancelinput",
 		// prefix routes that only display views or set ephemeral per-chat prompts
 		"menu:nodes:subnode:node-1",
 		"menu:nodes:addsub:node-1",
@@ -420,5 +433,127 @@ func TestRunCheckHostAudit_BgGateAndExplicitBypass(t *testing.T) {
 	b.runAuditNow()
 	if !tracker.HasAlert(12345, 0, alertKey) {
 		t.Fatalf("runAuditNow must perform the audit despite CheckHostBgEnabled=false")
+	}
+}
+
+// --- Wave K-B3: error toasts answer as alerts, toggle rows debounce. ---
+
+// errDelSubNodeManager fails RemoveSub to exercise the delsub error toast.
+type errDelSubNodeManager struct {
+	fakeNodeManager
+}
+
+func (e *errDelSubNodeManager) RemoveSub(node, url string) error {
+	return errors.New("boom")
+}
+
+// toastParams returns the text and show_alert flag of the most recent
+// answerCallbackQuery call.
+func toastParams(t *testing.T, ft *fakeTelegramAPI) (string, bool) {
+	t.Helper()
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	for i := len(ft.calls) - 1; i >= 0; i-- {
+		c := ft.calls[i]
+		if c.Method != "answerCallbackQuery" {
+			continue
+		}
+		text, _ := c.Params["text"].(string)
+		alert, _ := c.Params["show_alert"].(bool)
+		return text, alert
+	}
+	return "", false
+}
+
+// TestErrorToastsShowAlert pins the wave K-B3 UX rule: the four ❌ error toasts
+// answer with show_alert=true (they are failures the user must notice):
+//  1. menu:nodes:delsub write error («❌ Ошибка: …», via the two-step :yes tap),
+//  2. menu:nodes:exclpg unknown node («❌ Нода не найдена»),
+//  3. menu:checkhostdel unknown key («❌ Хост не найден среди добавленных»),
+//  4. menu:checkhostdel removal failure («❌ Не удалось удалить хост»).
+//
+// The success toasts stay ordinary notifications.
+// Wave K-B2 register: delsub became two-step — the destructive tap carries the
+// explicit «:yes» suffix inside the admin-gated prefix.
+func TestErrorToastsShowAlert(t *testing.T) {
+	// 1. delsub write error (the confirming «:yes» tap).
+	ft, api := newFakeTelegramBot(t)
+	b, _ := newGateTestBot(t, api, nil)
+	fnm := &errDelSubNodeManager{fakeNodeManager{
+		nodes: map[string]string{"n": "tok"},
+		subs:  map[string][]string{"n": {"https://s/x"}},
+	}}
+	b.nodeMgr = fnm
+	b.handleCallbackQuery(gateCallback(1001, "menu:nodes:delsub:n:0:yes"))
+	if text, alert := toastParams(t, ft); !alert || !strings.Contains(text, "❌ Ошибка:") {
+		t.Errorf("delsub error toast must be an alert, got text=%q alert=%v", text, alert)
+	}
+
+	// 2. exclpg unknown node.
+	ft2, api2 := newFakeTelegramBot(t)
+	b2, _ := newGateTestBot(t, api2, nil)
+	fnmOK := &fakeNodeManager{nodes: map[string]string{"m31a": "tok"}}
+	b2.nodeMgr = fnmOK
+	b2.handleCallbackQuery(gateCallback(1001, "menu:nodes:exclpg:ghost-node:2"))
+	if text, alert := toastParams(t, ft2); !alert || !strings.Contains(text, "Нода не найдена") {
+		t.Errorf("exclpg not-found toast must be an alert, got text=%q alert=%v", text, alert)
+	}
+
+	// 3. checkhostdel unknown key.
+	ft3, api3 := newFakeTelegramBot(t)
+	b3, _ := newGateTestBot(t, api3, nil)
+	b3.handleCallbackQuery(gateCallback(1001, "menu:checkhostdel:not-added.example.com"))
+	if text, alert := toastParams(t, ft3); !alert || !strings.Contains(text, "не найден") {
+		t.Errorf("checkhostdel not-found toast must be an alert, got text=%q alert=%v", text, alert)
+	}
+
+	// Contrast: the delsub SUCCESS toast («🗑 Подписка удалена») stays a plain
+	// notification — only the ❌ error toasts are alerts.
+	ft4, api4 := newFakeTelegramBot(t)
+	b4, _ := newGateTestBot(t, api4, nil)
+	fnmOK2 := &fakeNodeManager{
+		nodes: map[string]string{"n": "tok"},
+		subs:  map[string][]string{"n": {"https://s/x"}},
+	}
+	b4.nodeMgr = fnmOK2
+	b4.handleCallbackQuery(gateCallback(1001, "menu:nodes:delsub:n:0:yes"))
+	if text, alert := toastParams(t, ft4); alert || !strings.Contains(text, "Подписка удалена") {
+		t.Errorf("delsub success toast must stay a plain notification, got text=%q alert=%v", text, alert)
+	}
+}
+
+// TestToggleRowsDoubleTapDebounce pins the wave K-B3 debounce: a second tap on
+// the same toggle row within 300ms is answered with a «уже применяется» toast
+// and must NOT flip the config twice; other routes are not debounced.
+func TestToggleRowsDoubleTapDebounce(t *testing.T) {
+	ft, api := newFakeTelegramBot(t)
+	b, cm := newGateTestBot(t, api, nil)
+
+	b.handleCallbackQuery(gateCallback(9999, "menu:quiet:toggle"))
+	if cm.Get().QuietHoursEnabled != true {
+		t.Fatalf("first tap must flip the toggle")
+	}
+	b.handleCallbackQuery(gateCallback(9999, "menu:quiet:toggle"))
+	if cm.Get().QuietHoursEnabled != true {
+		t.Errorf("second rapid tap must be debounced (config stays flipped once)")
+	}
+	if text, _ := toastParams(t, ft); !strings.Contains(text, "применяется") {
+		t.Errorf("debounced tap must answer with the «уже применяется» toast, got %q", text)
+	}
+
+	// After the window the toggle works again.
+	time.Sleep(310 * time.Millisecond)
+	b.handleCallbackQuery(gateCallback(9999, "menu:quiet:toggle"))
+	if cm.Get().QuietHoursEnabled != false {
+		t.Errorf("tap after the debounce window must flip the toggle back")
+	}
+
+	// Non-toggle routes render twice in a row (no debounce).
+	ft2, api2 := newFakeTelegramBot(t)
+	b2, _ := newGateTestBot(t, api2, nil)
+	b2.handleCallbackQuery(gateCallback(9999, "menu:settings"))
+	b2.handleCallbackQuery(gateCallback(9999, "menu:settings"))
+	if got := len(ft2.callsOf("editMessageText")); got != 2 {
+		t.Errorf("view routes must not be debounced, got %d edits", got)
 	}
 }

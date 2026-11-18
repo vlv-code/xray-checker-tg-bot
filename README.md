@@ -18,13 +18,14 @@ Agent instructions: [AGENTS.md](AGENTS.md) | Policy: [.agents/project_knowledge/
 > [!NOTE]
 > **This repository is a fork of the original [kutovoys/xray-checker](https://github.com/kutovoys/xray-checker)** featuring a fully integrated Telegram Bot built on the official `mymmrac/telego` library:
 > - ⚡ **Multi-Stage Connection Diagnostics**: Isolated analysis of DNS resolution, TCP ping (RTT), TLS handshake, Xray SOCKS tunnel, and target endpoints (paginated view + Telegram 10.1 rich format).
-> - 🌐 **Check-Host.net Background Audit & Managed Host List**: periodic reachability checks across all subscription hosts plus manually added custom hosts (the Check-Host submenu lists subscription hosts marked «авто» alongside removable custom entries — «➕ Добавить хост» / «🗑»; customs are deduped case-insensitively against subscription hosts and a bare custom host is audited as host:443) with automated Russian blocking alerts (an alert fires only when a host is reachable from world nodes but not from RU nodes; hosts unreachable from everywhere — e.g. ICMP-filtered — do not raise RU-block alerts) and deduplication. UDP-protocol subscription targets are excluded from background audits (the API cannot verify UDP); a manual check from the menu always sends a TCP check to the selected host:port (bare hosts default to port 443).
+> - 📡 **Check-Host.net Background Audit & Managed Host List**: periodic reachability checks across all subscription hosts plus manually added custom hosts (the Check-Host submenu lists subscription hosts marked «авто» alongside removable custom entries — «📡 ➕ Добавить хост» / «🗑»; customs are deduped case-insensitively against subscription hosts and a bare custom host is audited as host:443) with automated Russian blocking alerts (an alert fires only when a host is reachable from world nodes but not from RU nodes; hosts unreachable from everywhere — e.g. ICMP-filtered — do not raise RU-block alerts) and deduplication. UDP-protocol subscription targets are excluded from background audits (the API cannot verify UDP); a manual check from the menu always sends a TCP check to the selected host:port (bare hosts default to port 443).
 > - 🚫 **Individual Node Disabling**: Toggle checks for specific proxy connections directly in the bot menu without modifying subscription files.
 > - ⏱️ **Dynamic Runtime Check Interval**: Change check frequency on the fly (`/interval` or menu) without container restarts.
 > - 🔔 **Smart Alert Lifecycle**: Clean Mode (auto-deletes alerts upon recovery) and Live Mode (updates original outage message with total downtime) with persistent state and anti-flapping.
-> - 🌙 **Quiet Night Hours & Digests**: Suppress alert sounds overnight, automatic morning digest, and periodic daytime summaries.
-> - 📈 **Persistent Uptime Statistics**: Sliding incident log and reliability rankings (`/stats`).
-> - 📋 **Dynamic Subscription Management**: Add and remove subscriptions in chat (`/subs`, `/addsub`, `/delsub`).
+> - 🌙 **Quiet Night Hours & Digests**: Suppress alert sounds overnight, automatic morning digest, and periodic daytime summaries — the daytime digest is toggleable in the settings screen («☀️ Дневная сводка»).
+> - 📈 **Persistent Uptime Statistics**: Sliding incident log and reliability rankings (`/stats`); the «📈 Статистика» row lives directly in the main menu.
+> - 📋 **Dynamic Subscription Management**: Add and remove subscriptions in chat (`/subs`, `/addsub`, `/delsub`); the subs screen carries the «➕ Добавить подписку» arm button.
+> - ✨ **Animated Custom-Emoji Icons (optional)**: the «✨ Иконки (анимация)» settings toggle switches the main-menu buttons and Check-Host headers to animated Telegram custom-emoji icons (Bot API 9.4, «Telegram iOS Icons» pack), with plain emoji fallbacks everywhere when off.
 > - 📦 **Headless Mode**: Run without web dashboard (`WEB_ENABLED=false`).
 
 ---
@@ -34,7 +35,7 @@ Agent instructions: [AGENTS.md](AGENTS.md) | Policy: [.agents/project_knowledge/
 * 🔍 **Xray Proxy Monitoring**: Supports VLESS (including Reality & Vision), VMess, Trojan, Shadowsocks, WireGuard, and Hysteria2.
 * 🤖 **Telegram Bot on `mymmrac/telego`**: Interactive inline keyboard menu, instant outage and recovery alerts.
 * ⚡ **Multi-Stage Diagnostics (`/diag`)**: Pinpoints exact point of failure (DNS, TCP, TLS, Xray session reset, CDN blocking).
-* 🌐 **Check-Host.net Integration**: Automatic multi-node reachability checks from Russia and worldwide locations during outages.
+* 📡 **Check-Host.net Integration**: Automatic multi-node reachability checks from Russia and worldwide locations during outages (the 📡 antenna icon marks all Check-Host menu surfaces; 🌐 stays reserved for the web dashboard).
 * **Cheburcheck Active Probing**: active blocking probes from Russian scanner nodes (per-scanner tokens configured in code, no API key) via the `/cheburcheck <host>` command, the «Cheburcheck» menu button (with the «✍️ Проверить свой хост» manual input), and offline-node diagnostics enrichment. Setting `CHEBURCHECK_API_KEY` switches probing to API-key mode: all public scanners run in one Bearer-authenticated stream and per-scanner tokens are ignored (the key wins).
 * ⏱️ **Runtime Interval Tuning**: `/interval <seconds>` command and interactive menu presets.
 * 🔄 **Auto-Reloading Subscriptions**: Multiple subscription URLs (Base64, JSON, share links) with automated periodic sync.
@@ -108,11 +109,11 @@ Run additional lightweight checker node instances anywhere in the world (VPS, ho
 
 - **1-Click Connection from Telegram**:
   - Open **`[ 🖥 Ноды ]`** ➔ **`[ ➕ Подключить ноду ]`** (or send `/nodeadd <name>`).
-  - The bot automatically generates a secure 64-hex bearer token and replies with a copy-pasteable **`docker run`** command and **Docker Compose** block.
+  - The bot automatically generates a secure 64-hex bearer token and replies with one-tap **copy-text buttons**: the token, the report URL, and a copy-pasteable **`docker run`** command (the Docker Compose variant lives in `docker-compose.node.yml`).
   - Nodes are hot-registered on the master and saved to `/app/data/nodes.json` (persists across restarts and container rebuilds).
 - **Interactive Subscription Management**:
   - Open **`[ 🖥 Ноды ]`** ➔ **`[ ⚙️ Настройки нод ]`** ➔ select a node ➔ **`[ 📋 Подписки ноды ]`**.
-  - Select any node to inspect its assigned subscriptions, proxy counts from its latest report, and delete subscriptions with 1-click (`[ 🗑 Удалить: #N ]`).
+  - Select any node to inspect its assigned subscriptions and proxy counts from its latest report; delete subscriptions with a two-step confirm (`[ 🗑 Удалить: #N ]` ➔ `[ ✅ Да, удалить ]`).
   - Assign new subscriptions with **`[ ➕ Назначить подписку ]`** by simply sending the subscription URL in chat.
   - Subscriptions are dynamically synced to the node upon its next report cycle.
 - **Pre-Built Docker Image on GHCR**:
@@ -158,15 +159,15 @@ Tests all nodes across 5 independent stages and formulates an objective fact-bas
 ⚡ Detailed diagnostics report (2 proxies):
 
 🟢 NL-Amsterdam (VLESS)
-  • DNS: ✅ 185.120.45.10 (18 ms)
-  • TCP (443): ✅ 42 ms
-  • TLS: ✅ 58 ms
-  • Cloudflare 204: ✅ 65 ms
-  • Google 204: ✅ 71 ms
+  • DNS: ✅ 185.120.45.10 (18 мс)
+  • TCP (443): ✅ 42 мс
+  • TLS: ✅ 58 мс
+  • Cloudflare 204: ✅ 65 мс
+  • Google 204: ✅ 71 мс
   💡 Verdict: Fully operational
 
 🔴 DE-Frankfurt (VLESS)
-  • DNS: ✅ 45.132.18.2 (20 ms)
+  • DNS: ✅ 45.132.18.2 (20 мс)
   • TCP (443): ❌ TCP connection timeout (unreachable from checker host)
   • Check-Host (TCP): RU ❌ unreachable, World ✅ reachable
     🔗 report
@@ -174,7 +175,7 @@ Tests all nodes across 5 independent stages and formulates an objective fact-bas
 ```
 
 ### 2. Targeted Global Audit (`/checkhost`)
-Command `/checkhost <host[:port]>` or the `[ 🌐 Check-Host ]` button in `/menu` runs a full worldwide check:
+Command `/checkhost <host[:port]>` or the `[ 📡 Check-Host ]` button in `/menu` runs a full worldwide check:
 ```text
 🌐 Check-Host results for 185.120.45.10:443 (TCP):
 

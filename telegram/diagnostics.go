@@ -141,6 +141,20 @@ func nodeHealthBadge(online, total, disabled int) string {
 	return ""
 }
 
+// degradedLabel is the single RU wording for the «degraded» verdict across
+// all diagnostic surfaces (per-proxy detail line, L1 summary, rich table):
+// the tunnel is up but the target behind it is unreachable.
+func degradedLabel() string {
+	return "туннель работает, но цель недоступна"
+}
+
+// proxyNotFoundText is the hard-error message for a deep-diagnostics target
+// missing from the current snapshot: ❌ (hard-error icon, never ⚠️) plus one
+// action hint pointing the user back to the refreshed list.
+func proxyNotFoundText() string {
+	return renderIcon(IconHardError) + " Прокси не найден — список изменился, вернитесь и нажмите 🔄 Обновить."
+}
+
 // getNodeTabs returns the navigation tabs for Master and remote nodes.
 func (b *Bot) getNodeTabs(activeTarget string) []NodeTabItem {
 	if b.nodeMgr == nil {
@@ -330,7 +344,7 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 		hint := checker.FormatSoftHint(cat, checker.IsUDPProto(rep.Protocol))
 		fmt.Fprintf(sb, "  • Статус: 🔴 недоступен (вероятно: %s)\n", escapeHTML(hint))
 	} else if rep.Status == "degraded" {
-		fmt.Fprintf(sb, "  • Статус: 🟡 туннель работает, но цель недоступна\n")
+		fmt.Fprintf(sb, "  • Статус: 🟡 %s\n", degradedLabel())
 	} else {
 		var latMs float64
 		for _, tr := range rep.Targets {
@@ -345,16 +359,16 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 				p95 := ls.Percentile(0.95)
 				p99 := ls.Percentile(0.99)
 				jitter := ls.StdDev()
-				fmt.Fprintf(sb, "  • Доступен: 🟢 %.0f мс (p95: %.0f мс, p99: %.0f мс, σ=%.0f)\n", latMs, p95, p99, jitter)
+				fmt.Fprintf(sb, "  • Доступен: 🟢 %s (p95: %s, p99: %s, σ=%.0f)\n", fmtLatencyIcon(int64(latMs)), fmtLatencyUnit(int64(p95)), fmtLatencyUnit(int64(p99)), jitter)
 			} else if ls.Count() >= 5 {
 				p95 := ls.Percentile(0.95)
 				jitter := ls.StdDev()
-				fmt.Fprintf(sb, "  • Доступен: 🟢 %.0f мс (p95: %.0f мс, σ=%.0f)\n", latMs, p95, jitter)
+				fmt.Fprintf(sb, "  • Доступен: 🟢 %s (p95: %s, σ=%.0f)\n", fmtLatencyIcon(int64(latMs)), fmtLatencyUnit(int64(p95)), jitter)
 			} else {
-				fmt.Fprintf(sb, "  • Доступен: 🟢 %.0f мс\n", latMs)
+				fmt.Fprintf(sb, "  • Доступен: 🟢 %s\n", fmtLatencyIcon(int64(latMs)))
 			}
 		} else {
-			fmt.Fprintf(sb, "  • Доступен: 🟢 %.0f мс\n", latMs)
+			fmt.Fprintf(sb, "  • Доступен: 🟢 %s\n", fmtLatencyIcon(int64(latMs)))
 		}
 	}
 
@@ -363,7 +377,7 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 		fmt.Fprintf(sb, "  • DNS: ❌ %s\n", escapeHTML(rep.NodeHealth.DNSErr))
 	} else if rep.NodeHealth.ResolvedIP != "" {
 		if rep.NodeHealth.DNSLatency > 0 {
-			fmt.Fprintf(sb, "  • DNS: ✅ <code>%s</code> (%.0f ms)\n", escapeHTML(rep.NodeHealth.ResolvedIP), float64(rep.NodeHealth.DNSLatency.Milliseconds()))
+			fmt.Fprintf(sb, "  • DNS: ✅ <code>%s</code> (%s)\n", escapeHTML(rep.NodeHealth.ResolvedIP), fmtLatencyUnit(rep.NodeHealth.DNSLatency.Milliseconds()))
 		} else {
 			fmt.Fprintf(sb, "  • DNS: ✅ <code>%s</code>\n", escapeHTML(rep.NodeHealth.ResolvedIP))
 		}
@@ -390,7 +404,7 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 				fmt.Fprintf(sb, "  • TCP (%d): ❌ %s\n", rep.Port, escapeHTML(rep.NodeHealth.TCPErr))
 			}
 		} else if rep.NodeHealth.TCPPing > 0 {
-			fmt.Fprintf(sb, "  • TCP (%d): ✅ %.0f ms\n", rep.Port, float64(rep.NodeHealth.TCPPing.Milliseconds()))
+			fmt.Fprintf(sb, "  • TCP (%d): ✅ %s\n", rep.Port, fmtLatencyUnit(rep.NodeHealth.TCPPing.Milliseconds()))
 		}
 	}
 
@@ -398,14 +412,14 @@ func (b *Bot) formatSingleProxyDiagWithStats(sb *strings.Builder, rep checker.Pr
 	if rep.NodeHealth.TLSErr != "" {
 		fmt.Fprintf(sb, "  • TLS: ❌ %s\n", escapeHTML(rep.NodeHealth.TLSErr))
 	} else if rep.NodeHealth.TLSLatency > 0 {
-		fmt.Fprintf(sb, "  • TLS: ✅ %.0f ms\n", float64(rep.NodeHealth.TLSLatency.Milliseconds()))
+		fmt.Fprintf(sb, "  • TLS: ✅ %s\n", fmtLatencyUnit(rep.NodeHealth.TLSLatency.Milliseconds()))
 	}
 
 	// 4. Target Endpoints
 	for _, tr := range rep.Targets {
 		siteName := simplifyTargetName(tr.URL)
 		if tr.Success {
-			fmt.Fprintf(sb, "  • %s: ✅ %.0f ms\n", escapeHTML(siteName), float64(tr.Latency.Milliseconds()))
+			fmt.Fprintf(sb, "  • %s: ✅ %s\n", escapeHTML(siteName), fmtLatencyUnit(tr.Latency.Milliseconds()))
 		} else {
 			errText := tr.Error
 			if (rep.Status == "online" || rep.Status == "degraded") && !strings.Contains(errText, "Туннель не поднят") {
@@ -655,7 +669,7 @@ func (b *Bot) getDiagnosticsSummaryTextWithTarget(reports []checker.ProxyDiagRep
 		latencyText := "—"
 		for _, tr := range rep.Targets {
 			if tr.Success {
-				latencyText = fmt.Sprintf("%.0f ms", float64(tr.Latency.Milliseconds()))
+				latencyText = fmtLatencyIcon(tr.Latency.Milliseconds())
 				break
 			}
 		}
@@ -669,7 +683,7 @@ func (b *Bot) getDiagnosticsSummaryTextWithTarget(reports []checker.ProxyDiagRep
 			offlineCount++
 		case "degraded":
 			icon = "🟡"
-			statusDesc = "ошибка"
+			statusDesc = degradedLabel()
 			offlineCount++
 		case "disabled":
 			icon = "⏸️"
@@ -767,7 +781,7 @@ func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeH
 	fmt.Fprintf(&sb, "<b>ТРАНСПОРТ:</b> %s\n", transport)
 	fmt.Fprintf(&sb, "<b>АДРЕС:</b>     %s\n\n", escapeHTML(pm.Address))
 
-	sb.WriteString("<b>ЭТАПЫ ПРОВЕРКИ:</b>\n")
+	sb.WriteString("<b>ЭТАПЫ ПРОВЕРКИ:</b>\n<pre>")
 
 	// 1. DNS-резолв
 	if health.DNSErr != "" {
@@ -840,9 +854,9 @@ func (b *Bot) formatDeepDiagnostics(pm metrics.ProxyMetric, health checker.NodeH
 
 	// 6. Полный ответ
 	if pm.LatencyMs > 0 && (pm.CanTransfer || pm.Online) {
-		fmt.Fprintf(&sb, "  6. Полный ответ .......... %.0f мс\n\n", pm.LatencyMs)
+		fmt.Fprintf(&sb, "  6. Полный ответ .......... %.0f мс\n</pre>\n\n", pm.LatencyMs)
 	} else {
-		sb.WriteString("  6. Полный ответ .......... —\n\n")
+		sb.WriteString("  6. Полный ответ .......... —\n</pre>\n\n")
 	}
 
 	// Summary
@@ -992,7 +1006,7 @@ func (b *Bot) handleDeepDiagnostics(chatID int64, msgID int, stableID string, pa
 		}
 
 		if !found {
-			b.editWithMarkup(chatID, msgID, "⚠️ Прокси не найден.", BackToMenuMarkup())
+			b.editWithMarkup(chatID, msgID, proxyNotFoundText(), BackToMenuMarkup())
 			return
 		}
 
@@ -1074,7 +1088,7 @@ func (b *Bot) buildDiagnosticsRichMessageWithTarget(reports []checker.ProxyDiagR
 		latencyText := "—"
 		for _, tr := range rep.Targets {
 			if tr.Success {
-				latencyText = fmt.Sprintf("%.0f ms", float64(tr.Latency.Milliseconds()))
+				latencyText = fmtLatencyUnit(tr.Latency.Milliseconds())
 				break
 			}
 		}
@@ -1085,7 +1099,7 @@ func (b *Bot) buildDiagnosticsRichMessageWithTarget(reports []checker.ProxyDiagR
 			statusText = "🔴 Недоступен"
 			offlineCount++
 		case "degraded":
-			statusText = "🟡 Ошибка"
+			statusText = "🟡 " + degradedLabel()
 			offlineCount++
 		case "disabled":
 			statusText = "⏸️ Отключён"
@@ -1189,7 +1203,7 @@ func (b *Bot) buildDiagnosticsDetailsRichMessageWithTarget(reports []checker.Pro
 		default:
 			for _, tr := range rep.Targets {
 				if tr.Success {
-					statusDesc = fmt.Sprintf("%.0f ms", float64(tr.Latency.Milliseconds()))
+					statusDesc = fmtLatencyUnit(tr.Latency.Milliseconds())
 					break
 				}
 			}
@@ -1204,7 +1218,7 @@ func (b *Bot) buildDiagnosticsDetailsRichMessageWithTarget(reports []checker.Pro
 			detailLines = append(detailLines, fmt.Sprintf("DNS: ❌ %s", rep.NodeHealth.DNSErr))
 		} else if rep.NodeHealth.ResolvedIP != "" {
 			if rep.NodeHealth.DNSLatency > 0 {
-				detailLines = append(detailLines, fmt.Sprintf("DNS: ✅ %s (%.0f ms)", rep.NodeHealth.ResolvedIP, float64(rep.NodeHealth.DNSLatency.Milliseconds())))
+				detailLines = append(detailLines, fmt.Sprintf("DNS: ✅ %s (%s)", rep.NodeHealth.ResolvedIP, fmtLatencyUnit(rep.NodeHealth.DNSLatency.Milliseconds())))
 			} else {
 				detailLines = append(detailLines, fmt.Sprintf("DNS: ✅ %s", rep.NodeHealth.ResolvedIP))
 			}
@@ -1231,7 +1245,7 @@ func (b *Bot) buildDiagnosticsDetailsRichMessageWithTarget(reports []checker.Pro
 					detailLines = append(detailLines, fmt.Sprintf("TCP (%d): ❌ %s", rep.Port, rep.NodeHealth.TCPErr))
 				}
 			} else if rep.NodeHealth.TCPPing > 0 {
-				detailLines = append(detailLines, fmt.Sprintf("TCP (%d): ✅ %.0f ms", rep.Port, float64(rep.NodeHealth.TCPPing.Milliseconds())))
+				detailLines = append(detailLines, fmt.Sprintf("TCP (%d): ✅ %s", rep.Port, fmtLatencyUnit(rep.NodeHealth.TCPPing.Milliseconds())))
 			}
 		}
 
@@ -1239,14 +1253,14 @@ func (b *Bot) buildDiagnosticsDetailsRichMessageWithTarget(reports []checker.Pro
 		if rep.NodeHealth.TLSErr != "" {
 			detailLines = append(detailLines, fmt.Sprintf("TLS: ❌ %s", rep.NodeHealth.TLSErr))
 		} else if rep.NodeHealth.TLSLatency > 0 {
-			detailLines = append(detailLines, fmt.Sprintf("TLS: ✅ %.0f ms", float64(rep.NodeHealth.TLSLatency.Milliseconds())))
+			detailLines = append(detailLines, fmt.Sprintf("TLS: ✅ %s", fmtLatencyUnit(rep.NodeHealth.TLSLatency.Milliseconds())))
 		}
 
 		// 4. Targets
 		for _, tr := range rep.Targets {
 			siteName := simplifyTargetName(tr.URL)
 			if tr.Success {
-				detailLines = append(detailLines, fmt.Sprintf("%s: ✅ %.0f ms", siteName, float64(tr.Latency.Milliseconds())))
+				detailLines = append(detailLines, fmt.Sprintf("%s: ✅ %s", siteName, fmtLatencyUnit(tr.Latency.Milliseconds())))
 			} else {
 				errText := tr.Error
 				if (rep.Status == "online" || rep.Status == "degraded") && !strings.Contains(errText, "Туннель не поднят") {

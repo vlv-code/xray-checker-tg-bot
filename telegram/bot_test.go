@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mymmrac/telego"
+
 	"xray-checker/checker"
 	"xray-checker/metrics"
 )
@@ -102,11 +104,15 @@ func TestCheckHostMenuAndMarkup(t *testing.T) {
 		t.Errorf("expected menu:checkhostdel:9.9.9.9:443 delete button in CheckHostMenuMarkup")
 	}
 
-	// 3. Check getCheckHostMenuText
+	// 3. Check getCheckHostMenuText (wave K-B3 register: the header carries
+	//    the 📡 antenna icon — 🌐 is freed for web mentions)
 	bot := &Bot{}
 	txt := bot.getCheckHostMenuText()
 	if txt == "" || !strings.Contains(txt, "/checkhost") {
 		t.Errorf("expected /checkhost in menu text, got: %s", txt)
+	}
+	if !strings.Contains(txt, "📡") || strings.Contains(txt, "🌐") {
+		t.Errorf("expected the 📡 Check-Host header (no 🌐), got: %s", txt)
 	}
 }
 
@@ -295,9 +301,11 @@ func TestBot_MenuTextAndSettings(t *testing.T) {
 
 	// Test MainMenuMarkup (Wave D: Cheburcheck row inserted between the
 	// Check-Host row and the Nodes row — plan D1/D3 placement mandate).
+	// Wave K-B3 register (authorized IA rework 2026-11-18): the «📈
+	// Статистика» row is promoted into the main menu (row 6) — 7 rows total.
 	mainMarkup := MainMenuMarkup()
-	if len(mainMarkup.InlineKeyboard) != 6 {
-		t.Errorf("expected 6 rows in MainMenuMarkup, got %d", len(mainMarkup.InlineKeyboard))
+	if len(mainMarkup.InlineKeyboard) != 7 {
+		t.Errorf("expected 7 rows in MainMenuMarkup, got %d", len(mainMarkup.InlineKeyboard))
 	}
 	if mainMarkup.InlineKeyboard[0][0].CallbackData != "menu:main" && mainMarkup.InlineKeyboard[0][0].CallbackData != "menu:main:refresh" {
 		t.Errorf("expected refresh button in row 1, got %s", mainMarkup.InlineKeyboard[0][0].CallbackData)
@@ -314,8 +322,11 @@ func TestBot_MenuTextAndSettings(t *testing.T) {
 	if mainMarkup.InlineKeyboard[4][0].CallbackData != "menu:nodes" {
 		t.Errorf("expected nodes button in row 5, got %s", mainMarkup.InlineKeyboard[4][0].CallbackData)
 	}
-	if mainMarkup.InlineKeyboard[5][0].CallbackData != "menu:settings" {
-		t.Errorf("expected settings button in row 6, got %s", mainMarkup.InlineKeyboard[5][0].CallbackData)
+	if mainMarkup.InlineKeyboard[5][0].CallbackData != "menu:stats" {
+		t.Errorf("expected stats button in row 6 (wave K-B3 promotion), got %s", mainMarkup.InlineKeyboard[5][0].CallbackData)
+	}
+	if mainMarkup.InlineKeyboard[6][0].CallbackData != "menu:settings" {
+		t.Errorf("expected settings button in row 7, got %s", mainMarkup.InlineKeyboard[6][0].CallbackData)
 	}
 
 	// Verify SettingsMenuMarkup has no digest button and has disabled_proxies button
@@ -612,5 +623,262 @@ func TestBot_AdminUserIDs(t *testing.T) {
 	}
 	if b.isAuthorizedMutating(9999) {
 		t.Errorf("expected non-admin user 9999 to be rejected")
+	}
+}
+
+// --- Wave K-B3: command registry, settings toggles, subs arm flow, icon wiring. ---
+
+// fakeSubsManager is a minimal SubscriptionManager stub for registry/flow tests.
+type fakeSubsManager struct {
+	static  []string
+	dynamic []string
+}
+
+func (f *fakeSubsManager) Static() []string  { return f.static }
+func (f *fakeSubsManager) Dynamic() []string { return f.dynamic }
+func (f *fakeSubsManager) AddSubscription(url string) (int, error) {
+	f.dynamic = append(f.dynamic, url)
+	return 3, nil
+}
+func (f *fakeSubsManager) RemoveSubscription(url string) (bool, int, error) {
+	for i, u := range f.dynamic {
+		if u == url {
+			f.dynamic = append(f.dynamic[:i], f.dynamic[i+1:]...)
+			return true, 2, nil
+		}
+	}
+	return false, 0, nil
+}
+
+// TestSetupBotMenuButton_FullRegistry pins the wave K-B3 SetMyCommands
+// registry: the full ~25-command list mirrors the /help groups, the subs and
+// node command groups are conditional on the managers being attached, and
+// every RU description stays within the 64-char Bot API limit.
+func TestSetupBotMenuButton_FullRegistry(t *testing.T) {
+	descLimit := 64
+
+	// 1. Bare bot: no subs, no node manager.
+	ft, api := newFakeTelegramBot(t)
+	b := &Bot{api: api, ctx: context.Background()}
+	b.setupBotMenuButton()
+
+	calls := ft.callsOf("setMyCommands")
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly one setMyCommands call, got %d", len(calls))
+	}
+	raw, err := json.Marshal(calls[0].Params["commands"])
+	if err != nil {
+		t.Fatalf("failed to re-marshal commands: %v", err)
+	}
+	var cmds []telego.BotCommand
+	if err := json.Unmarshal(raw, &cmds); err != nil {
+		t.Fatalf("failed to decode commands: %v", err)
+	}
+	if len(cmds) < 15 {
+		t.Errorf("expected the full base registry (>= 15 commands), got %d", len(cmds))
+	}
+	byName := make(map[string]string, len(cmds))
+	for _, c := range cmds {
+		if len([]rune(c.Description)) > descLimit {
+			t.Errorf("command /%s description exceeds %d chars: %q", c.Command, descLimit, c.Description)
+		}
+		byName[c.Command] = c.Description
+	}
+	for _, want := range []string{"menu", "status", "diag", "stats", "settings", "checkhost", "checkhost_bg", "cheburcheck", "interval", "quiet", "tz", "targets", "checkupdate", "help", "id"} {
+		if _, ok := byName[want]; !ok {
+			t.Errorf("expected /%s in the base registry, got %v", want, byName)
+		}
+	}
+	for _, absent := range []string{"addsub", "delsub", "subs", "nodes", "nodeadd"} {
+		if _, ok := byName[absent]; ok {
+			t.Errorf("command /%s must be conditional on its manager, got present", absent)
+		}
+	}
+
+	// 2. With subs + node manager the conditional groups join.
+	ft2, api2 := newFakeTelegramBot(t)
+	b2 := &Bot{api: api2, ctx: context.Background(), subs: &fakeSubsManager{}, nodeMgr: &fakeNodeManager{nodes: map[string]string{"m31a": "tok"}}}
+	b2.setupBotMenuButton()
+	calls2 := ft2.callsOf("setMyCommands")
+	if len(calls2) != 1 {
+		t.Fatalf("expected exactly one setMyCommands call with managers, got %d", len(calls2))
+	}
+	raw2, _ := json.Marshal(calls2[0].Params["commands"])
+	var cmds2 []telego.BotCommand
+	_ = json.Unmarshal(raw2, &cmds2)
+	byName2 := make(map[string]string, len(cmds2))
+	for _, c := range cmds2 {
+		byName2[c.Command] = c.Description
+	}
+	for _, want := range []string{"subs", "addsub", "delsub", "nodes", "nodeadd", "nodedel", "nodesubs", "nodeaddsub", "nodedelsub", "nodeset", "nodereset", "noderename"} {
+		if _, ok := byName2[want]; !ok {
+			t.Errorf("expected /%s when its manager is attached, got %v", want, byName2)
+		}
+	}
+	if len(cmds2) <= len(cmds) {
+		t.Errorf("manager-attached registry must be larger: %d vs %d", len(cmds2), len(cmds))
+	}
+	if len(cmds2) < 25 {
+		t.Errorf("expected the full ~25-command registry with managers attached, got %d", len(cmds2))
+	}
+}
+
+// TestSettingsTogglesDigestAndIcons pins the wave K-B3 settings toggles: the
+// exact routes menu:nodes:digest / menu:toggle_icons are admin-gated
+// mutations, persist through updateConfig, and the icons toggle re-syncs the
+// package-level custom-emoji layer.
+func TestSettingsTogglesDigestAndIcons(t *testing.T) {
+	ft, api := newFakeTelegramBot(t)
+	b, cm := newGateTestBot(t, api, []int64{1001})
+
+	// Non-admins are denied (mutations).
+	b.handleCallbackQuery(gateCallback(9999, "menu:nodes:digest"))
+	if cm.Get().DayDigestEnabled {
+		t.Fatalf("non-admin must not toggle the digest")
+	}
+
+	b.handleCallbackQuery(gateCallback(1001, "menu:nodes:digest"))
+	if !cm.Get().DayDigestEnabled {
+		t.Errorf("admin digest toggle must flip DayDigestEnabled on (persisted)")
+	}
+	// (The scheduler clamps a non-positive DayDigestIntervalHours to 6h at
+	// runtime, so the toggle itself needs no interval normalization.)
+	// Outlast the double-tap debounce window before the paired flip.
+	time.Sleep(310 * time.Millisecond)
+	b.handleCallbackQuery(gateCallback(1001, "menu:nodes:digest"))
+	if cm.Get().DayDigestEnabled {
+		t.Errorf("second digest toggle must flip DayDigestEnabled off")
+	}
+
+	b.handleCallbackQuery(gateCallback(1001, "menu:toggle_icons"))
+	if !cm.Get().CustomEmoji {
+		t.Errorf("admin icons toggle must persist CustomEmoji=true")
+	}
+	if !customEmojiEnabled.Load() {
+		t.Errorf("the icons toggle must re-sync the package icon layer (B1's atomic flag) to enabled")
+	}
+	// The settings screen re-renders with the new state.
+	if edit, ok := ft.lastParamOf("editMessageText", "text"); !ok || edit == "" {
+		t.Errorf("expected the settings re-render after the icons toggle")
+	}
+	time.Sleep(310 * time.Millisecond)
+	b.handleCallbackQuery(gateCallback(1001, "menu:toggle_icons"))
+	if cm.Get().CustomEmoji {
+		t.Errorf("second icons toggle must persist CustomEmoji=false")
+	}
+	if customEmojiEnabled.Load() {
+		t.Errorf("the package icon layer must be re-synced to disabled")
+	}
+}
+
+// TestSubsAddArmFlow pins the wave K-B3 «➕ Добавить подписку» arm flow
+// (migrated to the wave L-1 pendingInput FSM): menu:subsadd is an
+// admin-gated mutation that arms the per-chat pending input and renders the
+// RU prompt; the next plain text is consumed in handleMessage via takePending
+// → handleSubURLInput and persisted via the subscription manager; non-admin
+// input is denied; navigation disarms.
+func TestSubsAddArmFlow(t *testing.T) {
+	ft, api := newFakeTelegramBot(t)
+	b, _ := newGateTestBot(t, api, []int64{1001})
+	subs := &fakeSubsManager{}
+	b.subs = subs
+
+	// 1. The arm button lives on the subs screen markup.
+	if !hasCallback(SubsMenuMarkup(), "menu:subsadd") {
+		t.Fatalf("expected menu:subsadd on SubsMenuMarkup")
+	}
+
+	// 2. Admin taps «➕ Добавить подписку»: waiting state armed, prompt shown.
+	b.handleCallbackQuery(gateCallback(1001, "menu:subsadd"))
+	if !b.hasPending(12345) {
+		t.Fatalf("menu:subsadd must arm the pending input for the chat")
+	}
+	if prompt, ok := ft.lastParamOf("editMessageText", "text"); !ok || !strings.Contains(prompt, "Добавление подписки") || !strings.Contains(prompt, "Отправьте") {
+		t.Errorf("expected the RU add-subscription prompt, got %q", prompt)
+	}
+
+	// 3. The next plain text is consumed and persisted.
+	b.dispatchUpdate(telego.Update{Message: &telego.Message{
+		MessageID: 11,
+		Chat:      telego.Chat{ID: 12345, Type: "private"},
+		From:      &telego.User{ID: 1001, Username: "admin"},
+		Text:      "https://example.com/sub",
+	}})
+	if b.hasPending(12345) {
+		t.Fatalf("pending input must be consumed after the input")
+	}
+	if len(subs.dynamic) != 1 || subs.dynamic[0] != "https://example.com/sub" {
+		t.Fatalf("expected the subscription persisted via the manager, got %v", subs.dynamic)
+	}
+
+	// 4. A non-http URL is rejected without a write.
+	b.handleCallbackQuery(gateCallback(1001, "menu:subsadd"))
+	b.dispatchUpdate(telego.Update{Message: &telego.Message{
+		Chat: telego.Chat{ID: 12345, Type: "private"},
+		From: &telego.User{ID: 1001, Username: "admin"},
+		Text: "file:///etc/passwd",
+	}})
+	if len(subs.dynamic) != 1 {
+		t.Errorf("non-http input must not reach the manager, got %v", subs.dynamic)
+	}
+
+	// 5. Navigation to the main menu disarms the pending input.
+	b.handleCallbackQuery(gateCallback(1001, "menu:subsadd"))
+	if !b.hasPending(12345) {
+		t.Fatalf("expected the armed state before navigation")
+	}
+	b.handleCallbackQuery(gateCallback(1001, "menu:main"))
+	if b.hasPending(12345) {
+		t.Fatalf("menu:main must disarm the pending input")
+	}
+
+	// 6. Non-admin input while armed: denied, no write.
+	b.handleCallbackQuery(gateCallback(1001, "menu:subsadd"))
+	b.dispatchUpdate(telego.Update{Message: &telego.Message{
+		Chat: telego.Chat{ID: 12345, Type: "private"},
+		From: &telego.User{ID: 9999, Username: "intruder"},
+		Text: "https://evil.example.com/sub",
+	}})
+	if b.hasPending(12345) {
+		t.Fatalf("pending input must be consumed even when denied")
+	}
+	if len(subs.dynamic) != 1 {
+		t.Errorf("non-admin input must not write subscriptions, got %v", subs.dynamic)
+	}
+}
+
+// TestCustomEmojiWiring pins the wave K-B3 wiring: b.customEmojiEnabled reads
+// the persisted BotConfig, and syncIconLayer (called on SetConfigManager and
+// after every updateConfig) mirrors the setting into the package-level icon
+// layer used by the markup builders.
+func TestCustomEmojiWiring(t *testing.T) {
+	t.Cleanup(func() { SetCustomEmojiEnabled(false) })
+
+	tmpDir := t.TempDir()
+	cm, err := NewConfigManager(filepath.Join(tmpDir, "bot_cfg.json"), BotConfig{})
+	if err != nil {
+		t.Fatalf("failed to create config manager: %v", err)
+	}
+	b := &Bot{}
+	b.SetConfigManager(cm)
+
+	if b.customEmojiEnabled() {
+		t.Errorf("default CustomEmoji must be off")
+	}
+	if customEmojiEnabled.Load() {
+		t.Errorf("syncIconLayer must mirror the off default")
+	}
+
+	_ = cm.Update(func(c *BotConfig) { c.CustomEmoji = true })
+	if b.customEmojiEnabled() != true {
+		t.Errorf("customEmojiEnabled must read the persisted config")
+	}
+	_ = b.updateConfig(func(c *BotConfig) { c.RichMode = true })
+	if !customEmojiEnabled.Load() {
+		t.Errorf("updateConfig must re-sync the icon layer (reconfig wiring)")
+	}
+	_ = b.updateConfig(func(c *BotConfig) { c.CustomEmoji = false })
+	if customEmojiEnabled.Load() {
+		t.Errorf("updateConfig must re-sync the icon layer back to disabled")
 	}
 }

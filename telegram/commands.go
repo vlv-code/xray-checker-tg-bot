@@ -41,49 +41,12 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		return
 	}
 
-	b.waitingNodeAddMu.Lock()
-	var isWaitingAdd bool
-	if b.waitingNodeAdd != nil {
-		isWaitingAdd = b.waitingNodeAdd[msg.Chat.ID]
-		if isWaitingAdd {
-			delete(b.waitingNodeAdd, msg.Chat.ID)
-		}
-	}
-	var waitingSubNode string
-	if b.waitingNodeSub != nil {
-		waitingSubNode = b.waitingNodeSub[msg.Chat.ID]
-		if waitingSubNode != "" {
-			delete(b.waitingNodeSub, msg.Chat.ID)
-		}
-	}
-	// Wave G5a: a pending rename input (cfg screen «✏️ Переименовать») is
-	// consumed by the next plain text message — single-shot, self-clearing.
-	var waitingRenameNode string
-	if b.waitingNodeRename != nil {
-		waitingRenameNode = b.waitingNodeRename[msg.Chat.ID]
-		if waitingRenameNode != "" {
-			delete(b.waitingNodeRename, msg.Chat.ID)
-		}
-	}
-	// Wave H4: a pending manual Cheburcheck host input (route
-	// menu:cheburin, «✍️ Проверить свой хост») is consumed the same way.
-	var waitingCheburHost bool
-	if b.waitingCheburHost != nil {
-		waitingCheburHost = b.waitingCheburHost[msg.Chat.ID]
-		if waitingCheburHost {
-			delete(b.waitingCheburHost, msg.Chat.ID)
-		}
-	}
-	// Wave H6: a pending custom Check-Host host input (route
-	// menu:checkhostadd, «➕ Добавить хост») is consumed the same way.
-	var waitingCheckHostHost bool
-	if b.waitingCheckHostHost != nil {
-		waitingCheckHostHost = b.waitingCheckHostHost[msg.Chat.ID]
-		if waitingCheckHostHost {
-			delete(b.waitingCheckHostHost, msg.Chat.ID)
-		}
-	}
-	b.waitingNodeAddMu.Unlock()
+	// Wave L-1: the unified pending-input FSM replaces the former five
+	// per-flow waiting maps — at most one armed text input per chat. Taking
+	// it is consuming (single-shot) and lazily TTL-expired (5 мин): an
+	// expired input reads as absent and the text falls through to the normal
+	// command/message path.
+	kind, payload, pending := b.takePending(msg.Chat.ID)
 
 	cmd, arg := parseCommand(msg.Text)
 
@@ -103,29 +66,26 @@ func (b *Bot) handleMessage(msg *telego.Message) {
 		return
 	}
 
-	if (isWaitingAdd || waitingSubNode != "" || waitingRenameNode != "" || waitingCheburHost || waitingCheckHostHost) && msg.From != nil && !b.isAuthorizedMutating(msg.From.ID) {
+	if pending && msg.From != nil && !b.isAuthorizedMutating(msg.From.ID) {
 		b.replyCommand(msg, "⛔ Эта операция доступна только администраторам бота.")
 		return
 	}
 
-	if isWaitingAdd && cmd == "" {
-		b.handleNodeAdd(msg, strings.TrimSpace(msg.Text))
-		return
-	}
-	if waitingSubNode != "" && cmd == "" {
-		b.handleNodeAddSubURL(msg, waitingSubNode, strings.TrimSpace(msg.Text))
-		return
-	}
-	if waitingRenameNode != "" && cmd == "" {
-		b.handleNodeRenameInput(msg, waitingRenameNode)
-		return
-	}
-	if waitingCheburHost && cmd == "" {
-		b.handleCheburHostInput(msg, strings.TrimSpace(msg.Text))
-		return
-	}
-	if waitingCheckHostHost && cmd == "" {
-		b.handleCheckHostHostInput(msg, strings.TrimSpace(msg.Text))
+	if pending && cmd == "" {
+		switch kind {
+		case pendingKindNodeAdd:
+			b.handleNodeAdd(msg, strings.TrimSpace(msg.Text))
+		case pendingKindNodeSub:
+			b.handleNodeAddSubURL(msg, payload, strings.TrimSpace(msg.Text))
+		case pendingKindNodeRename:
+			b.handleNodeRenameInput(msg, payload)
+		case pendingKindCheburHost:
+			b.handleCheburHostInput(msg, strings.TrimSpace(msg.Text))
+		case pendingKindCheckHostHost:
+			b.handleCheckHostHostInput(msg, strings.TrimSpace(msg.Text))
+		case pendingKindSubURL:
+			b.handleSubURLInput(msg, strings.TrimSpace(msg.Text))
+		}
 		return
 	}
 	if cmd == "" {
@@ -373,7 +333,7 @@ func (b *Bot) handleTimezoneCommand(msg *telego.Message) {
 }
 
 func (b *Bot) replySettings(t ChatTarget) {
-	b.sendOrUpdateMenu(t, b.getSettingsText(), SettingsMenuMarkup(b.subs != nil))
+	b.sendOrUpdateMenu(t, b.getSettingsText(), SettingsMenuMarkup(b.GetConfig(), b.subs != nil))
 }
 
 func (b *Bot) replyInterval(t ChatTarget) {
@@ -385,7 +345,11 @@ func (b *Bot) replyMenu(t ChatTarget) {
 }
 
 func (b *Bot) replyStatus(t ChatTarget) {
-	b.sendOrUpdateMenu(t, b.getStatusText(), StatusMenuMarkup())
+	// Wave K-B1 integration (I3, coordinator-authorized single call-site
+	// change in K-B3's pass): the /status command renders the paginated
+	// status screen (page 1); the menu:statuspg: pager flips pages in place.
+	text, totalPages := b.getStatusPageText(1)
+	b.sendOrUpdateMenu(t, text, StatusPageMarkup(1, totalPages))
 }
 
 func (b *Bot) replyStats(t ChatTarget) {
@@ -546,8 +510,11 @@ func (b *Bot) sendDaytimeDigest(now time.Time) {
 	b.broadcast(text)
 }
 
-func (b *Bot) replyHelp(t ChatTarget) {
-	text := "🤖 <b>Xray Checker Bot — справка</b>\n\n" +
+// getHelpText renders the /help screen: the command list is collapsed into
+// one expandable blockquote so the chat shows a compact card (wave K-B1).
+func (b *Bot) getHelpText() string {
+	text := "🤖 <b>Xray Checker Bot — справка</b> (список команд — нажмите, чтобы развернуть):\n\n" +
+		"<blockquote expandable>" +
 		"/menu — главное интерактивное меню\n" +
 		"/status — статус всех прокси-хостов\n" +
 		"/diag — детальный отчёт о прокси-хостах\n" +
@@ -579,9 +546,13 @@ func (b *Bot) replyHelp(t ChatTarget) {
 			"/noderename &lt;старое&gt; &lt;новое&gt; — переименовать ноду (токен, подписки и настройки переносятся)\n"
 	}
 	text += "/checkupdate — проверить наличие новой версии чекера\n" +
-		"/help — эта справка\n\n" +
+		"/help — эта справка</blockquote>\n\n" +
 		"🔔 Уведомления о сбоях отправляются автоматически."
-	b.sendOrUpdateMenu(t, text, MainMenuMarkup())
+	return text
+}
+
+func (b *Bot) replyHelp(t ChatTarget) {
+	b.sendOrUpdateMenu(t, b.getHelpText(), MainMenuMarkup())
 }
 
 func (b *Bot) handleCheckUpdate(msg *telego.Message) {

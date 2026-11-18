@@ -419,10 +419,19 @@ func TestMenuNodesCfgResetGatedByAdmin(t *testing.T) {
 		t.Errorf("denied reset must not edit any message, got %d edits", len(edits))
 	}
 
-	// 2. Admin: reset runs through nodeMgr and the screen re-renders.
+	// 2. Admin: the bare reset route first renders the K-B2 confirm screen
+	//    (nothing reset); the explicit «:yes» callback resets through nodeMgr
+	//    and the screen re-renders.
 	b.handleCallbackQuery(gateCallback(1001, "menu:nodes:nreset:x"))
+	if len(mgr.resets) != 0 {
+		t.Fatalf("bare nreset tap must only confirm (no reset), got resets %v", mgr.resets)
+	}
+	if edits := ft.callsOf("editMessageText"); len(edits) != 1 {
+		t.Fatalf("bare nreset tap must render the confirm screen, got %d edits", len(edits))
+	}
+	b.handleCallbackQuery(gateCallback(1001, "menu:nodes:nreset:x:yes"))
 	if len(mgr.resets) != 1 || mgr.resets[0] != "x|" {
-		t.Fatalf("expected ResetNodeSetting(x, \"\"), got resets %v", mgr.resets)
+		t.Fatalf("expected ResetNodeSetting(x, \"\") after :yes, got resets %v", mgr.resets)
 	}
 	if mgr.overrid["x"]["check_method"] {
 		t.Errorf("override mark must be cleared after reset")
@@ -574,5 +583,166 @@ func TestMenuNodesExclRouteRendersFunctionalList(t *testing.T) {
 	}
 	if !hasCallback(markup, "menu:nodes:cfg:m31a") {
 		t.Errorf("expected back callback menu:nodes:cfg:m31a, got %v", markupCallbacks(markup))
+	}
+}
+
+// --- Wave K-B2: back-row wording + two-step confirm helpers ---
+
+// TestBackRowsUseIconBackWording (Wave K-B2): every back row in the B2-owned
+// node surfaces uses the «↩️ …» legend wording (was «🔙 …»); the node picker
+// rows keep the 🖥 icon.
+func TestBackRowsUseIconBackWording(t *testing.T) {
+	_, api := newFakeTelegramBot(t)
+	mgr := newCfgRecordingManager("m31a")
+	b, _ := newCfgTestBot(t, api, nil, mgr)
+
+	surfaces := map[string]*telego.InlineKeyboardMarkup{
+		"NodesCfgListMarkup": NodesCfgListMarkup([]string{"m31a"}),
+	}
+	_, cfgMarkup := b.getNodeCfgScreen("m31a")
+	surfaces["NodeCfgMarkup"] = cfgMarkup
+	_, exclMarkup := b.getNodeExclusionsView("m31a", 1, "")
+	surfaces["getNodeExclusionsView"] = exclMarkup
+
+	for name, m := range surfaces {
+		hasBack := false
+		for _, row := range m.InlineKeyboard {
+			for _, btn := range row {
+				if strings.HasPrefix(btn.Text, "🔙") {
+					t.Errorf("%s: «🔙» wording must be gone, got %q", name, btn.Text)
+				}
+				if strings.Contains(btn.Text, "↩️") {
+					hasBack = true
+				}
+			}
+		}
+		if !hasBack {
+			t.Errorf("%s: expected an «↩️» back row, got %v", name, markupCallbacks(m))
+		}
+	}
+	if row := NodesCfgListMarkup([]string{"m31a"}).InlineKeyboard[0][0].Text; row != "🖥 m31a" {
+		t.Errorf("node picker rows keep the 🖥 icon, got %q", row)
+	}
+}
+
+// TestNodeSubsConfirmHelpers pins the delsub confirm-screen contract the
+// callbacks.go handler (K-B3 wiring) must render on the first «🗑 Удалить:
+// #N» tap: text «Точно удалить #N» + URL, [✅ Да, удалить] carrying the SAME
+// idx plus the explicit nonce-free «:yes» suffix, [↩️ Отмена] back to the
+// manage screen; over-limit names omit the confirm row (same 64-byte omit
+// discipline as the emitting button) and the callbacks stay mutating
+// (admin-gated) under the two-step pattern.
+func TestNodeSubsConfirmHelpers(t *testing.T) {
+	text := nodeSubsConfirmText("m31a", 0, "https://sub.url/1?a=1&b=2")
+	for _, want := range []string{"Точно удалить", "<b>#1</b>", "m31a", "https://sub.url/1?a=1&amp;b=2"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("confirm text must contain %q, got: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "https://sub.url/1?a=1&b=2") {
+		t.Errorf("confirm text must escape the URL, got: %s", text)
+	}
+
+	m := nodeSubsConfirmMarkup("m31a", 0)
+	yesCb, yesOK := nodeSubsConfirmCallback("m31a", 0)
+	if !yesOK || yesCb != "menu:nodes:delsub:m31a:0:yes" {
+		t.Fatalf("expected confirm callback menu:nodes:delsub:m31a:0:yes, got (%q, %v)", yesCb, yesOK)
+	}
+	if !hasCallback(m, yesCb) {
+		t.Errorf("expected the confirm row, got %v", markupCallbacks(m))
+	}
+	if btn := findButtonText(m, "✅ Да, удалить"); btn == "" {
+		t.Errorf("expected the «✅ Да, удалить» button, got %v", markupCallbacks(m))
+	}
+	cancel := findButtonText(m, "Отмена")
+	if !strings.HasPrefix(cancel, "↩️") {
+		t.Errorf("cancel button must use «↩️» wording, got %q", cancel)
+	}
+	if !hasCallback(m, "menu:nodes:subnode:m31a") {
+		t.Errorf("cancel must return to the manage screen, got %v", markupCallbacks(m))
+	}
+	for _, cb := range markupCallbacks(m) {
+		if len(cb) > 64 {
+			t.Errorf("callback_data exceeds 64 bytes: %q (%d)", cb, len(cb))
+		}
+		if !callbackRoutes(cb) {
+			t.Errorf("confirm callback does not route in callbacks.go: %q", cb)
+		}
+	}
+	// The :yes confirm stays inside the mutating (admin-gated) delsub prefix.
+	if !isMutatingCallback(yesCb) {
+		t.Errorf("confirm callback %q must stay admin-gated", yesCb)
+	}
+
+	// 49-char node: menu:nodes:delsub:<name>:0:yes is 73 bytes — the confirm
+	// row is omitted; cancel falls back to the static picker route.
+	long := strings.Repeat("n", 49)
+	mLong := nodeSubsConfirmMarkup(long, 0)
+	if hasCallback(mLong, "menu:nodes:delsub:"+long+":0:yes") {
+		t.Errorf("over-limit confirm callback must be omitted")
+	}
+	if !hasCallback(mLong, "menu:nodes:cfg") {
+		t.Errorf("cancel fallback must route, got %v", markupCallbacks(mLong))
+	}
+}
+
+// TestNodeResetConfirmHelpers pins the nreset confirm-screen contract for the
+// callbacks.go handler (K-B3 wiring): text «Точно сбросить» + node name,
+// [✅ Да, сбросить] → menu:nodes:nreset:<name>:yes, [↩️ Отмена] back to the
+// node cfg screen; over-limit names omit the confirm row and fall back to the
+// picker route.
+func TestNodeResetConfirmHelpers(t *testing.T) {
+	text := nodeResetConfirmText("m31a")
+	for _, want := range []string{"Точно сбросить", "m31a"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("confirm text must contain %q, got: %s", want, text)
+		}
+	}
+
+	m := nodeResetConfirmMarkup("m31a")
+	yesCb, yesOK := nodeResetConfirmCallback("m31a")
+	if !yesOK || yesCb != "menu:nodes:nreset:m31a:yes" {
+		t.Fatalf("expected confirm callback menu:nodes:nreset:m31a:yes, got (%q, %v)", yesCb, yesOK)
+	}
+	if !hasCallback(m, yesCb) {
+		t.Errorf("expected the confirm row, got %v", markupCallbacks(m))
+	}
+	if findButtonText(m, "✅ Да, сбросить") == "" {
+		t.Errorf("expected the «✅ Да, сбросить» button, got %v", markupCallbacks(m))
+	}
+	cancel := findButtonText(m, "Отмена")
+	if !strings.HasPrefix(cancel, "↩️") {
+		t.Errorf("cancel button must use «↩️» wording, got %q", cancel)
+	}
+	if !hasCallback(m, "menu:nodes:cfg:m31a") {
+		t.Errorf("cancel must return to the node cfg screen, got %v", markupCallbacks(m))
+	}
+	for _, cb := range markupCallbacks(m) {
+		if len(cb) > 64 {
+			t.Errorf("callback_data exceeds 64 bytes: %q (%d)", cb, len(cb))
+		}
+	}
+	// The :yes confirm stays inside the mutating (admin-gated) nreset prefix.
+	// (callbackRoutes is not asserted here: its prefix registry lives in
+	// menu_diag_guard_test.go and does not list the nreset/ncfg/ren/tg routes.)
+	if !isMutatingCallback(yesCb) {
+		t.Errorf("confirm callback %q must stay admin-gated", yesCb)
+	}
+
+	// 49-char node: menu:nodes:nreset:<name>:yes is 71 bytes — the confirm row
+	// is omitted; the cancel callback «menu:nodes:cfg:<name>» is exactly 64
+	// bytes and still fits, so it stays (static picker fallback only beyond).
+	long := strings.Repeat("n", 49)
+	mLong := nodeResetConfirmMarkup(long)
+	if hasCallback(mLong, "menu:nodes:nreset:"+long+":yes") {
+		t.Errorf("over-limit confirm callback must be omitted")
+	}
+	if !hasCallback(mLong, "menu:nodes:cfg:"+long) {
+		t.Errorf("cancel must keep the fitting per-node cfg callback, got %v", markupCallbacks(mLong))
+	}
+	for _, cb := range markupCallbacks(mLong) {
+		if len(cb) > 64 {
+			t.Errorf("callback_data exceeds 64 bytes: %q (%d)", cb, len(cb))
+		}
 	}
 }

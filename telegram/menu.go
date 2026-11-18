@@ -22,6 +22,42 @@ func btnURL(text, urlStr string) telego.InlineKeyboardButton {
 	return tu.InlineKeyboardButton(text).WithURL(urlStr)
 }
 
+// btnIcon builds a callback button with the dual-layer legend icon (wave K-B3;
+// the package-level layer is B1's icons.go flag, synced from
+// BotConfig.CustomEmoji). Button text has NO parse_mode — it renders verbatim,
+// so the label must carry the PLAIN fallback emoji only; the custom icon is
+// drawn by Telegram from IconCustomEmojiID placed BEFORE the text (telego
+// v1.13 contract, types.go:3845-3849). Raw tg-emoji tags belong to message
+// TEXT exclusively (Guardian P1 fix, K+L re-gate 2026-11-18).
+func btnIcon(icon Icon, label, data string) telego.InlineKeyboardButton {
+	b := btn(icon.Fallback+label, data)
+	if customEmojiEnabled.Load() && icon.CustomID != "" {
+		b = b.WithIconCustomEmojiID(icon.CustomID)
+	}
+	return b
+}
+
+// mainMenuBtnText is the unified main-menu navigation label (wave K-B3): ☰
+// replaces 🏠 on the home shortcut of mixed back rows — 🏠 stays reserved for
+// the master checker tab.
+const mainMenuBtnText = "☰ Главное меню"
+
+// backRow renders the unified navigation row (wave K-B3): the parent screen
+// behind the frozen arrow.uturn.backward icon ↩️, plus the ☰ main-menu
+// shortcut. When the parent IS the main menu a single «↩️ Главное меню» row is
+// returned (two buttons with the same target would be a dead duplicate).
+func backRow(parent, callback string) []telego.InlineKeyboardButton {
+	if callback == "menu:main" {
+		return []telego.InlineKeyboardButton{
+			btnIcon(IconBack, " Главное меню", "menu:main"),
+		}
+	}
+	return []telego.InlineKeyboardButton{
+		btnIcon(IconBack, " "+parent, callback),
+		btn(mainMenuBtnText, "menu:main"),
+	}
+}
+
 // truncateButtonText truncates text to maxRunes, adding an ellipsis if exceeded.
 func truncateButtonText(text string, maxRunes int) string {
 	runes := []rune(text)
@@ -44,25 +80,34 @@ func HostCallbackKey(host string) string {
 }
 
 // MainMenuMarkup returns the inline keyboard for the top-level bot menu.
+// Wave K-B3: the «📈 Статистика» row is promoted into the main menu (between
+// Ноды and Настройки — removed from the settings screen), the Check-Host row
+// carries the 📡 antenna icon (🌐 is freed for web/dashboard mentions), and
+// the legend roles with pack icons render through the custom-emoji dual layer.
 func MainMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
 			btn("🔄 Обновить", "menu:main"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🔎 Подробнее", "menu:diag"),
+			btnIcon(IconDiagnostics, " Подробнее", "menu:diag"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🌐 Проверка Check-Host.net", "menu:checkhost"),
+			btnIcon(IconCheckHost, " Проверка Check-Host.net", "menu:checkhost"),
 		),
 		tu.InlineKeyboardRow(
 			btn("Cheburcheck", "menu:chebur"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🖥 Ноды", "menu:nodes"),
+			// Button text stays plain fallback-only even when IconNode gains a
+			// pack id — raw tg-emoji output is banned in button text.
+			btn(IconNode.Fallback+" Ноды", "menu:nodes"),
 		),
 		tu.InlineKeyboardRow(
-			btn("⚙️ Настройки", "menu:settings"),
+			btnIcon(IconStats, " Статистика", "menu:stats"),
+		),
+		tu.InlineKeyboardRow(
+			btnIcon(IconSettings, " Настройки", "menu:settings"),
 		),
 	)
 }
@@ -87,7 +132,7 @@ func NodesMainMenuMarkup() *telego.InlineKeyboardMarkup {
 		),
 		tu.InlineKeyboardRow(
 			btn("🔄 Обновить", "menu:nodes:refresh"),
-			btn("🏠 Главное меню", "menu:main"),
+			btn(mainMenuBtnText, "menu:main"),
 		),
 	)
 }
@@ -95,22 +140,20 @@ func NodesMainMenuMarkup() *telego.InlineKeyboardMarkup {
 // NodesInstallMarkup returns navigation keyboard for the installation guide.
 func NodesInstallMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
-		tu.InlineKeyboardRow(
-			btn("🔙 К нодам", "menu:nodes"),
-			btn("🏠 Главное меню", "menu:main"),
-		),
+		backRow("К нодам", "menu:nodes"),
 	)
 }
 
 // NodesHealthMarkup returns keyboard for node health/connectivity check.
+// Wave K-B2 register: the health recheck button is the plain «🔄 Обновить».
 func NodesHealthMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🔄 Перепроверить связь", "menu:nodes:health"),
-			btn("🔙 К нодам", "menu:nodes"),
+			btn("🔄 Обновить", "menu:nodes:health"),
+			btnIcon(IconBack, " К нодам", "menu:nodes"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🏠 Главное меню", "menu:main"),
+			btn(mainMenuBtnText, "menu:main"),
 		),
 	)
 }
@@ -146,10 +189,7 @@ func NodesSettingsMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 		// subs screen (menu:nodes:subs) is removed — node subscriptions are
 		// managed ONLY via the per-node cfg screen (menu:nodes:cfg:<n> →
 		// «📋 Подписки ноды»).
-		tu.InlineKeyboardRow(
-			btn("🔙 К нодам", "menu:nodes"),
-			btn("🏠 Главное меню", "menu:main"),
-		),
+		backRow("К нодам", "menu:nodes"),
 	)
 }
 
@@ -188,17 +228,46 @@ func NodeSubsManageMarkup(node string, subs []ManagedSubInfo) *telego.InlineKeyb
 	// (menu:nodes:cfg:<node>) instead of the removed global subs screen; the
 	// back button is omitted via cbNodeCfg when the name would overflow the
 	// 64-byte limit (the /nodesubs hint row above stays the command path).
-	var backRow []telego.InlineKeyboardButton
+	// Wave K-B3: the back button carries the unified ↩️ arrow.
+	var navRow []telego.InlineKeyboardButton
 	if cb, ok := cbNodeCfg("menu:nodes:cfg:", node); ok {
-		backRow = append(backRow, btn("🔙 К настройкам ноды", cb))
+		navRow = append(navRow, btnIcon(IconBack, " К настройкам ноды", cb))
 	}
-	backRow = append(backRow, btn("⚙️ Глобальные настройки нод", "menu:nodes:settings"))
-	rows = append(rows, tu.InlineKeyboardRow(backRow...))
+	navRow = append(navRow, btn("⚙️ Глобальные настройки нод", "menu:nodes:settings"))
+	rows = append(rows, tu.InlineKeyboardRow(navRow...))
 	return tu.InlineKeyboard(rows...)
 }
 
-// SettingsMenuMarkup returns buttons for the settings view.
-func SettingsMenuMarkup(showSubs ...bool) *telego.InlineKeyboardMarkup {
+// SettingsMenuMarkup returns the settings keyboard. Wave K-B3 accepts an
+// optional runtime config (BotConfig) and/or the subscriptions visibility flag
+// so the callback render path passes live toggle state; the legacy call forms
+// (no arguments / a bare bool) keep compiling for the /settings command path
+// (they render the default-state toggle labels).
+// NOTE (K-B3 reconciliation for the coordinator): the command-path caller
+// replySettings (commands.go, B1's file) still uses the legacy form — switch
+// it to SettingsMenuMarkup(b.GetConfig(), b.subs != nil) so the command screen
+// shows the real вкл/выкл toggle states.
+func SettingsMenuMarkup(args ...any) *telego.InlineKeyboardMarkup {
+	var cfg BotConfig
+	showSubs := true
+	for _, a := range args {
+		switch v := a.(type) {
+		case BotConfig:
+			cfg = v
+		case bool:
+			showSubs = v
+		}
+	}
+	return SettingsMenuMarkupWithCfg(cfg, showSubs)
+}
+
+// SettingsMenuMarkupWithCfg renders the settings keyboard with the live
+// runtime state (wave K-B3): the «☀️ Дневная сводка» and «✨ Иконки
+// (анимация)» toggles reflect cfg; the «📈 Статистика» entry is REMOVED here
+// (promoted to MainMenuMarkup); the Check-Host entry carries the 📡 antenna
+// icon and the host-management entry the 🔍 diagnostics icon (🌐 is freed for
+// web/dashboard mentions only).
+func SettingsMenuMarkupWithCfg(cfg BotConfig, showSubs ...bool) *telego.InlineKeyboardMarkup {
 	includeSubs := true
 	if len(showSubs) > 0 {
 		includeSubs = showSubs[0]
@@ -210,38 +279,49 @@ func SettingsMenuMarkup(showSubs ...bool) *telego.InlineKeyboardMarkup {
 		alertRow = append(alertRow, btn("📋 Подписки", "menu:subs"))
 	}
 
+	digestLabel := "☀️ Дневная сводка: выкл"
+	if cfg.DayDigestEnabled {
+		digestLabel = "☀️ Дневная сводка: вкл"
+	}
+	iconsLabel := "✨ Иконки (анимация): выкл"
+	if cfg.CustomEmoji {
+		iconsLabel = "✨ Иконки (анимация): вкл"
+	}
+
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
 			btn("🚫 Управление прокси", "menu:disabled_proxies:1"),
-			btn("🌐 Управление хостами", "menu:disabled_hosts:1"),
+			btnIcon(IconDiagnostics, " Управление хостами", "menu:disabled_hosts:1"),
 		),
 		tu.InlineKeyboardRow(
-			btn("🌐 Фоновый Check-Host", "menu:checkhost_cfg"),
-			btn("⏱️ Интервал проверок", "menu:interval"),
+			btnIcon(IconCheckHost, " Фоновый Check-Host", "menu:checkhost_cfg"),
+			btnIcon(IconTime, " Интервал проверок", "menu:interval"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🎯 Целевые серверы", "menu:targets"),
 			btn("🌙 Тихий режим", "menu:quiet"),
 		),
+		tu.InlineKeyboardRow(
+			btn(digestLabel, "menu:nodes:digest"),
+			btn(iconsLabel, "menu:toggle_icons"),
+		),
 		alertRow,
 		tu.InlineKeyboardRow(
-			btn("📈 Статистика инцидентов", "menu:stats"),
 			btn("🕒 Часовой пояс", "menu:timezone"),
 		),
 		tu.InlineKeyboardRow(
 			btn("🚀 Проверить обновления", "menu:checkupdate"),
 		),
-		tu.InlineKeyboardRow(
-			btn("🔙 Главное меню", "menu:main"),
-		),
+		backRow("Главное меню", "menu:main"),
 	)
 }
 
 // CheckHostSettingsMarkup returns keyboard for configuring background Check-Host auditing.
+// Wave K-B3: the Check-Host surfaces carry the 📡 antenna icon (never 🌐).
 func CheckHostSettingsMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
-	bgStatus := "🌐 Фоновая проверка: выкл"
+	bgLabel := " Фоновая проверка: выкл"
 	if cfg.CheckHostBgEnabled {
-		bgStatus = "🌐 Фоновая проверка: вкл"
+		bgLabel = " Фоновая проверка: вкл"
 	}
 
 	alertStatus := "🔕 Алерты по РФ: выкл"
@@ -265,7 +345,7 @@ func CheckHostSettingsMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn(bgStatus, "menu:checkhost:toggle_bg"),
+			btnIcon(IconCheckHost, bgLabel, "menu:checkhost:toggle_bg"),
 		),
 		tu.InlineKeyboardRow(
 			btn(alertStatus, "menu:checkhost:toggle_alert"),
@@ -280,10 +360,7 @@ func CheckHostSettingsMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 		tu.InlineKeyboardRow(
 			btn("🚀 Запустить проверку сейчас", "menu:checkhost:run_now"),
 		),
-		tu.InlineKeyboardRow(
-			btn("🔙 К настройкам", "menu:settings"),
-			btn("🏠 Главное меню", "menu:main"),
-		),
+		backRow("К настройкам", "menu:settings"),
 	)
 }
 
@@ -301,9 +378,11 @@ func DisabledProxiesMarkup(items []ProxyToggleItem, page, totalPages int) *teleg
 	var rows [][]telego.InlineKeyboardButton
 
 	for _, item := range items {
-		statusIcon := "🟢"
+		// Plain state circles (no pack icon exists for 🟢/⏸️): button text must
+		// stay fallback-only — raw tg-emoji output is banned in button text.
+		statusIcon := IconStateOK.Fallback
 		if item.Disabled {
-			statusIcon = "⏸️"
+			statusIcon = IconDisabled.Fallback
 		}
 		displayName := item.Name
 		if displayName == "" {
@@ -341,10 +420,7 @@ func DisabledProxiesMarkup(items []ProxyToggleItem, page, totalPages int) *teleg
 		))
 	}
 
-	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔙 К настройкам", "menu:settings"),
-		btn("🏠 Главное меню", "menu:main"),
-	))
+	rows = append(rows, backRow("К настройкам", "menu:settings"))
 
 	return tu.InlineKeyboard(rows...)
 }
@@ -354,9 +430,11 @@ func DisabledHostsMarkup(hosts []string, disabledMap map[string]bool, page, tota
 	var rows [][]telego.InlineKeyboardButton
 
 	for _, host := range hosts {
-		statusIcon := "🟢"
+		// Plain state circles (no pack icon exists for 🟢/⏸️): button text must
+		// stay fallback-only — raw tg-emoji output is banned in button text.
+		statusIcon := IconStateOK.Fallback
 		if disabledMap[strings.ToLower(host)] {
-			statusIcon = "⏸️"
+			statusIcon = IconDisabled.Fallback
 		}
 		displayHost := host
 		runes := []rune(displayHost)
@@ -391,10 +469,7 @@ func DisabledHostsMarkup(hosts []string, disabledMap map[string]bool, page, tota
 		))
 	}
 
-	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔙 К настройкам", "menu:settings"),
-		btn("🏠 Главное меню", "menu:main"),
-	))
+	rows = append(rows, backRow("К настройкам", "menu:settings"))
 
 	return tu.InlineKeyboard(rows...)
 }
@@ -404,15 +479,15 @@ func StatusMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
 			btn("🔄 Обновить", "menu:status"),
-			btn("🔎 Подробнее", "menu:diag"),
+			btnIcon(IconDiagnostics, " Подробнее", "menu:diag"),
 		),
-		tu.InlineKeyboardRow(
-			btn("🔙 Главное меню", "menu:main"),
-		),
+		backRow("Главное меню", "menu:main"),
 	)
 }
 
-// StatsMenuMarkup returns buttons for outage stats.
+// StatsMenuMarkup returns buttons for outage stats. Wave K-B3: the stats
+// overview is promoted into the main menu, so the back row keeps the unified
+// settings return as the secondary navigation.
 func StatsMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
@@ -420,13 +495,10 @@ func StatsMenuMarkup() *telego.InlineKeyboardMarkup {
 			btn("🔝 Топ проблемных", "menu:stats:top"),
 		),
 		tu.InlineKeyboardRow(
-			btn("📊 По протоколам", "menu:stats:protocols"),
+			btnIcon(IconSummary, " По протоколам", "menu:stats:protocols"),
 			btn("🌡️ Heatmap", "menu:stats:heatmap"),
 		),
-		tu.InlineKeyboardRow(
-			btn("🔙 К настройкам", "menu:settings"),
-			btn("🏠 Главное меню", "menu:main"),
-		),
+		backRow("К настройкам", "menu:settings"),
 	)
 }
 
@@ -472,10 +544,7 @@ func QuietHoursMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 		rows = append(rows, tu.InlineKeyboardRow(snoozeBtns...))
 	}
 
-	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔙 К настройкам", "menu:settings"),
-		btn("🏠 Главное меню", "menu:main"),
-	))
+	rows = append(rows, backRow("К настройкам", "menu:settings"))
 
 	return tu.InlineKeyboard(rows...)
 }
@@ -495,10 +564,7 @@ func AlertModeMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 			btn(fmt.Sprintf("%s 🔄 Live-режим", liveIcon), "menu:alert_mode:live"),
 			btn(fmt.Sprintf("%s 🧹 Чистый чат", cleanIcon), "menu:alert_mode:clean"),
 		),
-		tu.InlineKeyboardRow(
-			btn("🔙 К настройкам", "menu:settings"),
-			btn("🏠 Главное меню", "menu:main"),
-		),
+		backRow("К настройкам", "menu:settings"),
 	)
 }
 
@@ -506,12 +572,9 @@ func AlertModeMarkup(cfg BotConfig) *telego.InlineKeyboardMarkup {
 func TargetsMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🔎 Подробнее", "menu:diag"),
+			btnIcon(IconDiagnostics, " Подробнее", "menu:diag"),
 		),
-		tu.InlineKeyboardRow(
-			btn("🔙 К настройкам", "menu:settings"),
-			btn("🏠 Главное меню", "menu:main"),
-		),
+		backRow("К настройкам", "menu:settings"),
 	)
 }
 
@@ -519,7 +582,7 @@ func TargetsMenuMarkup() *telego.InlineKeyboardMarkup {
 func BackToMenuMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🔙 Главное меню", "menu:main"),
+			btn(mainMenuBtnText, "menu:main"),
 		),
 	)
 }
@@ -527,20 +590,27 @@ func BackToMenuMarkup() *telego.InlineKeyboardMarkup {
 // BackToSettingsMarkup provides buttons returning to settings or main menu.
 func BackToSettingsMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
-		tu.InlineKeyboardRow(
-			btn("🔙 К настройкам", "menu:settings"),
-			btn("🏠 Главное меню", "menu:main"),
-		),
+		backRow("К настройкам", "menu:settings"),
 	)
 }
 
 // BackToStatsMarkup provides buttons returning to stats overview or main menu.
 func BackToStatsMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
+		backRow("К статистике", "menu:stats"),
+	)
+}
+
+// SubsMenuMarkup returns the keyboard for the global subscriptions screen
+// (wave K-B3): the «➕ Добавить подписку» arm button starts the admin-gated
+// input flow (exact route menu:subsadd — the next plain text is consumed as a
+// subscription URL), and the back row is the unified pair.
+func SubsMenuMarkup() *telego.InlineKeyboardMarkup {
+	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🔙 К статистике", "menu:stats"),
-			btn("🏠 Главное меню", "menu:main"),
+			btn("➕ Добавить подписку", "menu:subsadd"),
 		),
+		backRow("К настройкам", "menu:settings"),
 	)
 }
 
@@ -585,10 +655,7 @@ func TimezoneMarkup(currentTz string) *telego.InlineKeyboardMarkup {
 		tu.InlineKeyboardRow(
 			btn(mark("Local", "🖥️ Серверное (Local)"), "menu:tz:Local"),
 		),
-		tu.InlineKeyboardRow(
-			btn("🔙 К настройкам", "menu:settings"),
-			btn("🏠 Главное меню", "menu:main"),
-		),
+		backRow("К настройкам", "menu:settings"),
 	)
 }
 
@@ -614,10 +681,7 @@ func IntervalMenuMarkup(currentInterval int) *telego.InlineKeyboardMarkup {
 			btn(mark(600, "10 мин"), "menu:interval:set:600"),
 			btn(mark(900, "15 мин"), "menu:interval:set:900"),
 		),
-		tu.InlineKeyboardRow(
-			btn("🔙 К настройкам", "menu:settings"),
-			btn("🏠 Главное меню", "menu:main"),
-		),
+		backRow("К настройкам", "menu:settings"),
 	)
 }
 
@@ -690,6 +754,9 @@ func menuPaginationRow(routePrefix string, page, totalPages int) []telego.Inline
 // «⬅️ ➡️ Стр. N/M» row (menu:checkhostpg:<page> routes) when more than one
 // page exists. Host keys hash over 36 bytes (HostCallbackKey), so every
 // callback stays within the 64-byte limit.
+// Wave K-B3: the auto rows and the add-host row carry the 📡 antenna icon
+// (IconCheckHost — 🌐 is freed for web/dashboard mentions); the back row is
+// the unified «↩️ Главное меню».
 func CheckHostMenuMarkup(items []CheckHostListItem, page, totalPages int) *telego.InlineKeyboardMarkup {
 	pageItems := menuPageSlice(items, page, totalPages)
 
@@ -698,7 +765,7 @@ func CheckHostMenuMarkup(items []CheckHostListItem, page, totalPages int) *teleg
 		key := HostCallbackKey(item.Address)
 		if item.Auto {
 			rows = append(rows, tu.InlineKeyboardRow(
-				btn("🌐 "+truncateButtonText(item.Address, 28)+" · авто", "menu:checkhosth:"+key),
+				btnIcon(IconCheckHost, " "+truncateButtonText(item.Address, 28)+" · авто", "menu:checkhosth:"+key),
 			))
 		} else {
 			rows = append(rows, tu.InlineKeyboardRow(
@@ -709,16 +776,14 @@ func CheckHostMenuMarkup(items []CheckHostListItem, page, totalPages int) *teleg
 	}
 
 	rows = append(rows, tu.InlineKeyboardRow(
-		btn("➕ Добавить хост", "menu:checkhostadd"),
+		btnIcon(IconCheckHost, " ➕ Добавить хост", "menu:checkhostadd"),
 	))
 
 	if totalPages > 1 {
 		rows = append(rows, menuPaginationRow("menu:checkhostpg:", page, totalPages))
 	}
 
-	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔙 Главное меню", "menu:main"),
-	))
+	rows = append(rows, backRow("Главное меню", "menu:main"))
 
 	return tu.InlineKeyboard(rows...)
 }
@@ -732,6 +797,7 @@ func CheckHostMenuMarkup(items []CheckHostListItem, page, totalPages int) *teleg
 // Wave H3: host buttons are PLAIN <host> (the former 🧀 prefix is dropped).
 // Wave H4: the «✍️ Проверить свой хост» row (exact route menu:cheburin)
 // arms the manual host input flow.
+// Wave K-B3: the back row is the unified «↩️ Главное меню».
 func CheburMenuMarkup(hosts []string, page, totalPages int) *telego.InlineKeyboardMarkup {
 	pageHosts := menuPageSlice(hosts, page, totalPages)
 
@@ -757,11 +823,28 @@ func CheburMenuMarkup(hosts []string, page, totalPages int) *telego.InlineKeyboa
 		rows = append(rows, menuPaginationRow("menu:cheburpg:", page, totalPages))
 	}
 
-	rows = append(rows, tu.InlineKeyboardRow(
-		btn("⬅️ Назад", "menu:main"),
-	))
+	rows = append(rows, backRow("Главное меню", "menu:main"))
 
 	return tu.InlineKeyboard(rows...)
+}
+
+// CheburResultMarkup returns the navigation keyboard under a Cheburcheck probe
+// (wave K-B3): «📡 К списку хостов» returns to the host list page the probe
+// was launched from (menu:cheburpg:<page> — the open/pager routes record the
+// page per chat), plus the unified main-menu row. The probe placeholder uses
+// the same markup so the way back never disappears mid-probe.
+func CheburResultMarkup(page int) *telego.InlineKeyboardMarkup {
+	if page < 1 {
+		page = 1
+	}
+	return tu.InlineKeyboard(
+		tu.InlineKeyboardRow(
+			btn("📡 К списку хостов", fmt.Sprintf("menu:cheburpg:%d", page)),
+		),
+		tu.InlineKeyboardRow(
+			btn(mainMenuBtnText, "menu:main"),
+		),
+	)
 }
 
 // DiagDeepLink represents a proxy for which a deep diagnostics button is shown.
@@ -811,13 +894,13 @@ func DiagPaginationMarkup(page, totalPages int, _ ...DiagDeepLink) *telego.Inlin
 
 	// Action row: Back to Detailed Summary + Refresh current page
 	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔙 К подробной сводке", "menu:diag"),
+		btnIcon(IconBack, " К подробной сводке", "menu:diag"),
 		btn("🔄 Обновить", fmt.Sprintf("menu:diag:refresh:details:%d", page)),
 	))
 
 	// Back row
 	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🏠 Главное меню", "menu:main"),
+		btn(mainMenuBtnText, "menu:main"),
 	))
 
 	return tu.InlineKeyboard(rows...)
@@ -846,7 +929,7 @@ func DeepDiagnosticsMarkup(stableID string, page ...int) *telego.InlineKeyboardM
 
 	var firstRow []telego.InlineKeyboardButton
 	if backOK {
-		firstRow = append(firstRow, btn("🔙 К детальному отчёту", backCb))
+		firstRow = append(firstRow, btnIcon(IconBack, " К детальному отчёту", backCb))
 	}
 	if recheckOK {
 		firstRow = append(firstRow, btn("🔄 Перепроверить", recheckCb))
@@ -857,7 +940,7 @@ func DeepDiagnosticsMarkup(stableID string, page ...int) *telego.InlineKeyboardM
 		rows = append(rows, firstRow)
 	}
 	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🏠 Главное меню", "menu:main"),
+		btn(mainMenuBtnText, "menu:main"),
 	))
 	return tu.InlineKeyboard(rows...)
 }
@@ -898,14 +981,16 @@ func PickDeepDiagnosticsMarkupWithTabs(target string, tabs []NodeTabItem, report
 	}
 
 	for _, rep := range reports {
-		icon := "🟢"
+		// Plain state circles (no pack icon exists for 🟢/🔴/⏸️): button text
+		// must stay fallback-only — raw tg-emoji output is banned in buttons.
+		icon := IconStateOK.Fallback
 		switch rep.Status {
 		case "offline":
-			icon = "🔴"
+			icon = IconStateDown.Fallback
 		case "degraded":
 			icon = "🟡"
 		case "disabled":
-			icon = "⏸️"
+			icon = IconDisabled.Fallback
 		}
 		cb, ok := cbNodeCfg("menu:diag:deep:", rep.StableID, ":"+strconv.Itoa(page))
 		if !ok {
@@ -924,11 +1009,11 @@ func PickDeepDiagnosticsMarkupWithTabs(target string, tabs []NodeTabItem, report
 	}
 	if backTarget == "local" {
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn("🔙 К детальному отчёту", fmt.Sprintf("menu:diag:details:%d", page)),
+			btnIcon(IconBack, " К детальному отчёту", fmt.Sprintf("menu:diag:details:%d", page)),
 		))
 	} else if cb, ok := cbNodeCfg("menu:diag:details:", backTarget, ":"+strconv.Itoa(page)); ok {
 		rows = append(rows, tu.InlineKeyboardRow(
-			btn("🔙 К детальному отчёту", cb),
+			btnIcon(IconBack, " К детальному отчёту", cb),
 		))
 	} else {
 		omitted++
@@ -942,11 +1027,13 @@ func PickDeepDiagnosticsMarkupWithTabs(target string, tabs []NodeTabItem, report
 }
 
 // CheckHostResultMarkup returns keyboard after a Check-Host scan.
+// Wave K-B3: «📡 К списку хостов» (the antenna icon replaces 🌐 on all
+// Check-Host surfaces) plus the unified main-menu row.
 func CheckHostResultMarkup() *telego.InlineKeyboardMarkup {
 	return tu.InlineKeyboard(
 		tu.InlineKeyboardRow(
-			btn("🌐 К списку хостов", "menu:checkhost"),
-			btn("🏠 Главное меню", "menu:main"),
+			btn("📡 К списку хостов", "menu:checkhost"),
+			btn(mainMenuBtnText, "menu:main"),
 		),
 	)
 }
@@ -1027,7 +1114,7 @@ func RichReportMarkupWithTabs(target string, tabs []NodeTabItem, deepLinks ...Di
 	if refreshCallback != "" {
 		refreshRow = append(refreshRow, btn("🔄 Обновить", refreshCallback))
 	}
-	refreshRow = append(refreshRow, btn("🔙 Главное меню", "menu:main"))
+	refreshRow = append(refreshRow, btn(mainMenuBtnText, "menu:main"))
 	rows = append(rows, refreshRow)
 
 	return tu.InlineKeyboard(rows...)
@@ -1124,7 +1211,7 @@ func DiagnosticsPaginationMarkupWithTabs(target string, page, totalPages int, ta
 		backSummaryCb, _ = cbNodeCfg("menu:diag:node:", target)
 	}
 	if backSummaryCb != "" {
-		actionRow = append(actionRow, btn("🔙 К подробной сводке", backSummaryCb))
+		actionRow = append(actionRow, btnIcon(IconBack, " К подробной сводке", backSummaryCb))
 	}
 	refreshPageCb := fmt.Sprintf("menu:diag:refresh:details:%d", page)
 	if target != "local" && target != "" {
@@ -1145,7 +1232,7 @@ func DiagnosticsPaginationMarkupWithTabs(target string, page, totalPages int, ta
 
 	// Back row
 	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🏠 Главное меню", "menu:main"),
+		btn(mainMenuBtnText, "menu:main"),
 	))
 
 	return tu.InlineKeyboard(rows...)
@@ -1174,10 +1261,7 @@ func IncidentsFilterMarkup(currentFilter string, tabs []NodeTabItem) *telego.Inl
 		rows = append(rows, filterButtons)
 	}
 
-	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔙 К статистике", "menu:stats"),
-		btn("🏠 Главное меню", "menu:main"),
-	))
+	rows = append(rows, backRow("К статистике", "menu:stats"))
 
 	return tu.InlineKeyboard(rows...)
 }

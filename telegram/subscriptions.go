@@ -115,7 +115,7 @@ func (b *Bot) handleDelSub(msg *telego.Message) {
 }
 
 func (b *Bot) replySubs(t ChatTarget) {
-	b.sendOrUpdateMenu(t, b.getSubsText(), BackToSettingsMarkup())
+	b.sendOrUpdateMenu(t, b.getSubsText(), SubsMenuMarkup())
 }
 
 // commandArg returns the first whitespace-separated argument after a

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mymmrac/telego"
 	tu "github.com/mymmrac/telego/telegoutil"
@@ -60,16 +61,16 @@ func (b *Bot) replyNodes(t ChatTarget) {
 	}
 	list := b.nodeMgr.Nodes()
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "🖥 <b>Ноды (%d)</b>\n", len(list))
+	fmt.Fprintf(&sb, "%s <b>Ноды (%d)</b>\n", IconNode.Render(false), len(list))
 	now := b.now()
 	for _, n := range list {
-		icon := "🔴"
+		icon := IconStateDown.Render(false)
 		if n.Up {
-			icon = "🟢"
+			icon = IconStateOK.Render(false)
 		}
 		fmt.Fprintf(&sb, "%s <b>%s</b>", icon, escapeHTML(n.Name))
 		if n.Disabled {
-			sb.WriteString(" · ⏸️ отключена")
+			sb.WriteString(" · " + IconDisabled.Render(false) + " отключена")
 		}
 		if n.ASN != "" {
 			sb.WriteString(" · " + escapeHTML(n.ASN))
@@ -80,7 +81,9 @@ func (b *Bot) replyNodes(t ChatTarget) {
 			if badge := nodeHealthBadge(n.Online, n.Total, n.DisabledProxies); badge != "" {
 				sb.WriteString(" · " + badge)
 			}
-			fmt.Fprintf(&sb, " · отчёт %s назад", formatAge(now.Sub(n.LastReport)))
+			// Wave K-B2: the report-age column uses the legend ⏱️ fmtAgeIcon
+			// («отчёт ⏱️ 2 мин») instead of the compact latin formatAge.
+			fmt.Fprintf(&sb, " · отчёт %s", fmtAgeIcon(now.Sub(n.LastReport)))
 			if n.Version != "" {
 				sb.WriteString(" · v" + escapeHTML(n.Version))
 			}
@@ -182,12 +185,10 @@ func (b *Bot) getMasterReportURL() string {
 func (b *Bot) handleNodeAdd(msg *telego.Message, rawName string) {
 	name := strings.TrimSpace(rawName)
 	if name == "" {
-		b.waitingNodeAddMu.Lock()
-		if b.waitingNodeAdd == nil {
-			b.waitingNodeAdd = make(map[int64]bool)
-		}
-		b.waitingNodeAdd[msg.Chat.ID] = true
-		b.waitingNodeAddMu.Unlock()
+		// Wave L-1 FSM: /nodeadd without a name re-arms the per-chat pending
+		// input — the next plain text is consumed as the node name
+		// (admin-gated in handleMessage; /nodeadd is a mutating command).
+		b.armPending(msg.Chat.ID, pendingKindNodeAdd, "")
 		b.replyCommand(msg, "➕ <b>Подключение новой ноды</b>\n\n"+
 			"Введите имя для новой ноды (например: <code>germany-1</code>, <code>vps-nl</code>, <code>finland-node</code>):\n\n"+
 			"<i>Допустимы латинские буквы, цифры, дефис и подчёркивание (до 32 символов).</i>")
@@ -221,48 +222,154 @@ func (b *Bot) handleNodeAdd(msg *telego.Message, rawName string) {
 	// Wave H2 (decision D4): the «📋 Подписки нод» entry to the removed
 	// global subs screen is gone — node subscriptions are managed via the
 	// per-node cfg screen (menu:nodes:cfg:<n> → «📋 Подписки ноды»).
-	markup := tu.InlineKeyboard(
-		tu.InlineKeyboardRow(
-			btn("🩺 Проверить связь", "menu:nodes:health"),
-		),
-		tu.InlineKeyboardRow(
-			btn("🔙 К списку нод", "menu:nodes"),
-			btn("🏠 Главное меню", "menu:main"),
-		),
-	)
+	// Wave K-B2: the values moved into copy-text rows (nodeAddCopyMarkup)
+	// and the passive status re-render is honestly labeled «🔄 Обновить».
+	markup := nodeAddCopyMarkup(name, token, reportURL)
 
 	t := targetFromMessage(msg)
 	b.sendOrUpdateMenu(t, text, markup)
 }
 
-// buildNodeRegisteredText renders the one-time /nodeadd success reply. The
-// generated token and the operator-configured report URL (REPORT_URL /
-// MASTER_PUBLIC_URL) are escaped for Telegram HTML: a raw & in a URL query
-// string would break delivery of the <pre> blocks.
+// copyTextLimit is Telegram's hard copy-text button cap (1-256 characters).
+const copyTextLimit = 256
+
+// shortPreview truncates s to max runes appending an ellipsis when cut — the
+// value short form embedded in copy-button labels (Wave K-B2: labels include
+// the value's short form so the operator verifies what will be copied).
+func shortPreview(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
+}
+
+// reportURLPreview strips the scheme and path of a report URL for the copy
+// button label («1.2.3.4:2112…»).
+func reportURLPreview(raw string) string {
+	s := strings.TrimPrefix(strings.TrimPrefix(raw, "https://"), "http://")
+	if i := strings.Index(s, "/"); i >= 0 {
+		s = s[:i] + "…"
+	}
+	return s
+}
+
+// copyTextButton returns an inline button that copies value to the clipboard;
+// ok=false when the value is empty or exceeds Telegram's 256-character
+// copy-text cap — the button is then omitted (the value stays visible in the
+// message text), same omit-on-overflow discipline as cbNodeCfg.
+func copyTextButton(label, value string) (telego.InlineKeyboardButton, bool) {
+	if value == "" || utf8.RuneCountInString(value) > copyTextLimit {
+		return telego.InlineKeyboardButton{}, false
+	}
+	return telego.InlineKeyboardButton{Text: label}.WithCopyText(&telego.CopyTextButton{Text: value}), true
+}
+
+// nodeAddDockerCommand composes the docker run one-liner for a freshly
+// registered node (the former «Способ 2» <pre> block, now a copy payload).
+func nodeAddDockerCommand(name, reportURL, token string) string {
+	return "docker run -d --name xray-node-" + name +
+		" --restart unless-stopped" +
+		" -e REPORT_URL=" + reportURL +
+		" -e REPORT_TOKEN=" + token +
+		" ghcr.io/vlv-code/xray-checker-tg-bot:latest"
+}
+
+// nodeAddCommandCopyParts splits a docker run one-liner into paste-ordered
+// copy-text parts within the 256-character cap: one part when it fits,
+// otherwise word-boundary continuation parts (each ends with « \», the shell
+// continues the command; labels carry «часть N/M»). Returns nil when even a
+// single token exceeds the cap (copy rows omitted; the hint row points to
+// manual setup) — Wave K-B2.
+func nodeAddCommandCopyParts(cmd string) []string {
+	reserve := copyTextLimit - 2 // room for the trailing « \» on split parts
+	if utf8.RuneCountInString(cmd) <= copyTextLimit {
+		return []string{cmd}
+	}
+	var parts []string
+	cur := ""
+	for _, w := range strings.Split(cmd, " ") {
+		switch {
+		case cur == "":
+			if utf8.RuneCountInString(w) > reserve {
+				return nil
+			}
+			cur = w
+		case utf8.RuneCountInString(cur)+utf8.RuneCountInString(w)+1 <= reserve:
+			cur += " " + w
+		default:
+			parts = append(parts, cur+" \\")
+			if utf8.RuneCountInString(w) > reserve {
+				return nil
+			}
+			cur = w
+		}
+	}
+	return append(parts, cur)
+}
+
+// nodeAddCopyMarkup composes the /nodeadd success keyboard (Wave K-B2):
+// copy-text rows for the token, the report URL and the docker run command —
+// payloads are RAW values (buttons are not HTML; escaped payloads would copy
+// broken text) with short-form previews in the labels — then the passive
+// status re-render row and navigation. The one-liner that exceeds the
+// 256-character cap is split into paste-ordered parts; rows that still
+// cannot fit degrade to a hint row instead of a dead button.
+func nodeAddCopyMarkup(name, token, reportURL string) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+	if b, ok := copyTextButton(IconCopy.Render(false)+" Токен ноды · "+shortPreview(token, 8), token); ok {
+		rows = append(rows, tu.InlineKeyboardRow(b))
+	}
+	if b, ok := copyTextButton(IconCopy.Render(false)+" URL отчёта · "+reportURLPreview(reportURL), reportURL); ok {
+		rows = append(rows, tu.InlineKeyboardRow(b))
+	}
+	cmdLabel := IconCopy.Render(false) + " Команда запуска · xray-node-" + name
+	if parts := nodeAddCommandCopyParts(nodeAddDockerCommand(name, reportURL, token)); len(parts) == 1 {
+		if b, ok := copyTextButton(cmdLabel, parts[0]); ok {
+			rows = append(rows, tu.InlineKeyboardRow(b))
+		}
+	} else if len(parts) > 1 {
+		for i, p := range parts {
+			label := fmt.Sprintf("%s · часть %d/%d", cmdLabel, i+1, len(parts))
+			if b, ok := copyTextButton(label, p); ok {
+				rows = append(rows, tu.InlineKeyboardRow(b))
+			}
+		}
+	} else {
+		rows = append(rows, tu.InlineKeyboardRow(
+			btn("ℹ️ Команда не поместилась в кнопку — задайте REPORT_URL и REPORT_TOKEN по инструкции", "menu:noop"),
+		))
+	}
+	rows = append(rows,
+		tu.InlineKeyboardRow(
+			btn("🔄 Обновить", "menu:nodes:health"),
+		),
+		tu.InlineKeyboardRow(
+			btn(IconBack.Render(false)+" К списку нод", "menu:nodes"),
+			btn("🏠 Главное меню", "menu:main"),
+		),
+	)
+	return tu.InlineKeyboard(rows...)
+}
+
+// buildNodeRegisteredText renders the one-time /nodeadd success reply — the
+// compact Wave K-B2 form: the values (token, report URL, docker run command)
+// moved into the inline copy-text buttons (nodeAddCopyMarkup), so the giant
+// <pre> dump is gone; only the short instruction and the verification <code>
+// lines remain. The generated token and the operator-configured report URL
+// (REPORT_URL / MASTER_PUBLIC_URL) are escaped for Telegram HTML: a raw & in
+// a URL query string would break delivery. Copy payloads stay RAW.
 func buildNodeRegisteredText(name, token, reportURL string) string {
-	return fmt.Sprintf("✅ <b>Нода %s успешно зарегистрирована!</b>\n\n"+
-		"🔑 <b>Токен ноды:</b>\n<code>%s</code>\n\n"+
-		"🌐 <b>URL для отправки отчётов:</b>\n<code>%s</code>\n\n"+
-		"📋 <b>Способ 1: через Docker Compose (рекомендуется):</b>\n"+
-		"<pre>services:\n"+
-		"  xray-node-%s:\n"+
-		"    build: https://github.com/vlv-code/xray-checker-tg-bot.git#main\n"+
-		"    container_name: xray-node-%s\n"+
-		"    restart: unless-stopped\n"+
-		"    environment:\n"+
-		"      - REPORT_URL=%s\n"+
-		"      - REPORT_TOKEN=%s</pre>\n\n"+
-		"📦 <b>Способ 2: через Docker run (однострочник):</b>\n"+
-		"<pre>docker run -d --name xray-node-%s \\\n"+
-		"  --restart unless-stopped \\\n"+
-		"  -e REPORT_URL=%s \\\n"+
-		"  -e REPORT_TOKEN=%s \\\n"+
-		"  ghcr.io/vlv-code/xray-checker-tg-bot:latest</pre>\n"+
-		"<i>(Если образ ещё не скачан: <code>docker build -t xray-checker-node https://github.com/vlv-code/xray-checker-tg-bot.git#main</code>)</i>\n\n"+
-		"<i>После запуска на удалённом сервере нода автоматически подключится к мастеру и появится в списке.</i>",
-		escapeHTML(name), escapeHTML(token), escapeHTML(reportURL),
-		escapeHTML(name), escapeHTML(name), escapeHTML(reportURL), escapeHTML(token),
-		escapeHTML(name), escapeHTML(reportURL), escapeHTML(token))
+	copyIcon := IconCopy.Render(false)
+	return fmt.Sprintf("%s <b>Нода %s успешно зарегистрирована!</b>\n\n"+
+		"🔑 Токен: <code>%s</code>\n"+
+		"🌐 URL для отправки отчётов: <code>%s</code>\n\n"+
+		"📦 <b>Запуск на сервере ноды (Docker):</b>\n"+
+		"1. Нажмите «%s Токен ноды», «%s URL отчёта» и «%s Команда запуска» ниже — значения скопируются в буфер обмена.\n"+
+		"2. Вставьте и выполните команду на ноде (compose-вариант: docker-compose.node.yml — см. README).\n\n"+
+		"<i>После запуска нода автоматически подключится к мастеру и появится в списке.</i>",
+		IconStepSuccess.Render(false), escapeHTML(name), escapeHTML(token), escapeHTML(reportURL),
+		copyIcon, copyIcon, copyIcon)
 }
 
 func (b *Bot) handleNodeDel(msg *telego.Message, rawName string) {

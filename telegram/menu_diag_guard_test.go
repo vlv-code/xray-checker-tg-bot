@@ -20,7 +20,28 @@ func callbackRoutes(data string) bool {
 	// exact route.
 	// Wave H6 register: menu:checkhostadd (manual custom Check-Host host
 	// input) is an exact route.
-	case "menu:main", "menu:noop", "menu:diag", "menu:nodes", "menu:nodes:settings", "menu:cheburin", "menu:checkhostadd":
+	case "menu:main", "menu:noop", "menu:diag", "menu:nodes", "menu:nodes:settings", "menu:cheburin", "menu:checkhostadd",
+		// Wave K-B3 register: the digest / custom-emoji settings toggles and
+		// the «➕ Добавить подписку» arm route are exact routes.
+		"menu:nodes:digest", "menu:toggle_icons", "menu:subsadd",
+		// Wave L-1 register: the «Отмена» input-cancel route is an EXACT
+		// route (clears the pendingInput + toast; no payload, never a prefix).
+		"menu:cancelinput",
+		// Wave K-B3 register: the full exact-route inventory of the
+		// handleCallbackQuery switch (view screens and single-shot toggles) —
+		// every exact case in callbacks.go is listed here so the
+		// no-dead-buttons sweep covers the whole surface.
+		"menu:settings", "menu:status", "menu:diag:summary",
+		"menu:stats", "menu:stats:top", "menu:stats:protocols", "menu:stats:heatmap",
+		"menu:timezone", "menu:quiet", "menu:quiet:toggle",
+		"menu:quiet:snooze:1h", "menu:quiet:snooze:4h", "menu:quiet:snooze:morning", "menu:quiet:unsnooze",
+		"menu:alert_mode", "menu:alert_mode:live", "menu:alert_mode:clean",
+		"menu:targets", "menu:interval", "menu:subs",
+		"menu:checkhost", "menu:checkhost_cfg",
+		"menu:checkhost:toggle_bg", "menu:checkhost:toggle_alert", "menu:checkhost:run_now",
+		"menu:checkupdate", "menu:chebur",
+		"menu:nodes:refresh", "menu:nodes:add", "menu:nodes:install", "menu:nodes:health",
+		"menu:nodes:cfg", "menu:nodes:toggle_sync", "menu:nodes:toggle_alerts", "menu:nodes:toggle_proxy_alerts":
 		return true
 	}
 	prefixes := []string{
@@ -33,6 +54,18 @@ func callbackRoutes(data string) bool {
 		"menu:nodes:subnode:",
 		"menu:nodes:delsub:",
 		"menu:nodes:addsub:",
+		// Wave K-B3 register (B2 reconciliation): the remaining per-node
+		// mutation prefixes pre-existed in callbacks.go but were missing from
+		// the inventory — the cfg-apply, reset, toggle and rename routes are
+		// listed so the no-dead-buttons sweep covers them.
+		"menu:nodes:ncfg:",
+		"menu:nodes:nreset:",
+		"menu:nodes:ren:",
+		"menu:nodes:tg:",
+		// Wave K-B3 register (B1 reconciliation): the /status pager and the
+		// incident-journal pager routes of the paginated screens.
+		"menu:statuspg:",
+		"menu:stats:incpg:",
 		// Wave H1/H2 register: the per-node cfg screen and exclusions routes
 		// pre-existed in callbacks.go but are listed only now that the helper
 		// covers their markups (NodeCfgMarkup / exclusions screen), together
@@ -222,7 +255,16 @@ func TestNodesSubsCallbacksGuardAndDelsubParse(t *testing.T) {
 	ft, api := newFakeTelegramBot(t)
 	b, _ := newGateTestBot(t, api, nil)
 	b.nodeMgr = fnm
+	// Wave K-B2 register: the first tap is two-step — it renders the confirm
+	// screen and removes NOTHING; only the explicit «:yes» callback deletes.
 	b.handleCallbackQuery(gateCallback(1001, delCb))
+	if subs, err := fnm.ManagedSubs("a:b"); err != nil || len(subs) != 1 {
+		t.Fatalf("first delsub tap must only confirm (no removal), got subs=%v err=%v", subs, err)
+	}
+	if edits := ft.callsOf("editMessageText"); len(edits) == 0 {
+		t.Fatalf("first delsub tap must render the confirm screen")
+	}
+	b.handleCallbackQuery(gateCallback(1001, delCb+":yes"))
 	if edits := ft.callsOf("editMessageText"); len(edits) == 0 {
 		t.Fatalf("expected the manage view to re-render after delsub")
 	}
@@ -238,6 +280,10 @@ func TestNodesSubsCallbacksGuardAndDelsubParse(t *testing.T) {
 // TestIsToastCallbackDataMembership (Wave-F B3): menu:checkupdate answers with
 // its own custom toast ("Проверяю релизы..."), so it must join the toast
 // membership set and never get the extra generic acknowledgement.
+// Wave K-B3 register (authorized 2026-11-18): menu:nodes:delsub: and the
+// menu:nodes:exclpg: fallback path answer with their own success/error toasts
+// («🗑 Подписка удалена» / «❌ Нода не найдена»), so both prefixes join the
+// membership set; menu:subsadd answers with its own arm toast too.
 func TestIsToastCallbackDataMembership(t *testing.T) {
 	members := []string{
 		"menu:toggle_proxy:p:1",
@@ -251,6 +297,11 @@ func TestIsToastCallbackDataMembership(t *testing.T) {
 		// the delete route answers with the «Удалён: …» toast.
 		"menu:checkhostadd",
 		"menu:checkhostdel:9.9.9.9:443",
+		// Wave K-B3 register: delsub and the exclpg fallback path are
+		// self-toasting; the subs arm route answers with its own toast.
+		"menu:nodes:delsub:n:0",
+		"menu:nodes:exclpg:m31a:2",
+		"menu:subsadd",
 	}
 	for _, d := range members {
 		if !isToastCallbackData(d) {
@@ -261,18 +312,35 @@ func TestIsToastCallbackDataMembership(t *testing.T) {
 		"menu:main",
 		"menu:settings",
 		"menu:diag",
-		"menu:nodes:exclpg:m31a:2", // Wave H1 register: pager is a view route (the removed menu:nodes:subs entry left the list)
 		// Wave H6 register: the Check-Host per-host check and pager are view
 		// routes (open to allowed chats, generic acknowledgement).
 		"menu:checkhosth:1.1.1.1:443",
 		"menu:checkhostpg:2",
 		"menu:quiet:toggle",
-		"menu:nodes:delsub:n:0",
+		"menu:nodes:digest",
+		"menu:toggle_icons",
 	}
 	for _, d := range nonMembers {
 		if isToastCallbackData(d) {
 			t.Errorf("expected isToastCallbackData(%q) = false", d)
 		}
+	}
+}
+
+// TestMenuDiagRichRouteRemoved (wave K-B3): the dead route menu:diag:rich is
+// removed from handleCallbackQuery — nothing emits it anymore, and tapping
+// the legacy data must not render anything (no edits, no sends).
+func TestMenuDiagRichRouteRemoved(t *testing.T) {
+	ft, api := newFakeTelegramBot(t)
+	b, _ := newGateTestBot(t, api, nil)
+
+	b.handleCallbackQuery(gateCallback(9999, "menu:diag:rich"))
+
+	if got := len(ft.callsOf("editMessageText")); got != 0 {
+		t.Errorf("removed route menu:diag:rich must not render anything, got %d edits", got)
+	}
+	if got := len(ft.callsOf("sendMessage")); got != 0 {
+		t.Errorf("removed route menu:diag:rich must not send anything, got %d sends", got)
 	}
 }
 

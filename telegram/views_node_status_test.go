@@ -229,14 +229,16 @@ func TestGetStatusText_WithNodes_Grouped(t *testing.T) {
 	if !strings.Contains(text, "🏠 <b>Локальный чекер · 1/1 онлайн:</b>") {
 		t.Errorf("expected local checker section, got:\n%s", text)
 	}
-	if !strings.Contains(text, "✅ <b>MasterProxy</b> — 25 ms") {
+	// Wave K-B1 legend migration (registered pin change): proxy state is 🟢
+	// (never ✅) and latency renders «⚡N мс» instead of "N ms".
+	if !strings.Contains(text, "🟢 <b>MasterProxy</b> — ⚡25 мс") {
 		t.Errorf("expected MasterProxy in local section, got:\n%s", text)
 	}
 	// Should have node section with health and counts
 	if !strings.Contains(text, "🖥 <b>Нода m31a</b>") || !strings.Contains(text, "1/2 онлайн") {
 		t.Errorf("expected node section with online count, got:\n%s", text)
 	}
-	if !strings.Contains(text, "✅ <b>NodeProxy1</b> — 50 ms") {
+	if !strings.Contains(text, "🟢 <b>NodeProxy1</b> — ⚡50 мс") {
 		t.Errorf("expected NodeProxy1 under node section, got:\n%s", text)
 	}
 	if !strings.Contains(text, "🔴 <b>NodeProxy2</b> — недоступен") {

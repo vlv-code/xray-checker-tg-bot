@@ -212,6 +212,22 @@ func TestCheburMenuMarkupCallbackLength(t *testing.T) {
 	if len(markup.InlineKeyboard) != 3 {
 		t.Errorf("expected 3 rows (one pair row + manual-input row + back row), got %d rows", len(markup.InlineKeyboard))
 	}
+	// Wave K-B3 register (back-row unification): the submenu back button is
+	// the unified «↩️ Главное меню» (the former «⬅️ Назад» is replaced).
+	foundUnifiedBack := false
+	for _, row := range markup.InlineKeyboard {
+		for _, b := range row {
+			if b.CallbackData == "menu:main" {
+				if b.Text != "↩️ Главное меню" {
+					t.Errorf("wave K-B3: chebur submenu back button must read «↩️ Главное меню», got %q", b.Text)
+				}
+				foundUnifiedBack = true
+			}
+		}
+	}
+	if !foundUnifiedBack {
+		t.Errorf("expected a menu:main back button in CheburMenuMarkup, got %v", markupCallbacks(markup))
+	}
 	foundPair, foundShort, foundLong := false, false, false
 	for _, row := range markup.InlineKeyboard {
 		if len(row) == 2 {
@@ -372,8 +388,8 @@ func TestMenuCheburinManualInputFlow(t *testing.T) {
 	if !strings.Contains(prompt, "Проверить свой хост") || !strings.Contains(prompt, "Отправьте хост") {
 		t.Errorf("expected the RU manual-input prompt, got: %s", prompt)
 	}
-	if !b.waitingCheburHost[12345] {
-		t.Fatalf("menu:cheburin must arm waitingCheburHost for the chat, got %v", b.waitingCheburHost)
+	if !b.hasPending(12345) {
+		t.Fatalf("menu:cheburin must arm the pending input for the chat")
 	}
 
 	// 2. The next plain text is consumed as host:port — port stripped.
@@ -388,8 +404,8 @@ func TestMenuCheburinManualInputFlow(t *testing.T) {
 	if len(got) != 1 || got[0] != "example.com" {
 		t.Fatalf("expected the waiting text to probe the bare host example.com (port stripped), got %v", got)
 	}
-	if b.waitingCheburHost[12345] {
-		t.Fatalf("waiting state must be consumed after the input, got %v", b.waitingCheburHost)
+	if b.hasPending(12345) {
+		t.Fatalf("pending input must be consumed after the input")
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	var report string
@@ -422,8 +438,8 @@ func TestMenuCheburinManualInputFlow(t *testing.T) {
 	if got := newTargetsSince(baselineNA); len(got) != 0 {
 		t.Fatalf("non-admin waiting text must be denied, saw /check targets %v", got)
 	}
-	if bNA.waitingCheburHost[12345] {
-		t.Fatalf("waiting state must be consumed even when denied, got %v", bNA.waitingCheburHost)
+	if bNA.hasPending(12345) {
+		t.Fatalf("pending input must be consumed even when denied")
 	}
 	for _, c := range ftNA.callsOf("sendMessage") {
 		if txt, _ := c.Params["text"].(string); strings.Contains(txt, "Cheburcheck") {
@@ -462,12 +478,12 @@ func TestMenuCheburinManualInputFlow(t *testing.T) {
 	bNav, _ := newGateTestBot(t, apiNav, nil)
 	bNav.cheburClient = chebClient
 	bNav.handleCallbackQuery(gateCallback(9999, "menu:cheburin"))
-	if !bNav.waitingCheburHost[12345] {
+	if !bNav.hasPending(12345) {
 		t.Fatalf("expected the armed state before navigation")
 	}
 	bNav.handleCallbackQuery(gateCallback(9999, "menu:main"))
-	if bNav.waitingCheburHost[12345] {
-		t.Fatalf("menu:main must disarm waitingCheburHost, got %v", bNav.waitingCheburHost)
+	if bNav.hasPending(12345) {
+		t.Fatalf("menu:main must disarm the pending input")
 	}
 	if len(ftNav.callsOf("editMessageText")) == 0 {
 		t.Fatalf("expected menu:main to render the main menu")
@@ -493,5 +509,41 @@ func TestCheburMenuTextEmptyState(t *testing.T) {
 	}
 	if txt := b.getCheburMenuText(3); strings.Contains(txt, "Нет активных хостов") {
 		t.Errorf("empty-state note must not appear with hosts present, got: %s", txt)
+	}
+}
+
+// TestMenuCheburinPromptUnifiedBackRow (wave K-B3): the manual-input prompt
+// screen (menu:cheburin) carries the unified back row — «↩️ К Cheburcheck» and
+// «☰ Главное меню» — with no 🏠 anywhere (the master-only collision rule).
+func TestMenuCheburinPromptUnifiedBackRow(t *testing.T) {
+	ft, api := newFakeTelegramBot(t)
+	b, _ := newGateTestBot(t, api, nil)
+
+	b.handleCallbackQuery(gateCallback(9999, "menu:cheburin"))
+
+	edits := ft.callsOf("editMessageText")
+	if len(edits) == 0 {
+		t.Fatalf("expected the cheburin prompt edit, got 0 edits")
+	}
+	mk := decodedReplyMarkup(t, edits[len(edits)-1])
+	if mk == nil {
+		t.Fatalf("expected reply_markup on the cheburin prompt edit, got %v", edits)
+	}
+	requireAllCallbacksRoutable(t, "cheburin prompt", mk)
+	if !hasCallback(mk, "menu:chebur") || !hasCallback(mk, "menu:main") {
+		t.Fatalf("expected back-to-list and main-menu buttons, got %v", markupCallbacks(mk))
+	}
+	for _, row := range mk.InlineKeyboard {
+		for _, btn := range row {
+			if strings.Contains(btn.Text, "🏠") || strings.Contains(btn.Text, "🌐") {
+				t.Errorf("prompt buttons must be free of 🏠/🌐, got %q", btn.Text)
+			}
+			if btn.CallbackData == "menu:chebur" && btn.Text != "↩️ К Cheburcheck" {
+				t.Errorf("expected «↩️ К Cheburcheck», got %q", btn.Text)
+			}
+			if btn.CallbackData == "menu:main" && btn.Text != "☰ Главное меню" {
+				t.Errorf("expected «☰ Главное меню», got %q", btn.Text)
+			}
+		}
 	}
 }

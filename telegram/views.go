@@ -298,7 +298,7 @@ func (b *Bot) getDisabledProxiesView(page int) (string, *telego.InlineKeyboardMa
 		})
 	}
 
-	pageSize := 6
+	pageSize := menuListPageSize
 	totalItems := len(items)
 	totalPages := (totalItems + pageSize - 1) / pageSize
 	if totalPages < 1 {
@@ -343,7 +343,7 @@ func (b *Bot) getDisabledHostsView(page int) (string, *telego.InlineKeyboardMark
 		disabledMap[strings.ToLower(h)] = true
 	}
 
-	pageSize := 6
+	pageSize := menuListPageSize
 	totalHosts := len(allHosts)
 	totalPages := (totalHosts + pageSize - 1) / pageSize
 	if totalPages < 1 {
@@ -414,6 +414,23 @@ func (b *Bot) getAverageUptimePercent() (float64, bool) {
 	return totalUptime / float64(count), true
 }
 
+// statusOnlineRow renders one online-proxy row of the /status screen in the
+// wave-K legend format: state circle 🟢 (never ✅ — that is step-success) and
+// legend latency «⚡N мс».
+func statusOnlineRow(name string, latencyMs float64) string {
+	return fmt.Sprintf("%s <b>%s</b> — %s\n", renderIcon(IconStateOK), escapeHTML(name), fmtLatencyIcon(int64(latencyMs)))
+}
+
+// statusDownRow renders one offline-proxy row of the /status screen.
+func statusDownRow(name string) string {
+	return fmt.Sprintf("%s <b>%s</b> — недоступен\n", renderIcon(IconStateDown), escapeHTML(name))
+}
+
+// statusDisabledRow renders one manually disabled proxy row of /status.
+func statusDisabledRow(name string) string {
+	return fmt.Sprintf("⏸️ <b>%s</b> — отключён\n", escapeHTML(name))
+}
+
 func (b *Bot) getStatusText() string {
 	if b.source == nil {
 		return "Нет данных о прокси-хостах — проверки ещё не выполнялись."
@@ -440,15 +457,15 @@ func (b *Bot) getStatusText() string {
 		for _, pm := range snapshot {
 			if pm.Disabled {
 				disabledCount++
-				fmt.Fprintf(&disabledBody, "⏸️ <b>%s</b> — отключён\n", escapeHTML(pm.Name))
+				disabledBody.WriteString(statusDisabledRow(pm.Name))
 				continue
 			}
 			activeTotal++
 			if pm.Online {
 				online++
-				fmt.Fprintf(&activeBody, "✅ <b>%s</b> — %.0f ms\n", escapeHTML(pm.Name), pm.LatencyMs)
+				activeBody.WriteString(statusOnlineRow(pm.Name, pm.LatencyMs))
 			} else {
-				fmt.Fprintf(&activeBody, "🔴 <b>%s</b> — недоступен\n", escapeHTML(pm.Name))
+				activeBody.WriteString(statusDownRow(pm.Name))
 			}
 		}
 
@@ -496,9 +513,9 @@ func (b *Bot) getStatusText() string {
 		fmt.Fprintf(&sb, "🏠 <b>Локальный чекер · %d/%d онлайн:</b>\n", locOnline, len(localProxies))
 		for _, pm := range localProxies {
 			if pm.Online {
-				fmt.Fprintf(&sb, "✅ <b>%s</b> — %.0f ms\n", escapeHTML(pm.Name), pm.LatencyMs)
+				sb.WriteString(statusOnlineRow(pm.Name, pm.LatencyMs))
 			} else {
-				fmt.Fprintf(&sb, "🔴 <b>%s</b> — недоступен\n", escapeHTML(pm.Name))
+				sb.WriteString(statusDownRow(pm.Name))
 			}
 		}
 		sb.WriteString("\n")
@@ -535,9 +552,9 @@ func (b *Bot) getStatusText() string {
 		} else {
 			for _, pm := range pms {
 				if pm.Online {
-					fmt.Fprintf(&sb, "✅ <b>%s</b> — %.0f ms\n", escapeHTML(pm.Name), pm.LatencyMs)
+					sb.WriteString(statusOnlineRow(pm.Name, pm.LatencyMs))
 				} else {
-					fmt.Fprintf(&sb, "🔴 <b>%s</b> — недоступен\n", escapeHTML(pm.Name))
+					sb.WriteString(statusDownRow(pm.Name))
 				}
 			}
 			sb.WriteString("\n")
@@ -562,9 +579,9 @@ func (b *Bot) getStatusText() string {
 		fmt.Fprintf(&sb, "🖥 <b>Нода %s</b> · %s %d/%d онлайн:\n", escapeHTML(nodeName), badge, nOnline, len(pms))
 		for _, pm := range pms {
 			if pm.Online {
-				fmt.Fprintf(&sb, "✅ <b>%s</b> — %.0f ms\n", escapeHTML(pm.Name), pm.LatencyMs)
+				sb.WriteString(statusOnlineRow(pm.Name, pm.LatencyMs))
 			} else {
-				fmt.Fprintf(&sb, "🔴 <b>%s</b> — недоступен\n", escapeHTML(pm.Name))
+				sb.WriteString(statusDownRow(pm.Name))
 			}
 		}
 		sb.WriteString("\n")
@@ -577,7 +594,7 @@ func (b *Bot) getStatusText() string {
 			if pm.NodeName != "" {
 				name = fmt.Sprintf("[%s] %s", pm.NodeName, pm.Name)
 			}
-			fmt.Fprintf(&sb, "⏸️ <b>%s</b> — отключён\n", escapeHTML(name))
+			sb.WriteString(statusDisabledRow(name))
 		}
 	}
 
@@ -630,7 +647,7 @@ func (b *Bot) getStatsOverviewText() string {
 		downTime := time.Unix(inc.DownAt, 0).In(b.loc()).Format("15:04 02.01")
 		durText := "ещё не восстановлен"
 		if inc.UpAt > 0 {
-			durText = FormatDowntime(time.Duration(inc.DurationSec) * time.Second)
+			durText = fmtAgeIconDyn(time.Duration(inc.DurationSec) * time.Second)
 		}
 		fmt.Fprintf(&sb, "• Последний инцидент: <i>%s: %s (простой: %s)</i>\n", escapeHTML(inc.ProxyName), downTime, durText)
 	}
@@ -707,8 +724,8 @@ func (b *Bot) getStatsOverviewText() string {
 			jitter := ls.StdDev()
 			flaps := b.statsStore.GetFlapCount24h(pm.StableID, now)
 
-			p50Str := fmt.Sprintf("%.0fms", p50)
-			p95Str := fmt.Sprintf("%.0fms", p95)
+			p50Str := fmtLatencyUnit(int64(p50))
+			p95Str := fmtLatencyUnit(int64(p95))
 			if ls.Count() < 5 {
 				p50Str = "-"
 				p95Str = "-"
@@ -729,11 +746,12 @@ func (b *Bot) getStatsOverviewText() string {
 		}
 	}
 
-	sb.WriteString("\n<b>ℹ️ Справка по метрикам:</b>\n" +
+	sb.WriteString("\n<b>ℹ️ Справка по метрикам</b> (нажмите, чтобы развернуть):\n" +
+		"<blockquote expandable>" +
 		"• <b>24ч / 7д</b>: скользящий аптайм за последние 24 часа и 7 дней (% успешных проверок).\n" +
 		"• <b>P50 / P95</b>: медиана и 95-й перцентиль сетевой задержки (RTT пинга) в миллисекундах.\n" +
 		"• <b>Σ (Джиттер)</b>: среднеквадратичное отклонение латенси (вариативность задержки).\n" +
-		"• <b>ПАД.</b>: число переходов статуса (онлайн ↔ оффлайн / флаппинг) за 24 часа.\n")
+		"• <b>ПАД.</b>: число переходов статуса (онлайн ↔ оффлайн / флаппинг) за 24 часа.</blockquote>\n")
 
 	sb.WriteString("\nВыберите раздел ниже:")
 	return sb.String()
@@ -821,14 +839,15 @@ func (b *Bot) getProtocolsStatsText() string {
 			p95 = samples[int(float64(len(samples)-1)*0.95)]
 		}
 
-		fmt.Fprintf(&sb, "<b>%s</b> (n=%d)\n  Аптайм 24ч: %.1f%%   Латенси p50: %.0f мс, p95: %.0f мс\n\n",
-			escapeHTML(gd.name), n, avgUptime, p50, p95)
+		fmt.Fprintf(&sb, "<b>%s</b> (n=%d)\n  Аптайм 24ч: %.1f%%   Латенси p50: %s, p95: %s\n\n",
+			escapeHTML(gd.name), n, avgUptime, fmtLatencyUnit(int64(p50)), fmtLatencyUnit(int64(p95)))
 	}
 
-	sb.WriteString("<b>ℹ️ Справка:</b>\n" +
+	sb.WriteString("<b>ℹ️ Справка</b> (нажмите, чтобы развернуть):\n" +
+		"<blockquote expandable>" +
 		"• <b>(n=X)</b>: число серверов с данной связкой протокола и транспорта (при n < 3 данные ориентировочные).\n" +
 		"• <b>Аптайм 24ч</b>: средневзвешенная доступность протокольной группы.\n" +
-		"• <b>Латенси P50 / P95</b>: медиана и 95-й перцентиль задержки пакетов для протокола.")
+		"• <b>Латенси P50 / P95</b>: медиана и 95-й перцентиль задержки пакетов для протокола.</blockquote>")
 
 	return sb.String()
 }
@@ -862,10 +881,11 @@ func (b *Bot) getHeatmapText() string {
 		sb.WriteString("\nЗа последние 7 дней падений не зафиксировано.\n\n")
 	}
 
-	sb.WriteString("<b>ℹ️ Справка:</b>\n" +
+	sb.WriteString("<b>ℹ️ Справка</b> (нажмите, чтобы развернуть):\n" +
+		"<blockquote expandable>" +
 		"• <b>Сетка 24ч × 7д</b>: строки — часы суток (00–23) по вашему часовому поясу, столбцы — дни недели (Пн–Вс).\n" +
 		"• <b>Числа в ячейках</b>: суммарное количество сбоев за конкретный час.\n" +
-		"• <b>Пик</b>: час суток с наибольшим числом отказов (помогает выявить часы перегрузок или блокировок).")
+		"• <b>Пик</b>: час суток с наибольшим числом отказов (помогает выявить часы перегрузок или блокировок).</blockquote>")
 
 	return sb.String()
 }
@@ -896,10 +916,49 @@ func (b *Bot) getIncidentsText() string {
 	return b.getIncidentsTextFiltered("")
 }
 
-func (b *Bot) getIncidentsTextFiltered(filterNode string) string {
-	if b.statsStore == nil {
-		return "Статистика недоступна."
+// incidentsPageSize caps the incidents journal per screen (wave K-B1:
+// pagination replaces the old hard [:15] cap — the paginated variant
+// getIncidentsTextPage flips through the full 30-incident window).
+const incidentsPageSize = 15
+
+// incidentsFilterHeader renders the shared «(🏠 Мастер)» / «(🖥 Нода)»
+// filter suffix for the journal title.
+func incidentsFilterHeader(filterNode string) string {
+	if filterNode == "local" {
+		return " (🏠 Мастер)"
 	}
+	if filterNode != "" && filterNode != "all" {
+		return fmt.Sprintf(" (🖥 %s)", escapeHTML(filterNode))
+	}
+	return ""
+}
+
+// incidentsSpravkaHTML renders the journal help wall as ONE expandable
+// blockquote (single wording shared by the empty and list branches).
+func incidentsSpravkaHTML() string {
+	return "<b>ℹ️ Справка</b> (нажмите, чтобы развернуть):\n" +
+		"<blockquote expandable>" +
+		"• <b>Сбой</b>: точное время фиксации отказа в часовом поясе бота.\n" +
+		"• <b>Простой</b>: суммарная длительность недоступности до момента восстановления (или текущее время аварии).\n" +
+		"• <b>Причина</b>: сетевая ошибка при тестировании (DNS failure, TCP connect timeout, TLS handshake, HTTP 204 failure).</blockquote>"
+}
+
+// renderIncidentRow formats one journal row: local time of the outage,
+// downtime through the dual-layer age icon, escaped name/reason.
+func (b *Bot) renderIncidentRow(inc Incident) string {
+	badge, name, _ := parseIncidentSource(inc)
+	downTime := time.Unix(inc.DownAt, 0).In(b.loc()).Format("15:04 02.01")
+	if inc.UpAt == 0 {
+		return fmt.Sprintf("🔴 %s <b>%s</b> — сбой %s (<i>сейчас недоступен</i>)\nПричина: %s\n\n",
+			badge, escapeHTML(name), downTime, escapeHTML(inc.Reason))
+	}
+	return fmt.Sprintf("🟡 %s <b>%s</b> — %s (простой: %s)\nПричина: %s\n\n",
+		badge, escapeHTML(name), downTime, fmtAgeIconDyn(time.Duration(inc.DurationSec)*time.Second), escapeHTML(inc.Reason))
+}
+
+// filterIncidentsByNode returns the journal window filtered by origin node
+// ("" / "all" disable filtering), newest first.
+func (b *Bot) filterIncidentsByNode(filterNode string) []Incident {
 	allIncidents := b.statsStore.GetRecentIncidents(30)
 	var filtered []Incident
 	for _, inc := range allIncidents {
@@ -908,51 +967,77 @@ func (b *Bot) getIncidentsTextFiltered(filterNode string) string {
 			filtered = append(filtered, inc)
 		}
 	}
-	if len(filtered) > 15 {
-		filtered = filtered[:15]
+	return filtered
+}
+
+func (b *Bot) getIncidentsTextFiltered(filterNode string) string {
+	if b.statsStore == nil {
+		return "Статистика недоступна."
+	}
+	filtered := b.filterIncidentsByNode(filterNode)
+	if len(filtered) > incidentsPageSize {
+		filtered = filtered[:incidentsPageSize]
 	}
 
 	if len(filtered) == 0 {
-		filterLabel := ""
-		if filterNode == "local" {
-			filterLabel = " (🏠 Мастер)"
-		} else if filterNode != "" && filterNode != "all" {
-			filterLabel = fmt.Sprintf(" (🖥 %s)", escapeHTML(filterNode))
-		}
-		return fmt.Sprintf("<b>📋 Журнал инцидентов%s</b>\n\nЗафиксированных инцидентов нет — все прокси-хосты работают стабильно!\n\n", filterLabel) +
-			"<b>ℹ️ Справка:</b>\n" +
-			"• <b>Сбой</b>: точное время фиксации отказа в часовом поясе бота.\n" +
-			"• <b>Простой</b>: суммарная длительность недоступности до момента восстановления.\n" +
-			"• <b>Причина</b>: сетевой уровень сбоя (DNS, TCP timeout, TLS handshake, HTTP 204)."
+		return fmt.Sprintf("<b>📋 Журнал инцидентов%s</b>\n\nЗафиксированных инцидентов нет — все прокси-хосты работают стабильно!\n\n",
+			incidentsFilterHeader(filterNode)) + incidentsSpravkaHTML()
 	}
 
 	var sb strings.Builder
-	filterHeader := ""
-	if filterNode == "local" {
-		filterHeader = " (🏠 Мастер)"
-	} else if filterNode != "" && filterNode != "all" {
-		filterHeader = fmt.Sprintf(" (🖥 %s)", escapeHTML(filterNode))
-	}
-	sb.WriteString(fmt.Sprintf("<b>📋 Последние инциденты%s:</b>\n\n", filterHeader))
+	sb.WriteString(fmt.Sprintf("<b>📋 Последние инциденты%s:</b>\n\n", incidentsFilterHeader(filterNode)))
 
 	for _, inc := range filtered {
-		badge, name, _ := parseIncidentSource(inc)
-		downTime := time.Unix(inc.DownAt, 0).In(b.loc()).Format("15:04 02.01")
-		if inc.UpAt == 0 {
-			fmt.Fprintf(&sb, "🔴 %s <b>%s</b> — сбой %s (<i>сейчас недоступен</i>)\nПричина: %s\n\n",
-				badge, escapeHTML(name), downTime, escapeHTML(inc.Reason))
-		} else {
-			fmt.Fprintf(&sb, "🟡 %s <b>%s</b> — %s (простой: %s)\nПричина: %s\n\n",
-				badge, escapeHTML(name), downTime, FormatDowntime(time.Duration(inc.DurationSec)*time.Second), escapeHTML(inc.Reason))
-		}
+		sb.WriteString(b.renderIncidentRow(inc))
 	}
 
-	sb.WriteString("<b>ℹ️ Справка:</b>\n" +
-		"• <b>Сбой</b>: точное время фиксации отказа в часовом поясе бота.\n" +
-		"• <b>Простой</b>: суммарная длительность недоступности до момента восстановления (или текущее время аварии).\n" +
-		"• <b>Причина</b>: сетевая ошибка при тестировании (DNS failure, TCP connect timeout, TLS handshake, HTTP 204 failure).")
-
+	sb.WriteString(incidentsSpravkaHTML())
 	return sb.String()
+}
+
+// getIncidentsTextPage returns one page of the incident journal for the
+// given node filter plus the total page count (wave K-B1 pagination view;
+// wired into the callback dispatch by the menus-cluster owner).
+func (b *Bot) getIncidentsTextPage(filterNode string, page int) (string, int) {
+	if b.statsStore == nil {
+		return "Статистика недоступна.", 1
+	}
+	filtered := b.filterIncidentsByNode(filterNode)
+	totalPages := (len(filtered) + incidentsPageSize - 1) / incidentsPageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+
+	if len(filtered) == 0 {
+		return fmt.Sprintf("<b>📋 Журнал инцидентов%s</b>\n\nЗафиксированных инцидентов нет — все прокси-хосты работают стабильно!\n\n",
+			incidentsFilterHeader(filterNode)) + incidentsSpravkaHTML(), totalPages
+	}
+
+	start := (page - 1) * incidentsPageSize
+	end := start + incidentsPageSize
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+
+	var sb strings.Builder
+	pageNote := ""
+	if totalPages > 1 {
+		pageNote = fmt.Sprintf(" — стр. %d из %d", page, totalPages)
+	}
+	sb.WriteString(fmt.Sprintf("<b>📋 Последние инциденты%s%s:</b>\n\n", incidentsFilterHeader(filterNode), pageNote))
+
+	for _, inc := range filtered[start:end] {
+		sb.WriteString(b.renderIncidentRow(inc))
+	}
+
+	sb.WriteString(incidentsSpravkaHTML())
+	return sb.String(), totalPages
 }
 
 func (b *Bot) getTopProblematicText() string {
@@ -980,26 +1065,27 @@ func (b *Bot) getTopProblematicText() string {
 		incStats := b.statsStore.GetIncidentStats(p.StableID, 24*time.Hour, now)
 		mtbfStr := ""
 		if incStats.MTBF > 0 {
-			mtbfStr = fmt.Sprintf(", MTBF: %s", FormatDowntime(incStats.MTBF))
+			mtbfStr = fmt.Sprintf(", MTBF: %s", fmtAgeIconDyn(incStats.MTBF))
 		}
 		mttrStr := ""
 		if incStats.MTTR > 0 {
-			mttrStr = fmt.Sprintf(", MTTR: %s", FormatDowntime(incStats.MTTR))
+			mttrStr = fmt.Sprintf(", MTTR: %s", fmtAgeIconDyn(incStats.MTTR))
 		}
 		uptimeStr := "—"
 		if p.HasData {
 			uptimeStr = fmt.Sprintf("%.1f%%", p.UptimePct)
 		}
 		fmt.Fprintf(&sb, "%d. <b>%s</b>: инцидентов: %d, аптайм: %s%s%s, суммарный простой: %s\n",
-			i+1, escapeHTML(p.ProxyName), p.DropCount, uptimeStr, mtbfStr, mttrStr, FormatDowntime(time.Duration(p.DowntimeSec)*time.Second))
+			i+1, escapeHTML(p.ProxyName), p.DropCount, uptimeStr, mtbfStr, mttrStr, fmtAgeIconDyn(time.Duration(p.DowntimeSec)*time.Second))
 	}
 
-	sb.WriteString("\n<b>ℹ️ Справка:</b>\n" +
+	sb.WriteString("\n<b>ℹ️ Справка</b> (нажмите, чтобы развернуть):\n" +
+		"<blockquote expandable>" +
 		"• <b>Инцидентов</b>: количество зафиксированных падений хоста за период.\n" +
 		"• <b>Аптайм</b>: процент доступности хоста за последние 24 часа.\n" +
 		"• <b>MTBF</b>: среднее время безотказной работы между инцидентами (Mean Time Between Failures).\n" +
 		"• <b>MTTR</b>: среднее время восстановления после аварии (Mean Time To Recovery).\n" +
-		"• <b>Суммарный простой</b>: общее накопленное время недоступности прокси.")
+		"• <b>Суммарный простой</b>: общее накопленное время недоступности прокси.</blockquote>")
 
 	return sb.String()
 }
@@ -1134,6 +1220,7 @@ func (b *Bot) getSubsText() string {
 		renderSub("➕", u)
 	}
 	sb.WriteString("\n🔒 — из окружения / флагов, ➕ — добавлена через /addsub")
+	sb.WriteString("\n\n➕ /addsub &lt;URL&gt; — добавить · /delsub &lt;URL&gt; — удалить")
 	return sb.String()
 }
 
@@ -1242,7 +1329,7 @@ func (b *Bot) getNodesHealthView() string {
 			sb.WriteString("  • Отчётов от ноды ещё не поступало\n")
 		} else {
 			fmt.Fprintf(&sb, "  • Прокси: <b>%d / %d онлайн</b>\n", n.Online, n.Total)
-			fmt.Fprintf(&sb, "  • Последний отчёт: %s назад (интервал %ds)\n", formatAge(now.Sub(n.LastReport)), n.IntervalSec)
+			fmt.Fprintf(&sb, "  • Последний отчёт: %s назад (интервал %ds)\n", fmtAgeIconDyn(now.Sub(n.LastReport)), n.IntervalSec)
 			if n.Version != "" {
 				fmt.Fprintf(&sb, "  • Версия: v%s\n", escapeHTML(n.Version))
 			}
@@ -1314,4 +1401,333 @@ func (b *Bot) getNodeSubsManageView(nodeName string) (string, *telego.InlineKeyb
 	}
 
 	return sb.String(), NodeSubsManageMarkup(nodeName, subs)
+}
+
+// --- Wave K-B1 pagination (content-cluster local pager) ---
+
+// statusPageSize caps the /status proxy rows per screen. The menu-cluster
+// helpers (menuPaginationRow etc.) live in menu.go, owned by another wave-K
+// worker, so views.go carries its own pager below — same visual pattern
+// («⬅️ · Стр. N/M · ➡️»), zero compile-time coupling.
+const statusPageSize = 15
+
+// pagerRouteNoop is the already-wired no-op callback used for unavailable
+// pager directions (placeholder «·»).
+const pagerRouteNoop = "menu:noop"
+
+// maxCallbackDataBytes is the Telegram limit for callback_data; a pager
+// button that cannot fit degrades to the no-op route instead of poisoning
+// the whole keyboard.
+const maxCallbackDataBytes = 64
+
+// pagerButton builds a callback button, degrading to the no-op route when
+// the composed data would exceed the Telegram callback_data limit.
+func pagerButton(text, data string) telego.InlineKeyboardButton {
+	if len(data) > maxCallbackDataBytes {
+		data = pagerRouteNoop
+	}
+	return telego.InlineKeyboardButton{Text: text, CallbackData: data}
+}
+
+// viewPagerRow renders the «⬅️ · Стр. N/M · ➡️» row for paginated views.
+// prev/next emit routePrefix+targetPage; unavailable directions render the
+// «·» placeholder on the no-op route. Local views.go copy of the menu.go
+// pager pattern (disjoint ownership — see statusPageSize).
+func viewPagerRow(routePrefix string, page, totalPages int) []telego.InlineKeyboardButton {
+	var prevBtn telego.InlineKeyboardButton
+	if page > 1 {
+		prevBtn = pagerButton("⬅️", fmt.Sprintf("%s%d", routePrefix, page-1))
+	} else {
+		prevBtn = telego.InlineKeyboardButton{Text: "·", CallbackData: pagerRouteNoop}
+	}
+	var nextBtn telego.InlineKeyboardButton
+	if page < totalPages {
+		nextBtn = pagerButton("➡️", fmt.Sprintf("%s%d", routePrefix, page+1))
+	} else {
+		nextBtn = telego.InlineKeyboardButton{Text: "·", CallbackData: pagerRouteNoop}
+	}
+	label := fmt.Sprintf("· Стр. %d/%d ·", page, totalPages)
+	return []telego.InlineKeyboardButton{prevBtn, pagerButton(label, pagerRouteNoop), nextBtn}
+}
+
+// withPagerRow appends a pager row to a base inline keyboard (e.g. the
+// incidents filter tabs produced by the menus cluster), keeping every
+// original route intact.
+func withPagerRow(base *telego.InlineKeyboardMarkup, routePrefix string, page, totalPages int) *telego.InlineKeyboardMarkup {
+	if base == nil || totalPages <= 1 {
+		return base
+	}
+	rows := append(base.InlineKeyboard, viewPagerRow(routePrefix, page, totalPages))
+	return &telego.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// statusPageSections flattens the /status view into ordered sections of
+// per-proxy rows, mirroring getStatusText formatting (same row builders).
+func (b *Bot) statusPageSections(snapshot []metrics.ProxyMetric, nodes []NodeInfo, nodeProxiesMap map[string][]metrics.ProxyMetric) []statusSection {
+	var sections []statusSection
+
+	var localProxies []metrics.ProxyMetric
+	for _, pm := range snapshot {
+		if pm.NodeName == "" && !pm.Disabled {
+			localProxies = append(localProxies, pm)
+		}
+	}
+	if len(localProxies) > 0 {
+		locOnline := 0
+		for _, pm := range localProxies {
+			if pm.Online {
+				locOnline++
+			}
+		}
+		sections = append(sections, statusSection{
+			header: fmt.Sprintf("%s <b>Локальный чекер · %d/%d онлайн:</b>\n", renderIcon(IconMaster), locOnline, len(localProxies)),
+			rows:   localProxies,
+		})
+	}
+
+	for _, n := range nodes {
+		sections = append(sections, b.nodeStatusSection(n, nodeProxiesMap[n.Name]))
+	}
+
+	handled := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		handled[n.Name] = true
+	}
+	// Deterministic order for orphan node groups (map iteration is random).
+	var orphans []string
+	for nodeName := range nodeProxiesMap {
+		if !handled[nodeName] {
+			orphans = append(orphans, nodeName)
+		}
+	}
+	sort.Strings(orphans)
+	for _, nodeName := range orphans {
+		pms := nodeProxiesMap[nodeName]
+		badge := renderIcon(IconStateOK)
+		if countOnline(pms) < len(pms) {
+			badge = "⚠️"
+		}
+		sections = append(sections, statusSection{
+			header: fmt.Sprintf("%s <b>Нода %s</b> · %s %d/%d онлайн:\n", renderIcon(IconNode), escapeHTML(nodeName), badge, countOnline(pms), len(pms)),
+			rows:   pms,
+		})
+	}
+	return sections
+}
+
+// statusSection is one grouped block of the /status view.
+type statusSection struct {
+	header string
+	rows   []metrics.ProxyMetric
+}
+
+// nodeStatusSection renders the section header for one registry node.
+func (b *Bot) nodeStatusSection(n NodeInfo, pms []metrics.ProxyMetric) statusSection {
+	asnStr := ""
+	if n.ASN != "" {
+		asnStr = fmt.Sprintf(" (%s)", escapeHTML(n.ASN))
+	}
+	name := escapeHTML(n.Name)
+	var header string
+	if !n.Up {
+		header = fmt.Sprintf("%s <b>Нода %s</b>%s · %s оффлайн:\n", renderIcon(IconNode), name, asnStr, renderIcon(IconStateDown))
+	} else if len(pms) == 0 {
+		header = fmt.Sprintf("%s <b>Нода %s</b>%s · %s на связи <i>(нет прокси)</i>:\n", renderIcon(IconNode), name, asnStr, renderIcon(IconStateOK))
+	} else if countOnline(pms) == len(pms) {
+		header = fmt.Sprintf("%s <b>Нода %s</b>%s · %s %d/%d онлайн:\n", renderIcon(IconNode), name, asnStr, renderIcon(IconStateOK), countOnline(pms), len(pms))
+	} else {
+		header = fmt.Sprintf("%s <b>Нода %s</b>%s · ⚠️ %d/%d онлайн:\n", renderIcon(IconNode), name, asnStr, countOnline(pms), len(pms))
+	}
+	return statusSection{header: header, rows: pms}
+}
+
+// countOnline counts online proxies in a slice.
+func countOnline(pms []metrics.ProxyMetric) int {
+	n := 0
+	for _, pm := range pms {
+		if pm.Online {
+			n++
+		}
+	}
+	return n
+}
+
+// getStatusPageText renders one page of the /status view plus the total
+// page count (wave K-B1 pagination view; wired into the callback dispatch by
+// the menus-cluster owner). The header totals always reflect the FULL
+// snapshot; disabled proxies are listed on the last page only.
+func (b *Bot) getStatusPageText(page int) (string, int) {
+	if b.source == nil {
+		return "Нет данных о прокси-хостах — проверки ещё не выполнялись.", 1
+	}
+	snapshot := b.source.MetricsSnapshot()
+	if len(snapshot) == 0 {
+		return "Нет данных о прокси-хостах — проверки ещё не выполнялись.", 1
+	}
+	sort.Slice(snapshot, func(i, j int) bool { return snapshot[i].Name < snapshot[j].Name })
+
+	var nodes []NodeInfo
+	if b.nodeMgr != nil {
+		nodes = b.nodeMgr.Nodes()
+	}
+
+	var disabledProxies []metrics.ProxyMetric
+	nodeProxiesMap := make(map[string][]metrics.ProxyMetric)
+	online := 0
+	activeTotal := 0
+	for _, pm := range snapshot {
+		if pm.Disabled {
+			disabledProxies = append(disabledProxies, pm)
+			continue
+		}
+		activeTotal++
+		if pm.Online {
+			online++
+		}
+		if pm.NodeName != "" {
+			nodeProxiesMap[pm.NodeName] = append(nodeProxiesMap[pm.NodeName], pm)
+		}
+	}
+
+	sections := b.statusPageSections(snapshot, nodes, nodeProxiesMap)
+
+	totalRows := 0
+	for _, sec := range sections {
+		totalRows += len(sec.rows)
+	}
+	totalPages := (totalRows + statusPageSize - 1) / statusPageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if page < 1 {
+		page = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+
+	var sb strings.Builder
+	if totalPages > 1 {
+		fmt.Fprintf(&sb, "<b>Статус прокси-хостов: %d/%d онлайн</b> — стр. %d из %d\n\n", online, activeTotal, page, totalPages)
+	} else {
+		fmt.Fprintf(&sb, "<b>Статус прокси-хостов: %d/%d онлайн</b>\n\n", online, activeTotal)
+	}
+
+	remaining := statusPageSize
+	pageStart := (page - 1) * statusPageSize
+	skipped := 0
+	for _, sec := range sections {
+		if len(sec.rows) == 0 {
+			if page == 1 {
+				sb.WriteString(sec.header + "<i>• Нет данных о проверенных прокси</i>\n\n")
+			}
+			continue
+		}
+		// Skip whole sections that belong to earlier pages.
+		if skipped+len(sec.rows) <= pageStart {
+			skipped += len(sec.rows)
+			continue
+		}
+		start := pageStart - skipped
+		if start < 0 {
+			start = 0
+		}
+		end := start + remaining
+		if end > len(sec.rows) {
+			end = len(sec.rows)
+		}
+		if end <= start {
+			break
+		}
+		cont := start > 0
+		header := sec.header
+		if cont {
+			header = continuationHeader(sec)
+		}
+		sb.WriteString(header)
+		for _, pm := range sec.rows[start:end] {
+			if pm.Online {
+				sb.WriteString(statusOnlineRow(pm.Name, pm.LatencyMs))
+			} else {
+				sb.WriteString(statusDownRow(pm.Name))
+			}
+		}
+		sb.WriteString("\n")
+		remaining -= (end - start)
+		skipped += len(sec.rows)
+		if remaining <= 0 {
+			break
+		}
+	}
+
+	if page == totalPages && len(disabledProxies) > 0 {
+		fmt.Fprintf(&sb, "<b>Отключённые прокси-хосты (%d):</b>\n", len(disabledProxies))
+		for _, pm := range disabledProxies {
+			name := pm.Name
+			if pm.NodeName != "" {
+				name = fmt.Sprintf("[%s] %s", pm.NodeName, pm.Name)
+			}
+			sb.WriteString(statusDisabledRow(name))
+		}
+	}
+
+	return strings.TrimRight(sb.String(), "\n"), totalPages
+}
+
+// continuationHeader rebuilds a section header for a page that resumes the
+// section mid-list («(продолжение)»).
+func continuationHeader(sec statusSection) string {
+	header := sec.header
+	if idx := strings.Index(header, ":\n"); idx >= 0 {
+		header = header[:idx] + " (" + "продолжение" + ")" + header[idx:]
+	}
+	return header
+}
+
+// StatusPageMarkup builds the controls for the paginated /status screen:
+// the local pager row (when several pages exist) plus the same action rows
+// as the fixed StatusMenuMarkup — all routes except the pager prefix are
+// already-wired menu routes.
+func StatusPageMarkup(page, totalPages int) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+	if totalPages > 1 {
+		rows = append(rows, viewPagerRow("menu:statuspg:", page, totalPages))
+	}
+	rows = append(rows,
+		[]telego.InlineKeyboardButton{
+			pagerButton("🔄 Обновить", "menu:status"),
+			pagerButton("🔎 Подробнее", "menu:diag"),
+		},
+		[]telego.InlineKeyboardButton{
+			// btnIcon contract (Guardian re-gate 2026-11-18): plain fallback in
+			// Text, animated icon via WithIconCustomEmojiID — renderIcon output
+			// (raw <tg-emoji>) is banned in button text. The route is a fixed
+			// 9-byte literal, so pagerButton's 64-byte degradation is moot.
+			btnIcon(IconBack, " Главное меню", "menu:main"),
+		},
+	)
+	return &telego.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// renderStatusPage re-renders the paginated /status screen in place. The
+// menus-cluster owner (callbacks.go) wires the «menu:statuspg:<page>» prefix
+// to this one-liner.
+func (b *Bot) renderStatusPage(chatID int64, msgID int, page int) {
+	text, totalPages := b.getStatusPageText(page)
+	b.editWithMarkup(chatID, msgID, text, StatusPageMarkup(page, totalPages))
+}
+
+// incidentsPagerPrefix composes the incidents pager route prefix for a node
+// filter: «menu:stats:incpg:<filter>:<page>».
+func incidentsPagerPrefix(filter string) string {
+	return "menu:stats:incpg:" + filter + ":"
+}
+
+// renderIncidentsPage re-renders the paginated incident journal in place.
+// base carries the filter-tab keyboard from the menus cluster (IncidentsFilterMarkup);
+// the pager row is appended locally. The menus-cluster owner wires the
+// «menu:stats:incpg:<filter>:<page>» prefix to this one-liner.
+func (b *Bot) renderIncidentsPage(chatID int64, msgID int, filter string, page int, base *telego.InlineKeyboardMarkup) {
+	text, totalPages := b.getIncidentsTextPage(filter, page)
+	b.editWithMarkup(chatID, msgID, text, withPagerRow(base, incidentsPagerPrefix(filter), page, totalPages))
 }

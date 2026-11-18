@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mymmrac/telego"
@@ -36,7 +37,13 @@ func isMutatingCallback(data string) bool {
 		"menu:checkupdate",
 		"menu:nodes:toggle_sync",
 		"menu:nodes:toggle_alerts",
-		"menu:nodes:toggle_proxy_alerts":
+		"menu:nodes:toggle_proxy_alerts",
+		// Wave K-B3: the digest / custom-emoji settings toggles persist config,
+		// and the «➕ Добавить подписку» arm ends in a persisted subscription
+		// write (the input itself is admin-gated in handleMessage).
+		"menu:nodes:digest",
+		"menu:toggle_icons",
+		"menu:subsadd":
 		return true
 	}
 	return strings.HasPrefix(data, "menu:nodes:delsub:") ||
@@ -71,7 +78,80 @@ func isToastCallbackData(data string) bool {
 		// route with the «Удалён: …» toast.
 		data == "menu:checkhostadd" ||
 		strings.HasPrefix(data, "menu:checkhostdel:") ||
-		data == "menu:checkupdate"
+		data == "menu:checkupdate" ||
+		// Wave K-B3: the delsub route answers with the «🗑 Подписка удалена»
+		// (or a ❌ error) toast, the exclusions pager with its «❌ Нода не
+		// найдена» fallback toast, and the subs arm with its own prompt toast.
+		strings.HasPrefix(data, "menu:nodes:delsub:") ||
+		strings.HasPrefix(data, "menu:nodes:exclpg:") ||
+		data == "menu:subsadd" ||
+		// Wave L-1: the «Отмена» route answers with the «Ввод отменён» toast.
+		data == "menu:cancelinput"
+}
+
+// isPendingKeepRoute reports whether the callback route never changes the
+// on-screen message (pure acknowledgement toasts), so it must NOT disarm a
+// pending text input (wave L-1 disarm hook allowlist). Everything else
+// clears: arming routes clear-then-re-arm, navigation/mutation routes leave
+// the prompt context behind.
+func isPendingKeepRoute(data string) bool {
+	switch data {
+	case "menu:noop",
+		"menu:checkhost:run_now": // toast + background audit, screen untouched
+		return true
+	}
+	return strings.HasPrefix(data, "menu:diag:noop:")
+}
+
+// toggleDebounceWindow is the double-tap suppression window for the settings
+// toggle rows (wave K-B3): a second tap on the same button within the window
+// is answered with a toast instead of flipping the persisted value twice.
+const toggleDebounceWindow = 300 * time.Millisecond
+
+var (
+	toggleDebounceMu sync.Mutex
+	toggleDebounceAt = map[string]time.Time{}
+)
+
+// isToggleRoute classifies the single-shot settings toggle rows that are
+// double-tap debounced (each flip persists config and re-renders the same
+// message). Payload list rows (menu:toggle_proxy:/menu:toggle_host:) stay
+// out — their callbacks are per-item and double-flip is visible in the label.
+func isToggleRoute(data string) bool {
+	switch data {
+	case "menu:quiet:toggle",
+		"menu:alert_mode:live",
+		"menu:alert_mode:clean",
+		"menu:checkhost:toggle_bg",
+		"menu:checkhost:toggle_alert",
+		"menu:nodes:toggle_sync",
+		"menu:nodes:toggle_alerts",
+		"menu:nodes:toggle_proxy_alerts",
+		"menu:nodes:digest",
+		"menu:toggle_icons":
+		return true
+	}
+	return false
+}
+
+// toggleDebounceCheck reports whether (chatID, msgID, data) is a double-tap
+// within toggleDebounceWindow; otherwise it records the tap. Best-effort and
+// in-memory only: the map is pruned by reset when it grows, the mutex guards
+// only the map access and is never held across network calls.
+func toggleDebounceCheck(chatID int64, msgID int, data string) bool {
+	key := fmt.Sprintf("%d:%d:%s", chatID, msgID, data)
+	now := time.Now()
+	toggleDebounceMu.Lock()
+	defer toggleDebounceMu.Unlock()
+	if last, ok := toggleDebounceAt[key]; ok && now.Sub(last) < toggleDebounceWindow {
+		toggleDebounceAt[key] = now
+		return true
+	}
+	toggleDebounceAt[key] = now
+	if len(toggleDebounceAt) > 4096 {
+		toggleDebounceAt = make(map[string]time.Time)
+	}
+	return false
 }
 
 func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
@@ -96,6 +176,16 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 
 	msgID := cb.Message.GetMessageID()
 
+	// Wave K-B3: double-tap debounce on the settings toggle rows — a second
+	// rapid tap on the same button answers with a toast and does not flip the
+	// persisted value twice (best-effort in-memory window, no network locks).
+	if isToggleRoute(cb.Data) && toggleDebounceCheck(chatID, msgID, cb.Data) {
+		if b.api != nil {
+			_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("⏳ Уже применяется — подождите мгновение"))
+		}
+		return
+	}
+
 	ct := ChatTarget{ChatID: chatID}
 	if m := cb.Message.Message(); m != nil {
 		ct.ThreadID = m.MessageThreadID
@@ -116,6 +206,23 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		return
 	}
 
+	// Wave L-1: the single disarm hook — ANY screen-changing callback clears
+	// a pending text input (the former per-route disarm blocks are gone).
+	// Pure-ack toast routes keep the input; arming routes clear-then-re-arm
+	// below, so the hook is transparent for them.
+	if !isPendingKeepRoute(cb.Data) {
+		b.clearPending(chatID)
+	}
+	if cb.Data == "menu:cancelinput" {
+		// Wave L-1: the «Отмена» route — the hook above already cleared the
+		// pending input; confirm with the RU toast. Exact route (no payload),
+		// not admin-gated: a clear is harmless.
+		if b.api != nil {
+			_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("Ввод отменён"))
+		}
+		return
+	}
+
 	// Acknowledge callback immediately to dismiss spinner, EXCEPT for callbacks that return their own custom toast.
 	isToastCallback := isToastCallbackData(cb.Data)
 
@@ -127,22 +234,17 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 
 	switch cb.Data {
 	case "menu:main":
-		// Wave H4: leaving for the main menu disarms a pending manual
-		// Cheburcheck host input (mirrors the wave G5a rename disarm).
-		// Wave H6: the pending custom Check-Host host input disarms the same way.
-		b.waitingNodeAddMu.Lock()
-		if b.waitingCheburHost != nil {
-			delete(b.waitingCheburHost, chatID)
-		}
-		if b.waitingCheckHostHost != nil {
-			delete(b.waitingCheckHostHost, chatID)
-		}
-		b.waitingNodeAddMu.Unlock()
+		// Wave L-1: the pending-input disarm happens in the single hook above.
 		b.editWithMarkup(chatID, msgID, b.getMenuText(), MainMenuMarkup())
 	case "menu:settings":
-		b.editWithMarkup(chatID, msgID, b.getSettingsText(), SettingsMenuMarkup(b.subs != nil))
+		// Wave K-B3: the state-aware settings keyboard (digest + icons
+		// toggles render the live вкл/выкл labels).
+		b.editWithMarkup(chatID, msgID, b.getSettingsText(), SettingsMenuMarkup(b.GetConfig(), b.subs != nil))
 	case "menu:status":
-		b.editWithMarkup(chatID, msgID, b.getStatusText(), StatusMenuMarkup())
+		// Wave K-B1 integration (I1): the status screen is the paginated
+		// render (page 1 on entry; the menu:statuspg: pager branch below
+		// flips pages in place).
+		b.renderStatusPage(chatID, msgID, 1)
 	case "menu:diag", "menu:diag:summary":
 		seq := b.nextMsgSeq(chatID, msgID)
 		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование подробной сводки...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
@@ -161,20 +263,6 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			}
 			summaryText := b.getDiagnosticsSummaryTextWithTarget(reports, "local", b.getMasterASN())
 			b.editWithMarkup(chatID, msgID, summaryText, markup)
-		}()
-	case "menu:diag:rich":
-		seq := b.nextMsgSeq(chatID, msgID)
-		b.editWithMarkup(chatID, msgID, "⏳ <b>Формирование подробной сводки...</b>\nПожалуйста, подождите несколько секунд.", BackToMenuMarkup())
-		go func() {
-			reports := b.getDiagnosticsReports(false)
-			if !b.isMsgSeqValid(chatID, msgID, seq) {
-				return
-			}
-			tabs := b.getNodeTabs("local")
-			deepLinks := getDeepLinks(reports, 3)
-			markup := RichReportMarkupWithTabs("local", tabs, deepLinks...)
-			rich := b.buildDiagnosticsRichMessageWithTarget(reports, "local", b.getMasterASN())
-			b.showRichReport(ct, msgID, rich, markup)
 		}()
 	case "menu:stats":
 		b.editWithMarkup(chatID, msgID, b.getStatsOverviewText(), StatsMenuMarkup())
@@ -245,7 +333,45 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	case "menu:interval":
 		b.editWithMarkup(chatID, msgID, b.getIntervalText(), IntervalMenuMarkup(b.getIntervalSec()))
 	case "menu:subs":
-		b.editWithMarkup(chatID, msgID, b.getSubsText(), BackToSettingsMarkup())
+		// Wave K-B3: the subs screen carries the «➕ Добавить подписку» arm
+		// button and the unified back row (SubsMenuMarkup).
+		b.editWithMarkup(chatID, msgID, b.getSubsText(), SubsMenuMarkup())
+	case "menu:subsadd":
+		// Wave K-B3, migrated to the wave L-1 FSM: manual subscription input —
+		// arm the per-chat pending input (the flow ends in a persisted
+		// subscription write, so the arm is admin-gated via isMutatingCallback).
+		// The next plain text is consumed in handleMessage via takePending.
+		b.armPending(chatID, pendingKindSubURL, "")
+		if b.api != nil {
+			_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("➕ Отправьте URL подписки сообщением в чат"))
+		}
+		text := "➕ <b>Добавление подписки</b>\n\n" +
+			"Отправьте URL подписки ответным сообщением в этот чат (например: <code>https://example.com/sub</code>).\n\n" +
+			"<i>Или выполните команду:</i> <code>/addsub &lt;URL&gt;</code>"
+		b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
+			tu.InlineKeyboardRow(
+				btnIcon(IconBack, " К списку подписок", "menu:subs"),
+				btn(mainMenuBtnText, "menu:main"),
+			),
+			tu.InlineKeyboardRow(
+				btn("🚫 Отмена", "menu:cancelinput"),
+			),
+		))
+	case "menu:nodes:digest":
+		// Wave K-B3: daytime digest toggle (persisted; the scheduler already
+		// gates on DayDigestEnabled). Admin-gated, debounce-guarded.
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.DayDigestEnabled = !c.DayDigestEnabled
+		})
+		b.editWithMarkup(chatID, msgID, b.getSettingsText(), SettingsMenuMarkup(b.GetConfig(), b.subs != nil))
+	case "menu:toggle_icons":
+		// Wave K-B3: animated custom-emoji icons toggle (persisted;
+		// updateConfig re-syncs the package icon layer for the markup
+		// builders). Admin-gated, debounce-guarded.
+		_ = b.updateConfig(func(c *BotConfig) {
+			c.CustomEmoji = !c.CustomEmoji
+		})
+		b.editWithMarkup(chatID, msgID, b.getSettingsText(), SettingsMenuMarkup(b.GetConfig(), b.subs != nil))
 	case "menu:checkhost":
 		// EXACT match only (order invariant, mirrors menu:chebur): the per-host
 		// check route is the "menu:checkhosth:" prefix branch, the delete route
@@ -253,26 +379,17 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		// "menu:checkhostpg:" prefix branch and the manual-input route the
 		// exact case "menu:checkhostadd" — none can collide with this bare
 		// exact case. Re-entering the submenu disarms a pending custom-host
-		// input (wave H6) and recomputes the union list (snapshot + customs).
-		b.waitingNodeAddMu.Lock()
-		if b.waitingCheckHostHost != nil {
-			delete(b.waitingCheckHostHost, chatID)
-		}
-		b.waitingNodeAddMu.Unlock()
+		// input via the wave L-1 hook and recomputes the union list
+		// (snapshot + customs).
 		items := b.checkHostListItems()
 		b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(),
 			CheckHostMenuMarkup(items, 1, menuTotalPages(len(items), menuListPageSize)))
 	case "menu:checkhostadd":
-		// Wave H6: manual custom-host input — arm the single-shot waiting
-		// state (mirrors menu:cheburin but admin-gated here: the flow ends in
+		// Wave H6, migrated to the wave L-1 FSM: manual custom-host input —
+		// arm the per-chat pending input (admin-gated here: the flow ends in
 		// a persisted config write); the next plain text is consumed in
-		// handleMessage.
-		b.waitingNodeAddMu.Lock()
-		if b.waitingCheckHostHost == nil {
-			b.waitingCheckHostHost = make(map[int64]bool)
-		}
-		b.waitingCheckHostHost[chatID] = true
-		b.waitingNodeAddMu.Unlock()
+		// handleMessage via takePending.
+		b.armPending(chatID, pendingKindCheckHostHost, "")
 		if b.api != nil {
 			_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("➕ Отправьте хост сообщением в чат"))
 		}
@@ -282,8 +399,11 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			"Хосты из подписок (авто) дублировать не нужно — они уже проверяются."
 		b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
 			tu.InlineKeyboardRow(
-				btn("🔙 К списку хостов", "menu:checkhost"),
-				btn("🏠 Главное меню", "menu:main"),
+				btnIcon(IconBack, " К списку хостов", "menu:checkhost"),
+				btn(mainMenuBtnText, "menu:main"),
+			),
+			tu.InlineKeyboardRow(
+				btn("🚫 Отмена", "menu:cancelinput"),
 			),
 		))
 	case "menu:chebur":
@@ -292,34 +412,30 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		// prefix branch in the default clause below, and the manual-input
 		// route the exact case "menu:cheburin" next — none can collide with
 		// this bare exact case. Re-entering the submenu disarms a pending
-		// manual-input state (wave H4).
-		b.waitingNodeAddMu.Lock()
-		if b.waitingCheburHost != nil {
-			delete(b.waitingCheburHost, chatID)
-		}
-		b.waitingNodeAddMu.Unlock()
+		// manual-input state via the wave L-1 hook.
 		snapshot := b.source.MetricsSnapshot()
 		hosts := cheburHostsFromSnapshot(snapshot)
+		// Wave K-B3: opening the submenu records page 1 so a probe launched
+		// from the list returns to the browsed page.
+		b.noteCheburPage(chatID, 1)
 		b.editWithMarkup(chatID, msgID, b.getCheburMenuText(len(hosts)),
 			CheburMenuMarkup(hosts, 1, menuTotalPages(len(hosts), menuListPageSize)))
 	case "menu:cheburin":
-		// Wave H4: manual host input — arm the single-shot waiting state
-		// (mirrors menu:nodes:add); the next plain text is consumed in
-		// handleMessage and admin-gated there. Not itself mutating: arming is
-		// harmless, the actual probe is gated.
-		b.waitingNodeAddMu.Lock()
-		if b.waitingCheburHost == nil {
-			b.waitingCheburHost = make(map[int64]bool)
-		}
-		b.waitingCheburHost[chatID] = true
-		b.waitingNodeAddMu.Unlock()
+		// Wave H4, migrated to the wave L-1 FSM: manual host input — arm the
+		// per-chat pending input; the next plain text is consumed in
+		// handleMessage via takePending and admin-gated there. Not itself
+		// mutating: arming is harmless, the actual probe is gated.
+		b.armPending(chatID, pendingKindCheburHost, "")
 		text := "✍️ <b>Проверить свой хост</b>\n\n" +
 			"Отправьте хост для активного пробинга: домен или IP, можно с портом — порт будет отброшен.\n" +
 			"Например: <code>example.com</code> или <code>1.2.3.4:443</code>."
 		b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
 			tu.InlineKeyboardRow(
-				btn("🔙 К Cheburcheck", "menu:chebur"),
-				btn("🏠 Главное меню", "menu:main"),
+				btnIcon(IconBack, " К Cheburcheck", "menu:chebur"),
+				btn(mainMenuBtnText, "menu:main"),
+			),
+			tu.InlineKeyboardRow(
+				btn("🚫 Отмена", "menu:cancelinput"),
 			),
 		))
 	case "menu:checkhost_cfg":
@@ -390,20 +506,20 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		//          toggle menu:nodes:nx:<key>:<idx>:<page>)
 		b.editWithMarkup(chatID, msgID, b.getNodesMainView(), NodesMainMenuMarkup())
 	case "menu:nodes:add":
-		b.waitingNodeAddMu.Lock()
-		if b.waitingNodeAdd == nil {
-			b.waitingNodeAdd = make(map[int64]bool)
-		}
-		b.waitingNodeAdd[chatID] = true
-		b.waitingNodeAddMu.Unlock()
+		// Wave L-1 FSM: arm the per-chat pending input; the next plain text
+		// is consumed in handleMessage via takePending (admin-gated there).
+		b.armPending(chatID, pendingKindNodeAdd, "")
 		text := "➕ <b>Подключение новой ноды</b>\n\n" +
 			"Как назвать новую ноду?\n" +
 			"Отправьте имя ноды ответным сообщением (латиница, цифры, дефис, например: <code>msk-1</code>, <code>vps-germany</code>).\n\n" +
 			"<i>Или выполните команду:</i> <code>/nodeadd &lt;имя_ноды&gt;</code>"
 		b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
 			tu.InlineKeyboardRow(
-				btn("🔙 К нодам", "menu:nodes"),
-				btn("🏠 Главное меню", "menu:main"),
+				btnIcon(IconBack, " К нодам", "menu:nodes"),
+				btn(mainMenuBtnText, "menu:main"),
+			),
+			tu.InlineKeyboardRow(
+				btn("🚫 Отмена", "menu:cancelinput"),
 			),
 		))
 	case "menu:nodes:install":
@@ -418,12 +534,8 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 		// default clause below — a prefixed node name must never be swallowed
 		// by this picker rule, and the bare picker must never reach the
 		// prefix branch. Keep both rules distinct if this routing is reworked.
-		// Wave G5a: leaving the node context disarms a pending rename input.
-		b.waitingNodeAddMu.Lock()
-		if b.waitingNodeRename != nil {
-			delete(b.waitingNodeRename, chatID)
-		}
-		b.waitingNodeAddMu.Unlock()
+		// Wave G5a/L-1: leaving the node context disarms a pending rename
+		// input via the single hook.
 		text, markup := b.getNodesCfgListView()
 		b.editWithMarkup(chatID, msgID, text, markup)
 	case "menu:nodes:toggle_sync":
@@ -444,40 +556,45 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 	default:
 		if strings.HasPrefix(cb.Data, "menu:nodes:subnode:") {
 			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:subnode:")
-			b.waitingNodeAddMu.Lock()
-			if b.waitingNodeSub != nil {
-				delete(b.waitingNodeSub, chatID)
-			}
-			b.waitingNodeAddMu.Unlock()
+			// Wave L-1: leaving the add-sub flow disarms via the single hook.
 			text, markup := b.getNodeSubsManageView(nodeName)
 			b.editWithMarkup(chatID, msgID, text, markup)
 		} else if strings.HasPrefix(cb.Data, "menu:nodes:addsub:") {
+			// Wave H2/L-1: arm the per-chat pending input with the target node
+			// as payload; the next plain text is consumed in handleMessage via
+			// takePending (admin-gated there).
 			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:addsub:")
-			b.waitingNodeAddMu.Lock()
-			if b.waitingNodeSub == nil {
-				b.waitingNodeSub = make(map[int64]string)
-			}
-			b.waitingNodeSub[chatID] = nodeName
-			b.waitingNodeAddMu.Unlock()
+			b.armPending(chatID, pendingKindNodeSub, nodeName)
 			text := fmt.Sprintf("➕ <b>Назначение подписки для ноды</b> <code>%s</code>\n\n"+
 				"Отправьте URL подписки ответным сообщением в этот чат (например: <code>https://example.com/sub/token</code>).\n\n"+
 				"<i>Или выполните команду:</i> <code>/nodeaddsub %s &lt;URL&gt;</code>",
 				escapeHTML(nodeName), escapeHTML(nodeName))
-			// Wave-F B2: the cancel button is composed via cbNodeCfg; if the
-			// node name would overflow the 64-byte limit, fall back to the
-			// static node-cfg picker so the row never dies (Wave H2/D4: the
-			// former menu:nodes:subs fallback route is removed).
+			// Wave L-1: the «Отмена» button clears the pending input (toast,
+			// no navigation); the back row keeps the way to the node's subs
+			// screen, composed via cbNodeCfg with the static picker fallback
+			// when the node name would overflow the 64-byte callback limit
+			// (Wave H2/D4: the former menu:nodes:subs fallback is removed).
 			cancelCb, cancelOK := cbNodeCfg("menu:nodes:subnode:", nodeName)
 			if !cancelOK {
 				cancelCb = "menu:nodes:cfg"
 			}
 			b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
 				tu.InlineKeyboardRow(
-					btn("🔙 Отмена", cancelCb),
+					btn("🚫 Отмена", "menu:cancelinput"),
+				),
+				tu.InlineKeyboardRow(
+					btn(fmt.Sprintf("📋 К подпискам %s", nodeName), cancelCb),
 				),
 			))
 		} else if strings.HasPrefix(cb.Data, "menu:nodes:delsub:") {
+			// Wave K-B2 two-step delete (wired by K-B3): the first tap renders
+			// the «Точно удалить #N (URL)?» confirm screen (B2's helpers); only
+			// the explicit «:yes» callback performs the removal. The suffix
+			// stays inside the admin-gated menu:nodes:delsub: prefix, so both
+			// steps require elevated rights.
 			rest := strings.TrimPrefix(cb.Data, "menu:nodes:delsub:")
+			confirming := strings.HasSuffix(rest, ":yes")
+			rest = strings.TrimSuffix(rest, ":yes")
 			// Wave-F B2 robust parse: the row index sits after the LAST colon,
 			// so node names containing ':' (possible for NODES env entries)
 			// round-trip through the emitted delsub button; colon-free names
@@ -487,14 +604,27 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				nodeName := rest[:sep]
 				idx, err := strconv.Atoi(rest[sep+1:])
 				if err == nil && idx >= 0 {
-					subs, err := b.nodeMgr.ManagedSubs(nodeName)
-					if err == nil && idx < len(subs) {
-						subURL := subs[idx].URL
-						if err := b.nodeMgr.RemoveSub(nodeName, subURL); err != nil && b.api != nil {
-							_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("❌ Ошибка: "+err.Error()))
-						} else if b.api != nil {
-							_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🗑 Подписка удалена"))
+					subs, subsErr := b.nodeMgr.ManagedSubs(nodeName)
+					if confirming {
+						if subsErr == nil && idx < len(subs) {
+							subURL := subs[idx].URL
+							if err := b.nodeMgr.RemoveSub(nodeName, subURL); err != nil && b.api != nil {
+								// Wave K-B3: the error toast is an alert — the failure
+								// must be acknowledged explicitly.
+								_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("❌ Ошибка: "+err.Error()).WithShowAlert())
+							} else if b.api != nil {
+								_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🗑 Подписка удалена"))
+							}
 						}
+					} else if subsErr == nil && idx < len(subs) {
+						// First tap: confirm screen, nothing removed.
+						if b.api != nil {
+							_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🗑 Подтвердите удаление"))
+						}
+						b.editWithMarkup(chatID, msgID,
+							nodeSubsConfirmText(nodeName, idx, subs[idx].URL),
+							nodeSubsConfirmMarkup(nodeName, idx))
+						return
 					}
 				}
 				text, markup := b.getNodeSubsManageView(nodeName)
@@ -504,14 +634,9 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			// Order invariant (mirrors menu:chebur): this prefix branch is the
 			// per-node settings screen; the bare "menu:nodes:cfg" picker rule
 			// is an exact-match switch case above and can never match here.
-			// Wave G5a: re-entering the screen (incl. the rename cancel button)
-			// disarms a pending rename input.
+			// Wave G5a/L-1: re-entering the screen (incl. the rename cancel
+			// button) disarms a pending rename input via the single hook.
 			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:cfg:")
-			b.waitingNodeAddMu.Lock()
-			if b.waitingNodeRename != nil {
-				delete(b.waitingNodeRename, chatID)
-			}
-			b.waitingNodeAddMu.Unlock()
 			text, markup := b.getNodeCfgScreen(nodeName)
 			b.editWithMarkup(chatID, msgID, text, markup)
 		} else if strings.HasPrefix(cb.Data, "menu:nodes:excl:") {
@@ -542,7 +667,8 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			node := b.nodeByKey(rest[:sep])
 			if node == "" {
 				if b.api != nil {
-					_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("❌ Нода не найдена"))
+					// Wave K-B3: the not-found fallback toast is an alert.
+					_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("❌ Нода не найдена").WithShowAlert())
 				}
 				return
 			}
@@ -568,10 +694,20 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				b.editWithMarkup(chatID, msgID, text, markup)
 			}
 		} else if strings.HasPrefix(cb.Data, "menu:nodes:nreset:") {
-			// Mutating (admin-gated via isMutatingCallback): clear all of the
-			// node's overrides through nodeMgr, then re-render the screen.
+			// Mutating (admin-gated via isMutatingCallback). Wave K-B2 two-step
+			// reset (wired by K-B3): the bare route renders the «Точно
+			// сбросить ВСЕ…?» confirm screen (B2's helpers); only the explicit
+			// «:yes» callback clears the node's overrides through nodeMgr.
 			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:nreset:")
+			confirming := strings.HasSuffix(nodeName, ":yes")
+			nodeName = strings.TrimSuffix(nodeName, ":yes")
 			if b.nodeMgr != nil {
+				if !confirming {
+					b.editWithMarkup(chatID, msgID,
+						nodeResetConfirmText(nodeName),
+						nodeResetConfirmMarkup(nodeName))
+					return
+				}
 				if err := b.nodeMgr.ResetNodeSetting(nodeName, ""); err != nil {
 					logger.Warn("Telegram: node cfg reset failed for %s: %v", nodeName, err)
 					if b.api != nil {
@@ -602,12 +738,8 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				default:
 					return
 				}
-				// A context switch from a pending rename input disarms it.
-				b.waitingNodeAddMu.Lock()
-				if b.waitingNodeRename != nil {
-					delete(b.waitingNodeRename, chatID)
-				}
-				b.waitingNodeAddMu.Unlock()
+				// A context switch from a pending rename input disarms it via
+				// the wave L-1 hook.
 				if err := b.nodeMgr.SetNodeEnabled(nodeName, enabled); err != nil {
 					logger.Warn("Telegram: node toggle failed for %s (%s): %v", nodeName, action, err)
 					toast = "❌ " + err.Error()
@@ -619,16 +751,13 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				b.editWithMarkup(chatID, msgID, text, markup)
 			}
 		} else if strings.HasPrefix(cb.Data, "menu:nodes:ren:") {
-			// Wave G5a: arm the rename waiting state and prompt for the new
-			// name as a text reply. Mutating (admin-gated via
-			// isMutatingCallback) and self-toasting (isToastCallbackData).
+			// Wave G5a, migrated to the wave L-1 FSM: arm the rename pending
+			// input (the node name rides as payload) and prompt for the new
+			// name as a text reply, consumed in handleMessage via takePending.
+			// Mutating (admin-gated via isMutatingCallback) and self-toasting
+			// (isToastCallbackData).
 			nodeName := strings.TrimPrefix(cb.Data, "menu:nodes:ren:")
-			b.waitingNodeAddMu.Lock()
-			if b.waitingNodeRename == nil {
-				b.waitingNodeRename = make(map[int64]string)
-			}
-			b.waitingNodeRename[chatID] = nodeName
-			b.waitingNodeAddMu.Unlock()
+			b.armPending(chatID, pendingKindNodeRename, nodeName)
 			if b.api != nil {
 				_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("✏️ Отправьте новое имя ноды сообщением в чат"))
 			}
@@ -638,15 +767,20 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				"Токен, подписки и настройки ноды перенесутся автоматически.\n\n"+
 				"<i>Или выполните команду:</i> <code>/noderename %s &lt;новое_имя&gt;</code>",
 				escapeHTML(nodeName), escapeHTML(nodeName))
-			// Wave-F B2 fallback discipline: the cancel button is composed via
-			// cbNodeCfg; over-limit names fall back to the static picker route.
+			// Wave L-1: the «Отмена» button clears the pending input (toast,
+			// no navigation); the back row keeps the way to the node cfg
+			// screen, composed via cbNodeCfg; over-limit names fall back to
+			// the static picker route (Wave-F B2 discipline).
 			cancelCb, cancelOK := cbNodeCfg("menu:nodes:cfg:", nodeName)
 			if !cancelOK {
 				cancelCb = "menu:nodes:cfg"
 			}
 			b.editWithMarkup(chatID, msgID, text, tu.InlineKeyboard(
 				tu.InlineKeyboardRow(
-					btn("🔙 Отмена", cancelCb),
+					btn("🚫 Отмена", "menu:cancelinput"),
+				),
+				tu.InlineKeyboardRow(
+					btnIcon(IconBack, " К настройкам ноды", cancelCb),
 				),
 			))
 		} else if strings.HasPrefix(cb.Data, "menu:tz:") {
@@ -828,10 +962,29 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			}
 			// Remote node reports come from memory (no probe sweep).
 			renderDetails(b.getNodeDiagnosticsReports(target))
+		} else if strings.HasPrefix(cb.Data, "menu:stats:incpg:") {
+			// Wave K-B1 integration (I2): the incident journal pager —
+			// route «menu:stats:incpg:<filter>:<page>»; the tab keyboard is
+			// rebuilt for the filter and the page row comes from B1's
+			// renderIncidentsPage. View route — not gated, not self-toasting.
+			rest := strings.TrimPrefix(cb.Data, "menu:stats:incpg:")
+			sep := strings.LastIndex(rest, ":")
+			if sep == -1 {
+				return
+			}
+			page, err := strconv.Atoi(rest[sep+1:])
+			if err != nil {
+				return
+			}
+			filter := rest[:sep]
+			tabs := b.getNodeTabs("")
+			b.renderIncidentsPage(chatID, msgID, filter, page, IncidentsFilterMarkup(filter, tabs))
 		} else if strings.HasPrefix(cb.Data, "menu:stats:incidents:") {
 			filter := strings.TrimPrefix(cb.Data, "menu:stats:incidents:")
 			tabs := b.getNodeTabs("")
-			b.editWithMarkup(chatID, msgID, b.getIncidentsTextFiltered(filter), IncidentsFilterMarkup(filter, tabs))
+			// Wave K-B1 integration (I2): the filter re-render is paginated
+			// (page 1 on entry; the pager routes above flip pages).
+			b.renderIncidentsPage(chatID, msgID, filter, 1, IncidentsFilterMarkup(filter, tabs))
 		} else if strings.HasPrefix(cb.Data, "menu:diag:pick_deep:") {
 			rest := strings.TrimPrefix(cb.Data, "menu:diag:pick_deep:")
 			target := "local"
@@ -1010,6 +1163,10 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			// Wave G4: Cheburcheck submenu pager. Pages clamp into range; the
 			// host list is recomputed from the current snapshot.
 			page, _ := strconv.Atoi(strings.TrimPrefix(cb.Data, "menu:cheburpg:"))
+			// Wave K-B3: the browsed page is remembered for the probe result
+			// (the requested page — the render below clamps out-of-range
+			// pages into range, and so does the result's return route).
+			b.noteCheburPage(chatID, page)
 			snapshot := b.source.MetricsSnapshot()
 			hosts := cheburHostsFromSnapshot(snapshot)
 			totalPages := menuTotalPages(len(hosts), menuListPageSize)
@@ -1035,6 +1192,13 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 				page = totalPages
 			}
 			b.editWithMarkup(chatID, msgID, b.getCheckHostMenuText(), CheckHostMenuMarkup(items, page, totalPages))
+		} else if strings.HasPrefix(cb.Data, "menu:statuspg:") {
+			// Wave K-B1 integration (I1): the /status pager. Pages clamp into
+			// range inside renderStatusPage. View route — not gated, not
+			// self-toasting. Order invariant: this prefix branch can never
+			// collide with the bare exact case "menu:status" above.
+			page, _ := strconv.Atoi(strings.TrimPrefix(cb.Data, "menu:statuspg:"))
+			b.renderStatusPage(chatID, msgID, page)
 		} else if strings.HasPrefix(cb.Data, "menu:interval:set:") {
 			secStr := strings.TrimPrefix(cb.Data, "menu:interval:set:")
 			if sec, err := strconv.Atoi(secStr); err == nil && sec >= 10 {
@@ -1042,5 +1206,47 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			}
 			b.editWithMarkup(chatID, msgID, b.getIntervalText(), IntervalMenuMarkup(b.getIntervalSec()))
 		}
+	}
+}
+
+// handleSubURLInput persists the subscription URL delivered through the
+// menu:subsadd arm flow (wave K-B3) — the same validation/reload path as the
+// /addsub command: http(s)-only URLs (isAllowedSubURL), the write goes only
+// through SubscriptionManager.AddSubscription, and the result is the shared
+// add-report view.
+func (b *Bot) handleSubURLInput(msg *telego.Message, raw string) {
+	t := targetFromMessage(msg)
+	url := strings.TrimSpace(raw)
+	if !isAllowedSubURL(url) {
+		b.send(t, "❌ Разрешены только URL подписок со схемой http:// или https://")
+		return
+	}
+	if b.subs == nil {
+		b.send(t, "Управление подписками через бота выключено.")
+		return
+	}
+
+	sent, _ := b.sendAndReturn(t, "⏳ Проверка и добавление подписки…")
+	placeholderID := 0
+	if sent != nil {
+		placeholderID = sent.GetMessageID()
+	}
+
+	count, err := b.subs.AddSubscription(url)
+	if err != nil {
+		errText := fmt.Sprintf("❌ Не удалось добавить подписку.\n%s", escapeHTML(err.Error()))
+		if placeholderID > 0 {
+			b.edit(t.ChatID, placeholderID, errText)
+		} else {
+			b.send(t, errText)
+		}
+		return
+	}
+
+	report := b.buildAddSubReport(count)
+	if placeholderID > 0 {
+		b.edit(t.ChatID, placeholderID, report)
+	} else {
+		b.send(t, report)
 	}
 }

@@ -179,14 +179,15 @@ func TestMenuNodesRenameCallback_SetsWaitingState(t *testing.T) {
 
 	// Non-admin: denied, nothing armed.
 	b.handleCallbackQuery(gateCallback(9999, "menu:nodes:ren:m31a"))
-	if len(b.waitingNodeRename) != 0 {
-		t.Fatalf("non-admin must not arm the rename waiting state, got %v", b.waitingNodeRename)
+	if b.hasPending(12345) {
+		t.Fatalf("non-admin must not arm the rename pending input")
 	}
 
-	// Admin: waiting state armed + prompt edit + toast.
+	// Admin: pending input armed + prompt edit + toast.
 	b.handleCallbackQuery(gateCallback(1001, "menu:nodes:ren:m31a"))
-	if b.waitingNodeRename[12345] != "m31a" {
-		t.Fatalf("expected waitingNodeRename[12345]=m31a, got %v", b.waitingNodeRename)
+	kind, payload, ok := b.takePending(12345)
+	if !ok || kind != pendingKindNodeRename || payload != "m31a" {
+		t.Fatalf("expected the armed rename input (noderename, m31a), got ok=%v kind=%q payload=%q", ok, kind, payload)
 	}
 	edits := ft.callsOf("editMessageText")
 	if len(edits) == 0 {
@@ -209,40 +210,40 @@ func TestHandleNodeRename_WaitingTextApplies(t *testing.T) {
 	// 1. Happy path.
 	fnm := &fakeNodeManager{nodes: map[string]string{"m31a": "tok"}}
 	b := &Bot{
-		nodeMgr:           fnm,
-		allowedChatIDs:    map[int64]bool{123: true},
-		waitingNodeRename: map[int64]string{123: "m31a"},
+		nodeMgr:        fnm,
+		allowedChatIDs: map[int64]bool{123: true},
 	}
+	b.armPending(123, pendingKindNodeRename, "m31a")
 	b.handleMessage(&telego.Message{Chat: telego.Chat{ID: 123}, Text: "msk-2"})
 	if len(fnm.renames) != 1 || fnm.renames[0] != "m31a->msk-2" {
 		t.Fatalf("waiting text must rename through nodeMgr, got %v", fnm.renames)
 	}
-	if b.waitingNodeRename[123] != "" {
-		t.Fatalf("waiting state must be consumed, got %v", b.waitingNodeRename)
+	if b.hasPending(123) {
+		t.Fatalf("pending input must be consumed")
 	}
 
 	// 2. Invalid name: rejected, waiting state still consumed.
 	fnm2 := &fakeNodeManager{nodes: map[string]string{"m31a": "tok"}}
 	b2 := &Bot{
-		nodeMgr:           fnm2,
-		allowedChatIDs:    map[int64]bool{123: true},
-		waitingNodeRename: map[int64]string{123: "m31a"},
+		nodeMgr:        fnm2,
+		allowedChatIDs: map[int64]bool{123: true},
 	}
+	b2.armPending(123, pendingKindNodeRename, "m31a")
 	b2.handleMessage(&telego.Message{Chat: telego.Chat{ID: 123}, Text: "bad name!"})
 	if len(fnm2.renames) != 0 {
 		t.Fatalf("invalid name must not rename, got %v", fnm2.renames)
 	}
-	if b2.waitingNodeRename[123] != "" {
-		t.Fatalf("waiting state must be consumed even on rejection, got %v", b2.waitingNodeRename)
+	if b2.hasPending(123) {
+		t.Fatalf("pending input must be consumed even on rejection")
 	}
 
 	// 3. Non-admin text: denied before any rename.
 	fnm3 := &fakeNodeManager{nodes: map[string]string{"m31a": "tok"}}
 	b3 := &Bot{
-		nodeMgr:           fnm3,
-		allowedChatIDs:    map[int64]bool{123: true},
-		waitingNodeRename: map[int64]string{123: "m31a"},
+		nodeMgr:        fnm3,
+		allowedChatIDs: map[int64]bool{123: true},
 	}
+	b3.armPending(123, pendingKindNodeRename, "m31a")
 	b3.SetAdminUserIDs([]int64{1001})
 	b3.handleMessage(&telego.Message{
 		Chat: telego.Chat{ID: 123},

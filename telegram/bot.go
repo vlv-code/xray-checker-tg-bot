@@ -26,6 +26,31 @@ import (
 // maxMessageLen keeps outgoing messages under Telegram's ~4096 character limit.
 const maxMessageLen = 4000
 
+// pendingInputTTL is how long an armed text input stays valid (wave L-1):
+// expiry is lazy — checked on read, the stale entry is cleared and the input
+// reads as absent (the next plain text goes down the normal message path).
+const pendingInputTTL = 5 * time.Minute
+
+// Pending input kinds (wave L-1 unified waiting-state FSM). The payload is
+// the flow context: the target node name for pendingKindNodeSub/
+// pendingKindNodeRename, empty for the free-text flows.
+const (
+	pendingKindNodeAdd       = "nodeadd"
+	pendingKindNodeSub       = "nodesub"
+	pendingKindNodeRename    = "noderename"
+	pendingKindCheburHost    = "cheburhost"
+	pendingKindCheckHostHost = "checkhosthost"
+	pendingKindSubURL        = "suburl"
+)
+
+// pendingInput is one armed per-chat text input (wave L-1): the FSM replaced
+// the former five per-flow waiting maps with a single map.
+type pendingInput struct {
+	kind      string
+	payload   string
+	expiresAt time.Time
+}
+
 // DiagnosticsSource provides diagnostic testing across target endpoints.
 type DiagnosticsSource interface {
 	RunDiagnostics(targets []string) []checker.ProxyDiagReport
@@ -92,21 +117,20 @@ type Bot struct {
 	subFreshness map[string]SubFreshness
 
 	waitingNodeAddMu sync.Mutex
-	waitingNodeAdd   map[int64]bool
-	waitingNodeSub   map[int64]string
-	// waitingNodeRename holds the chat awaiting a rename text input (Wave G5a):
-	// chatID -> node name being renamed from the cfg screen «✏️ Переименовать».
-	waitingNodeRename map[int64]string
-	// waitingCheburHost holds the chat awaiting a manual Cheburcheck host
-	// input (Wave H4): chatID -> true while the «✍️ Проверить свой хост»
-	// flow (route menu:cheburin) is armed; single-shot, consumed by the next
-	// plain text message. Guarded by waitingNodeAddMu like the other maps.
-	waitingCheburHost map[int64]bool
-	// waitingCheckHostHost holds the chat awaiting a custom Check-Host host
-	// input (Wave H6): chatID -> true while the «➕ Добавить хост» flow
-	// (route menu:checkhostadd) is armed; single-shot, consumed by the next
-	// plain text message. Guarded by waitingNodeAddMu like the other maps.
-	waitingCheckHostHost map[int64]bool
+	// pendingInputs is the unified waiting-state FSM (wave L-1): at most one
+	// armed text input per chat, replacing the former five per-flow maps
+	// (waitingNodeAdd/waitingNodeSub/waitingNodeRename/waitingCheburHost/
+	// waitingCheckHostHost/waitingSubURL). Single-shot (consumed on read),
+	// lazily TTL-expired, disarmed by any screen-changing callback via the
+	// single hook in handleCallbackQuery.
+	pendingInputs map[int64]pendingInput
+
+	// cheburPageMu guards cheburPage: the last visited Cheburcheck host-list
+	// page per chat (wave K-B3) — recorded by the submenu-open and pager
+	// routes, read by the probe result markup («📡 К списку хостов» returns
+	// to the browsed page). In-memory best effort; defaults to 1.
+	cheburPageMu sync.Mutex
+	cheburPage   map[int64]int
 
 	version            string
 	releaseCheckMu     sync.Mutex
@@ -147,36 +171,36 @@ func New(token string, targets []ChatTarget, source metrics.MetricsSource, notif
 	logger.Info("Telegram bot authorized as @%s", user.Username)
 
 	return &Bot{
-		api:                  api,
-		ctx:                  ctx,
-		cancel:               cancel,
-		targets:              targets,
-		allowedChatIDs:       allowed,
-		adminUserIDs:         make(map[int64]bool),
-		source:               source,
-		subs:                 subs,
-		notifyOnRecovery:     notifyOnRecovery,
-		commandsEnabled:      commandsEnabled,
-		tracker:              NewAlertTracker(),
-		eventBuffer:          NewEventBuffer(),
-		lastSeen:             make(map[string]bool),
-		lastFlapAlert:        make(map[string]time.Time),
-		lastNodeHealth:       make(map[string]nodeHealthState),
-		lastMenuMsg:          make(map[string]int),
-		msgSeq:               make(map[string]int64),
-		subFreshness:         make(map[string]SubFreshness),
-		waitingNodeAdd:       make(map[int64]bool),
-		waitingNodeSub:       make(map[int64]string),
-		waitingNodeRename:    make(map[int64]string),
-		waitingCheburHost:    make(map[int64]bool),
-		waitingCheckHostHost: make(map[int64]bool),
-		stopChan:             make(chan struct{}),
+		api:              api,
+		ctx:              ctx,
+		cancel:           cancel,
+		targets:          targets,
+		allowedChatIDs:   allowed,
+		adminUserIDs:     make(map[int64]bool),
+		source:           source,
+		subs:             subs,
+		notifyOnRecovery: notifyOnRecovery,
+		commandsEnabled:  commandsEnabled,
+		tracker:          NewAlertTracker(),
+		eventBuffer:      NewEventBuffer(),
+		lastSeen:         make(map[string]bool),
+		lastFlapAlert:    make(map[string]time.Time),
+		lastNodeHealth:   make(map[string]nodeHealthState),
+		lastMenuMsg:      make(map[string]int),
+		msgSeq:           make(map[string]int64),
+		subFreshness:     make(map[string]SubFreshness),
+		pendingInputs:    make(map[int64]pendingInput),
+		cheburPage:       make(map[int64]int),
+		stopChan:         make(chan struct{}),
 	}, nil
 }
 
 // SetConfigManager attaches persistent configuration management.
 func (b *Bot) SetConfigManager(cm *ConfigManager) {
 	b.configMgr = cm
+	// Wave K-B3: mirror the persisted custom-emoji setting into the package
+	// icon layer as soon as the config source exists.
+	b.syncIconLayer()
 }
 
 // SetStatsStore attaches outage statistics tracking.
@@ -240,6 +264,62 @@ func (b *Bot) isAuthorizedMutating(userID int64) bool {
 		return true
 	}
 	return b.adminUserIDs[userID]
+}
+
+// armPending arms the per-chat text input for the given flow kind (wave L-1
+// FSM): re-arming overwrites any previous input for the chat. The entry
+// expires lazily after pendingInputTTL.
+func (b *Bot) armPending(chatID int64, kind, payload string) {
+	b.waitingNodeAddMu.Lock()
+	defer b.waitingNodeAddMu.Unlock()
+	if b.pendingInputs == nil {
+		b.pendingInputs = make(map[int64]pendingInput)
+	}
+	b.pendingInputs[chatID] = pendingInput{
+		kind:      kind,
+		payload:   payload,
+		expiresAt: b.now().Add(pendingInputTTL),
+	}
+}
+
+// takePending consumes the chat's armed text input (single-shot, wave L-1).
+// An expired entry is treated as absent and cleared on read; a nil map (bare
+// Bot literals in tests) reads as nothing armed.
+func (b *Bot) takePending(chatID int64) (kind, payload string, ok bool) {
+	b.waitingNodeAddMu.Lock()
+	defer b.waitingNodeAddMu.Unlock()
+	p, has := b.pendingInputs[chatID]
+	if !has {
+		return "", "", false
+	}
+	delete(b.pendingInputs, chatID)
+	if b.now().After(p.expiresAt) {
+		return "", "", false
+	}
+	return p.kind, p.payload, true
+}
+
+// clearPending disarms the chat's pending text input, if any (wave L-1).
+func (b *Bot) clearPending(chatID int64) {
+	b.waitingNodeAddMu.Lock()
+	delete(b.pendingInputs, chatID)
+	b.waitingNodeAddMu.Unlock()
+}
+
+// hasPending reports whether a live (non-expired) text input is armed for the
+// chat; an expired entry is cleared on read (wave L-1).
+func (b *Bot) hasPending(chatID int64) bool {
+	b.waitingNodeAddMu.Lock()
+	defer b.waitingNodeAddMu.Unlock()
+	p, has := b.pendingInputs[chatID]
+	if !has {
+		return false
+	}
+	if b.now().After(p.expiresAt) {
+		delete(b.pendingInputs, chatID)
+		return false
+	}
+	return true
 }
 
 // SetAlertTracker attaches a custom or persistent alert tracker.
@@ -339,7 +419,52 @@ func (b *Bot) updateConfig(fn func(*BotConfig)) error {
 		logger.Error("Telegram: failed to save bot config: %v", err)
 		return err
 	}
+	// Wave K-B3: every persisted reconfig may flip CustomEmoji — re-sync the
+	// package icon layer (markup builders read the layer, not the bot).
+	b.syncIconLayer()
 	return nil
+}
+
+// customEmojiEnabled reports whether the animated custom-emoji icon layer
+// (Bot API 9.4 «✨ Иконки (анимация)») is on — the persisted BotConfig value.
+func (b *Bot) customEmojiEnabled() bool {
+	return b.GetConfig().CustomEmoji
+}
+
+// syncIconLayer mirrors the persisted CustomEmoji setting into the
+// package-level atomic flag (B1's icons.go wiring) consumed by the markup
+// builders that have no *Bot receiver. Safe to call from any goroutine.
+func (b *Bot) syncIconLayer() {
+	SetCustomEmojiEnabled(b.customEmojiEnabled())
+}
+
+// noteCheburPage records the Cheburcheck host-list page a chat browsed to
+// (wave K-B3): called by the submenu-open (page 1) and pager routes so the
+// probe result can return to the browsed page.
+func (b *Bot) noteCheburPage(chatID int64, page int) {
+	if page < 1 {
+		page = 1
+	}
+	b.cheburPageMu.Lock()
+	if b.cheburPage == nil {
+		b.cheburPage = make(map[int64]int)
+	}
+	b.cheburPage[chatID] = page
+	b.cheburPageMu.Unlock()
+}
+
+// lastCheburPage returns the last browsed Cheburcheck list page for a chat
+// (default 1 when nothing was recorded).
+func (b *Bot) lastCheburPage(chatID int64) int {
+	b.cheburPageMu.Lock()
+	defer b.cheburPageMu.Unlock()
+	if b.cheburPage == nil {
+		return 1
+	}
+	if p := b.cheburPage[chatID]; p > 0 {
+		return p
+	}
+	return 1
 }
 
 // SetRichMode sets default reporting format.
@@ -469,6 +594,9 @@ func (b *Bot) handleUpdateSafely(update telego.Update) {
 // dispatchUpdate routes one update to its concrete handler.
 func (b *Bot) dispatchUpdate(update telego.Update) {
 	if update.Message != nil {
+		// Wave L-1: all armed text inputs (including the «➕ Добавить
+		// подписку» flow) are consumed uniformly inside handleMessage via the
+		// pendingInput FSM — no per-flow pre-dispatch here anymore.
 		b.handleMessage(update.Message)
 	} else if update.CallbackQuery != nil {
 		b.handleCallbackQuery(update.CallbackQuery)
@@ -504,16 +632,54 @@ func (b *Bot) Stop() {
 	}
 }
 
+// setupBotMenuButton registers the full command list (wave K-B3: mirrors the
+// /help groups — base diagnostics/settings group always, the subscriptions
+// group only when the subscription manager is attached, the nodes group only
+// when the node manager is attached) and switches on the commands menu button.
+// All RU descriptions stay within the Bot API 64-char limit.
 func (b *Bot) setupBotMenuButton() {
 	commands := []telego.BotCommand{
+		// Base group: navigation, status, diagnostics, stats, settings.
 		{Command: "menu", Description: "Главное меню и сводка"},
-		{Command: "diag", Description: "Подробная сводка"},
-		{Command: "checkhost", Description: "Проверка Check-Host"},
-		{Command: "cheburcheck", Description: "Активный пробинг блокировок РФ (Cheburcheck)"},
-		{Command: "settings", Description: "Настройки бота"},
 		{Command: "status", Description: "Статус прокси-хостов"},
+		{Command: "diag", Description: "Подробная диагностика прокси"},
+		{Command: "stats", Description: "Статистика аптайма и инцидентов"},
+		{Command: "settings", Description: "Настройки бота"},
+		{Command: "checkhost", Description: "Глобальная проверка хоста (Check-Host)"},
+		{Command: "checkhost_bg", Description: "Фоновая проверка Check-Host: вкл/выкл"},
+		{Command: "cheburcheck", Description: "Пробинг блокировок РФ (Cheburcheck)"},
+		{Command: "interval", Description: "Интервал проверок прокси-хостов"},
+		{Command: "quiet", Description: "Тихий режим и паузы алертов"},
+		{Command: "tz", Description: "Часовой пояс бота"},
+		{Command: "targets", Description: "Целевые серверы проверки"},
+		{Command: "togglenode", Description: "Вкл/выкл проверку хоста"},
+		{Command: "digest", Description: "Сводка статуса сейчас"},
 		{Command: "id", Description: "ID чата и топика для настроек"},
 	}
+	if b.subs != nil {
+		commands = append(commands,
+			telego.BotCommand{Command: "subs", Description: "Список подписок"},
+			telego.BotCommand{Command: "addsub", Description: "Добавить подписку <URL>"},
+			telego.BotCommand{Command: "delsub", Description: "Удалить добавленную подписку"},
+		)
+	}
+	if b.nodeMgr != nil {
+		commands = append(commands,
+			telego.BotCommand{Command: "nodes", Description: "Ноды: статус, ASN, сводка"},
+			telego.BotCommand{Command: "nodeadd", Description: "Подключить новую ноду"},
+			telego.BotCommand{Command: "nodedel", Description: "Удалить ноду с мастера"},
+			telego.BotCommand{Command: "nodesubs", Description: "Подписки ноды"},
+			telego.BotCommand{Command: "nodeaddsub", Description: "Назначить подписку ноде"},
+			telego.BotCommand{Command: "nodedelsub", Description: "Снять подписку с ноды"},
+			telego.BotCommand{Command: "nodeset", Description: "Настройки проверок ноды"},
+			telego.BotCommand{Command: "nodereset", Description: "Сбросить настройки ноды"},
+			telego.BotCommand{Command: "noderename", Description: "Переименовать ноду"},
+		)
+	}
+	commands = append(commands,
+		telego.BotCommand{Command: "checkupdate", Description: "Проверить новую версию"},
+		telego.BotCommand{Command: "help", Description: "Справка по командам"},
+	)
 	_ = b.api.SetMyCommands(b.ctx, &telego.SetMyCommandsParams{
 		Commands: commands,
 	})

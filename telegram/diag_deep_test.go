@@ -183,7 +183,9 @@ func TestDiagnosticsSummaryText(t *testing.T) {
 	if !strings.Contains(summary, "📊 <b>Подробная сводка (3 всего):</b>") {
 		t.Errorf("unexpected summary header:\n%s", summary)
 	}
-	if !strings.Contains(summary, "🟢 <b>Proxy-1</b> (VLESS) — 35 ms") {
+	// Wave K-B1 legend migration (registered pin change): summary latency
+	// renders «⚡35 мс» instead of "35 ms".
+	if !strings.Contains(summary, "🟢 <b>Proxy-1</b> (VLESS) — ⚡35 мс") {
 		t.Errorf("missing Proxy-1 in summary:\n%s", summary)
 	}
 	if !strings.Contains(summary, "🔴 <b>Proxy-2</b> (VMESS) — недоступен") {

@@ -117,8 +117,10 @@ func TestCheckHostMenuMarkup_UnionRowsAndPagination(t *testing.T) {
 	if !hasButtonText(mk1, "Стр. 1/2") {
 		t.Errorf("page 1 must carry the «Стр. 1/2» label")
 	}
-	if !hasButtonText(mk1, "➕ Добавить хост") || !hasCallback(mk1, "menu:checkhostadd") {
-		t.Errorf("the add-host row («➕ Добавить хост» → menu:checkhostadd) must always be present")
+	// Wave K-B3 register (Check-Host de-🌐 rework 2026-11-18): the add-host
+	// row carries the 📡 antenna icon per the frozen legend.
+	if !hasButtonText(mk1, "📡 ➕ Добавить хост") || !hasCallback(mk1, "menu:checkhostadd") {
+		t.Errorf("the add-host row («📡 ➕ Добавить хост» → menu:checkhostadd) must always be present, got %v", markupCallbacks(mk1))
 	}
 	foundAutoMarker := false
 	for _, row := range mk1.InlineKeyboard {
@@ -280,8 +282,8 @@ func TestCheckHostAddFlow_ArmsPersistsAndRejects(t *testing.T) {
 
 	// 1. Admin taps «➕ Добавить хост»: waiting state armed, RU prompt shown.
 	b.handleCallbackQuery(gateCallback(1001, "menu:checkhostadd"))
-	if !b.waitingCheckHostHost[12345] {
-		t.Fatalf("menu:checkhostadd must arm waitingCheckHostHost for the chat")
+	if !b.hasPending(12345) {
+		t.Fatalf("menu:checkhostadd must arm the pending input for the chat")
 	}
 	prompt, ok := ft.lastParamOf("editMessageText", "text")
 	if !ok || !strings.Contains(prompt, "Добавление хоста") || !strings.Contains(prompt, "Отправьте") {
@@ -295,8 +297,8 @@ func TestCheckHostAddFlow_ArmsPersistsAndRejects(t *testing.T) {
 		From:      &telego.User{ID: 1001, Username: "admin"},
 		Text:      "5.6.7.8",
 	})
-	if b.waitingCheckHostHost[12345] {
-		t.Fatalf("waiting state must be consumed after the input")
+	if b.hasPending(12345) {
+		t.Fatalf("pending input must be consumed after the input")
 	}
 	hosts := cm.Get().CheckHostHosts
 	if len(hosts) != 1 || hosts[0] != "5.6.7.8" {
@@ -349,12 +351,12 @@ func TestCheckHostAddFlow_ArmsPersistsAndRejects(t *testing.T) {
 
 	// 5. Navigation to the main menu disarms the pending input.
 	b.handleCallbackQuery(gateCallback(1001, "menu:checkhostadd"))
-	if !b.waitingCheckHostHost[12345] {
+	if !b.hasPending(12345) {
 		t.Fatalf("expected the armed state before navigation")
 	}
 	b.handleCallbackQuery(gateCallback(1001, "menu:main"))
-	if b.waitingCheckHostHost[12345] {
-		t.Fatalf("menu:main must disarm waitingCheckHostHost")
+	if b.hasPending(12345) {
+		t.Fatalf("menu:main must disarm the pending input")
 	}
 	b.handleMessage(&telego.Message{
 		MessageID: 14,
@@ -368,12 +370,12 @@ func TestCheckHostAddFlow_ArmsPersistsAndRejects(t *testing.T) {
 
 	// 6. Re-entering the submenu (menu:checkhost) disarms the pending input too.
 	b.handleCallbackQuery(gateCallback(1001, "menu:checkhostadd"))
-	if !b.waitingCheckHostHost[12345] {
+	if !b.hasPending(12345) {
 		t.Fatalf("expected the armed state before re-entry")
 	}
 	b.handleCallbackQuery(gateCallback(1001, "menu:checkhost"))
-	if b.waitingCheckHostHost[12345] {
-		t.Fatalf("menu:checkhost re-entry must disarm waitingCheckHostHost")
+	if b.hasPending(12345) {
+		t.Fatalf("menu:checkhost re-entry must disarm the pending input")
 	}
 }
 
@@ -387,8 +389,8 @@ func TestCheckHostAddFlow_NonAdminDenied(t *testing.T) {
 	if toast, ok := ft.lastParamOf("answerCallbackQuery", "text"); !ok || !strings.Contains(toast, "только администраторам") {
 		t.Errorf("non-admin arm attempt must get the denial toast, got ok=%v toast=%q", ok, toast)
 	}
-	if b.waitingCheckHostHost[12345] {
-		t.Fatalf("non-admin must not arm the waiting state")
+	if b.hasPending(12345) {
+		t.Fatalf("non-admin must not arm the pending input")
 	}
 
 	// Armed-by-admin state + non-admin text: denied, no write, state consumed.
@@ -398,8 +400,8 @@ func TestCheckHostAddFlow_NonAdminDenied(t *testing.T) {
 		From: &telego.User{ID: 9999, Username: "intruder"},
 		Text: "evil.example.com",
 	})
-	if b.waitingCheckHostHost[12345] {
-		t.Fatalf("waiting state must be consumed even when denied")
+	if b.hasPending(12345) {
+		t.Fatalf("pending input must be consumed even when denied")
 	}
 	if got := cm.Get().CheckHostHosts; len(got) != 0 {
 		t.Errorf("non-admin text must not write config, got %v", got)
@@ -750,5 +752,37 @@ func TestBotConfig_CheckHostHosts_LegacyLoadPersistAndCopy(t *testing.T) {
 	data, err := os.ReadFile(p)
 	if err != nil || !strings.Contains(string(data), `"checkhost_hosts"`) {
 		t.Errorf("the persisted file must contain the checkhost_hosts key (err=%v, data=%s)", err, data)
+	}
+}
+
+// TestCheckHostSurfacesAntenna pins the wave K-B3 de-🌐 sweep over the
+// Check-Host surfaces owned here: the result keyboard reads «📡 К списку
+// хостов» + «☰ Главное меню» (never 🌐/🏠), the submenu header and the
+// settings header carry the 📡 antenna icon, and the manual-input confirmation
+// button returns to the host list without 🌐.
+func TestCheckHostSurfacesAntenna(t *testing.T) {
+	result := CheckHostResultMarkup()
+	if !hasButtonText(result, "📡 К списку хостов") || !hasCallback(result, "menu:checkhost") {
+		t.Errorf("expected «📡 К списку хостов» -> menu:checkhost, got %v", markupCallbacks(result))
+	}
+	if !hasButtonText(result, "☰ Главное меню") {
+		t.Errorf("expected the unified «☰ Главное меню» button, got %v", markupCallbacks(result))
+	}
+	for _, row := range result.InlineKeyboard {
+		for _, b := range row {
+			if strings.Contains(b.Text, "🌐") || strings.Contains(b.Text, "🏠") {
+				t.Errorf("Check-Host result keyboard must be free of 🌐/🏠, got %q", b.Text)
+			}
+		}
+	}
+
+	b := &Bot{}
+	header := b.getCheckHostMenuText()
+	if !strings.Contains(header, "📡") || strings.Contains(header, "🌐") {
+		t.Errorf("Check-Host submenu header must carry 📡 (not 🌐), got: %s", header)
+	}
+	settings := b.getCheckHostSettingsText()
+	if !strings.Contains(settings, "📡") || strings.Contains(settings, "🌐") {
+		t.Errorf("Check-Host settings header must carry 📡 (not 🌐), got: %s", settings)
 	}
 }

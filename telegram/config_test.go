@@ -155,3 +155,49 @@ func TestConfigManager_Timezone(t *testing.T) {
 		t.Errorf("expected Asia/Yekaterinburg after reload, got %s", cm2.Get().Timezone)
 	}
 }
+
+// TestConfigManager_CustomEmojiLegacyLoad verifies the additive CustomEmoji
+// field: legacy configs (pre-custom-emoji JSON without the key) must load with
+// CustomEmoji=false, an explicit value must persist across reload, and absence
+// of the key in a previously saved file must not flip a persisted false.
+func TestConfigManager_CustomEmojiLegacyLoad(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "bot_config.json")
+
+	// 1. Legacy file without the custom_emoji key -> default false.
+	legacy := `{"alert_mode":"live","target_urls":["https://cp.cloudflare.com/generate_204"]}`
+	if err := os.WriteFile(configPath, []byte(legacy), 0600); err != nil {
+		t.Fatalf("write legacy config failed: %v", err)
+	}
+	cm, err := NewConfigManager(configPath, BotConfig{})
+	if err != nil {
+		t.Fatalf("NewConfigManager failed: %v", err)
+	}
+	if cm.Get().CustomEmoji {
+		t.Errorf("expected CustomEmoji=false for legacy config without the key")
+	}
+
+	// 2. Explicit enable persists and survives reload.
+	if err := cm.Update(func(c *BotConfig) { c.CustomEmoji = true }); err != nil {
+		t.Fatalf("Update CustomEmoji failed: %v", err)
+	}
+	cm2, err := NewConfigManager(configPath, BotConfig{})
+	if err != nil {
+		t.Fatalf("Reload failed: %v", err)
+	}
+	if !cm2.Get().CustomEmoji {
+		t.Errorf("expected CustomEmoji=true after enabling and reload")
+	}
+
+	// 3. Explicit false persisted in the file must stay false (no forced default).
+	if err := cm2.Update(func(c *BotConfig) { c.CustomEmoji = false }); err != nil {
+		t.Fatalf("Update CustomEmoji=false failed: %v", err)
+	}
+	cm3, err := NewConfigManager(configPath, BotConfig{})
+	if err != nil {
+		t.Fatalf("Reload failed: %v", err)
+	}
+	if cm3.Get().CustomEmoji {
+		t.Errorf("expected CustomEmoji=false to persist")
+	}
+}

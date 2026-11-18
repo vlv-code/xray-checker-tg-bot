@@ -112,7 +112,7 @@ func NodesCfgListMarkup(nodes []string) *telego.InlineKeyboardMarkup {
 	}
 	rows = append(rows,
 		tu.InlineKeyboardRow(
-			btn("🔙 Назад", "menu:nodes"),
+			btn(IconBack.Render(false)+" Назад", "menu:nodes"),
 			btn("🏠 Главное меню", "menu:main"),
 		),
 	)
@@ -181,7 +181,7 @@ func NodeCfgMarkup(node string, enabled bool, entries []NodeSettingEntry) *teleg
 		))
 	}
 	rows = append(rows, tu.InlineKeyboardRow(
-		btn("🔙 К списку нод", "menu:nodes:cfg"),
+		btn(IconBack.Render(false)+" К списку нод", "menu:nodes:cfg"),
 		btn("🏠 Главное меню", "menu:main"),
 	))
 	return tu.InlineKeyboard(rows...)
@@ -414,7 +414,7 @@ func (b *Bot) getNodeExclusionsView(node string, page int, notice string) (strin
 
 	var navRow []telego.InlineKeyboardButton
 	if cb, ok := cbNodeCfg("menu:nodes:cfg:", node); ok {
-		navRow = append(navRow, btn("🔙 К настройкам ноды", cb))
+		navRow = append(navRow, btn(IconBack.Render(false)+" К настройкам ноды", cb))
 	}
 	navRow = append(navRow, btn("🏠 Главное меню", "menu:main"))
 	rows = append(rows, tu.InlineKeyboardRow(navRow...))
@@ -500,4 +500,80 @@ func (b *Bot) handleNodeExclToggle(chatID int64, msgID int, cb *telego.CallbackQ
 	}
 	text, markup := b.getNodeExclusionsView(node, page, "")
 	b.editWithMarkup(chatID, msgID, text, markup)
+}
+
+// --- Wave K-B2: two-step confirms (stateless re-render pattern) ---
+//
+// The delsub (menu:nodes:delsub:) and nreset (menu:nodes:nreset:) HANDLERS
+// live in callbacks.go (menus/navigation cluster, K-B3 owner). These helpers
+// are the shared confirm-screen contract for that wiring: on the first tap
+// of a destructive button the handler re-renders this confirm screen instead
+// of mutating, and the explicit confirm callback (same route, same idx, plus
+// the nonce-free «:yes» suffix) performs the mutation; «Отмена» returns to
+// the owning screen. Callbacks are composed through cbNodeCfg and the
+// confirm row is omitted when the «:yes» suffix would overflow the 64-byte
+// limit — the same omit discipline as the emitting buttons in
+// NodeSubsManageMarkup / NodeCfgMarkup (such names never emitted the
+// destructive button anyway, so no flow dead-ends).
+
+// nodeSubsConfirmCallback composes the explicit delsub confirm callback
+// `menu:nodes:delsub:<node>:<idx>:yes` (same idx as the first tap).
+func nodeSubsConfirmCallback(nodeName string, idx int) (string, bool) {
+	return cbNodeCfg("menu:nodes:delsub:", nodeName, ":"+strconv.Itoa(idx)+":yes")
+}
+
+// nodeSubsConfirmText renders the delsub confirm screen: «Точно удалить #N»
+// with the escaped subscription URL and the RU no-undo notice.
+func nodeSubsConfirmText(nodeName string, idx int, subURL string) string {
+	return fmt.Sprintf("🗑 <b>Удаление подписки</b>\n\n"+
+		"Точно удалить подписку <b>#%d</b> ноды <code>%s</code>?\n"+
+		"<code>%s</code>\n\n"+
+		"<i>Вернуть её можно только повторным «➕ Назначить подписку».</i>",
+		idx+1, escapeHTML(nodeName), escapeHTML(subURL))
+}
+
+// nodeSubsConfirmMarkup returns the [✅ Да, удалить] / [↩️ Отмена] rows; the
+// confirm row is omitted when the «:yes» callback would overflow 64 bytes.
+func nodeSubsConfirmMarkup(nodeName string, idx int) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+	if cb, ok := nodeSubsConfirmCallback(nodeName, idx); ok {
+		rows = append(rows, tu.InlineKeyboardRow(btn("✅ Да, удалить", cb)))
+	}
+	cancelCb, cancelOK := cbNodeCfg("menu:nodes:subnode:", nodeName)
+	if !cancelOK {
+		cancelCb = "menu:nodes:cfg"
+	}
+	rows = append(rows, tu.InlineKeyboardRow(btn(IconBack.Render(false)+" Отмена", cancelCb)))
+	return tu.InlineKeyboard(rows...)
+}
+
+// nodeResetConfirmCallback composes the explicit nreset confirm callback
+// `menu:nodes:nreset:<node>:yes`.
+func nodeResetConfirmCallback(node string) (string, bool) {
+	return cbNodeCfg("menu:nodes:nreset:", node, ":yes")
+}
+
+// nodeResetConfirmText renders the reset-all confirm screen: «Точно сбросить
+// ВСЕ локальные переопределения» with the RU effect notice.
+func nodeResetConfirmText(node string) string {
+	return fmt.Sprintf("↩️ <b>Сброс переопределений</b>\n\n"+
+		"Точно сбросить ВСЕ локальные переопределения ноды <code>%s</code> к значениям мастера?\n\n"+
+		"<i>Нода применит настройки мастера при следующем отчёте.</i>",
+		escapeHTML(node))
+}
+
+// nodeResetConfirmMarkup returns the [✅ Да, сбросить] / [↩️ Отмена] rows;
+// cancel returns to the node's cfg screen (static picker fallback when the
+// name would overflow the 64-byte callback limit).
+func nodeResetConfirmMarkup(node string) *telego.InlineKeyboardMarkup {
+	var rows [][]telego.InlineKeyboardButton
+	if cb, ok := nodeResetConfirmCallback(node); ok {
+		rows = append(rows, tu.InlineKeyboardRow(btn("✅ Да, сбросить", cb)))
+	}
+	cancelCb, cancelOK := cbNodeCfg("menu:nodes:cfg:", node)
+	if !cancelOK {
+		cancelCb = "menu:nodes:cfg"
+	}
+	rows = append(rows, tu.InlineKeyboardRow(btn(IconBack.Render(false)+" Отмена", cancelCb)))
+	return tu.InlineKeyboard(rows...)
 }
