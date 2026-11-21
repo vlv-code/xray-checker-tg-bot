@@ -42,11 +42,11 @@ func (b *Bot) handleCheburcheckCommand(msg *telego.Message) {
 
 	chebClient := b.resolveCheburClient()
 	if !chebClient.HasCredentials() {
-		b.send(t, "Сканеры Cheburcheck не настроены (DefaultCheburScanners пуст)")
+		b.send(t, "🛡️ Сканеры Cheburcheck не настроены (DefaultCheburScanners пуст)")
 		return
 	}
 
-	sentMsg, _ := b.sendAndReturn(t, fmt.Sprintf("⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
+	sentMsg, _ := b.sendAndReturn(t, fmt.Sprintf("🛡️ ⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
 		"Активный пробинг <code>%s</code>...\n"+
 		"Пожалуйста, подождите до 30 секунд...", escapeHTML(target)))
 
@@ -106,7 +106,7 @@ func (b *Bot) handleCheburcheckHost(chatID int64, msgID int, hostKey string) {
 
 	chebClient := b.resolveCheburClient()
 	if !chebClient.HasCredentials() {
-		b.editWithMarkup(chatID, msgID, "Сканеры Cheburcheck не настроены (DefaultCheburScanners пуст)", BackToMenuMarkup())
+		b.editWithMarkup(chatID, msgID, "🛡️ Сканеры Cheburcheck не настроены (DefaultCheburScanners пуст)", BackToMenuMarkup())
 		return
 	}
 
@@ -114,7 +114,7 @@ func (b *Bot) handleCheburcheckHost(chatID int64, msgID int, hostKey string) {
 	// browsed host-list page («📡 К списку хостов» → menu:cheburpg:<page>).
 	resultMarkup := CheburResultMarkup(b.lastCheburPage(chatID))
 
-	b.editWithMarkup(chatID, msgID, fmt.Sprintf("⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
+	b.editWithMarkup(chatID, msgID, fmt.Sprintf("🛡️ ⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
 		"Активный пробинг <code>%s</code>...\n"+
 		"Пожалуйста, подождите до 30 секунд...", escapeHTML(host)), resultMarkup)
 
@@ -197,11 +197,11 @@ func (b *Bot) handleCheburHostInput(msg *telego.Message, raw string) {
 
 	chebClient := b.resolveCheburClient()
 	if !chebClient.HasCredentials() {
-		b.send(t, "Сканеры Cheburcheck не настроены (DefaultCheburScanners пуст)")
+		b.send(t, "🛡️ Сканеры Cheburcheck не настроены (DefaultCheburScanners пуст)")
 		return
 	}
 
-	sentMsg, _ := b.sendAndReturn(t, fmt.Sprintf("⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
+	sentMsg, _ := b.sendAndReturn(t, fmt.Sprintf("🛡️ ⏳ <b>Запрос отправлен в Cheburcheck...</b>\n"+
 		"Активный пробинг <code>%s</code>...\n"+
 		"Пожалуйста, подождите до 30 секунд...", escapeHTML(host)))
 

@@ -728,6 +728,13 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			nodeName = strings.TrimSuffix(nodeName, ":yes")
 			if b.nodeMgr != nil {
 				if !confirming {
+					// Wave N-A FIX 1: the confirm screen must acknowledge the
+					// arm tap — the route is self-toasting (isToastCallbackData),
+					// so without this the client spinner hangs ~5s to the
+					// Telegram timeout. Mirrors the delsub model toast.
+					if b.api != nil {
+						_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("↩️ Подтвердите сброс"))
+					}
 					b.editWithMarkup(chatID, msgID,
 						nodeResetConfirmText(nodeName),
 						nodeResetConfirmMarkup(nodeName))
@@ -756,6 +763,12 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			nodeName = strings.TrimSuffix(nodeName, ":yes")
 			if b.nodeMgr != nil {
 				if !confirming {
+					// Wave N-A FIX 1: acknowledge the confirm screen (same
+					// spinner-hang wart as nreset; toast mirrors the delsub
+					// confirm wording).
+					if b.api != nil {
+						_ = b.api.AnswerCallbackQuery(b.ctx, tu.CallbackQuery(cb.ID).WithText("🗑 Подтвердите удаление"))
+					}
 					b.editWithMarkup(chatID, msgID,
 						nodeDelConfirmText(nodeName),
 						nodeDelConfirmMarkup(nodeName))
@@ -990,7 +1003,10 @@ func (b *Bot) handleCallbackQuery(cb *telego.CallbackQuery) {
 			renderDetails := func(reports []checker.ProxyDiagReport, cacheNote string) {
 				tabs := b.getNodeTabs(target)
 				if b.isRichMode() {
-					rich, totalPages := b.buildDiagnosticsDetailsRichMessageWithTarget(reports, target, page)
+					// Wave N-A: the rich branch gets the same staleness note as
+					// the plain branch — the Note variant adapts the HTML-form
+					// note (diagCacheAgeNote) to the RAW rich-text contract.
+					rich, totalPages := b.buildDiagnosticsDetailsRichMessageWithTargetNote(reports, target, page, cacheNote)
 					b.showRichReport(ct, msgID, rich, DiagnosticsPaginationMarkupWithTabs(target, page, totalPages, tabs))
 				} else {
 					pageText, totalPages := b.getDiagnosticsPageTextWithTarget(reports, target, page)

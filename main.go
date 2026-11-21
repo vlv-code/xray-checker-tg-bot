@@ -86,6 +86,25 @@ func masterReportSecurityNote(masterPublicURL string) string {
 	return "MASTER_PUBLIC_URL is not set: nodes will be instructed to report over plaintext http://<host-ip>:2112 — consider TLS fronting"
 }
 
+// recordSubFreshness stamps per-source freshness for the sources that
+// actually refreshed this cycle (Wave N-G FIX 2). counts contains the proxy
+// count of every source contributing to the merged set — including failed
+// sources serving last-known-good cached configs; failed marks the sources
+// whose fetch errored this cycle. Those are skipped: stamping
+// RecordUpdate(LastUpdate=now) for them would present stale cached proxies
+// as freshly fetched in the /subs view. Skipping reads honestly in both
+// cases: a source that never succeeded stays unknown (the view omits the
+// freshness line for a zero LastUpdate), and a previously updated source
+// keeps showing its last real update instead of a false "just now".
+func recordSubFreshness(store *subscription.URLStore, counts map[string]int, failed map[string]bool, now time.Time) {
+	for u, cnt := range counts {
+		if failed[u] {
+			continue
+		}
+		store.RecordUpdate(u, cnt, now)
+	}
+}
+
 func main() {
 	config.Parse(version)
 	config.SetupNetworkEnvironment(config.CLIConfig.Report.URL)
@@ -639,14 +658,11 @@ func main() {
 		reloadMu.Lock()
 		defer reloadMu.Unlock()
 
-		newConfigs, subCounts, err := subscription.ReadFromMultipleSourcesDetailed(subURLStore.All())
+		newConfigs, subCounts, failedSrcs, err := subscription.ReadFromMultipleSourcesDetailed(subURLStore.All())
 		if err != nil {
 			return false, len(*proxyConfigs), err
 		}
-		now := time.Now()
-		for u, cnt := range subCounts {
-			subURLStore.RecordUpdate(u, cnt, now)
-		}
+		recordSubFreshness(subURLStore, subCounts, failedSrcs, time.Now())
 		if b := tgBot.Load(); b != nil {
 			for _, u := range subURLStore.All() {
 				if meta, ok := subURLStore.GetMeta(u); ok {
@@ -746,6 +762,15 @@ func main() {
 			// Reuse TargetManager
 			targetMgr := proxyChecker.GetTargetManager()
 
+			// RuntimeMu read-guard (startup, Wave N-G FIX 3): CheckInterval is
+			// a runtime-mutated field (config/runtime_lock.go). No writer can
+			// be running this early (schedulers and the bot itself start
+			// later), so the lock is zero-contention — it restores the
+			// read-under-RuntimeMu convention, not a behavioral fix.
+			config.RuntimeMu.RLock()
+			startupCheckInterval := config.CLIConfig.Proxy.CheckInterval
+			config.RuntimeMu.RUnlock()
+
 			defaultBotCfg := telegram.BotConfig{
 				QuietHoursEnabled:         config.CLIConfig.Telegram.QuietHoursEnabled,
 				QuietHoursStart:           config.CLIConfig.Telegram.QuietHoursStart,
@@ -754,7 +779,7 @@ func main() {
 				DayDigestIntervalHours:    config.CLIConfig.Telegram.DayDigestIntervalHours,
 				AlertMode:                 config.CLIConfig.Telegram.AlertMode,
 				TargetURLs:                targetMgr.GetTargets(),
-				CheckIntervalSec:          config.CLIConfig.Proxy.CheckInterval,
+				CheckIntervalSec:          startupCheckInterval,
 				RichMode:                  config.CLIConfig.Telegram.RichMode,
 				CheckHostBgEnabled:        config.CLIConfig.Telegram.CheckHostBgEnabled,
 				CheckHostIntervalHours:    config.CLIConfig.Telegram.CheckHostIntervalHours,
@@ -899,12 +924,20 @@ func main() {
 
 	checkSchedulerMu.Lock()
 	checkScheduler = gocron.NewScheduler(time.UTC)
+	// RuntimeMu read-guard (startup, Wave N-G FIX 3): CheckInterval is a
+	// runtime-mutated field (config/runtime_lock.go). Held inside
+	// checkSchedulerMu — the same schedulerMu→RuntimeMu order the reschedule
+	// writers use, so no inversion. No writer exists before this point, the
+	// lock is zero-contention convention.
+	config.RuntimeMu.RLock()
+	startupCheckInterval := config.CLIConfig.Proxy.CheckInterval
+	config.RuntimeMu.RUnlock()
 	// SingletonMode: if a check cycle overruns the interval, the next tick is skipped
 	// instead of starting a second concurrent cycle. Without a concurrency limit a
 	// cycle is bounded by PROXY_TIMEOUT so this rarely triggers, but with
 	// PROXY_CHECK_CONCURRENCY a slow cycle degrades to "runs less often" rather than
 	// piling up overlapping runs.
-	checkScheduler.Every(config.CLIConfig.Proxy.CheckInterval).Seconds().SingletonMode().Do(func() {
+	checkScheduler.Every(startupCheckInterval).Seconds().SingletonMode().Do(func() {
 		runCheckIteration()
 	})
 	checkScheduler.StartAsync()
@@ -929,7 +962,15 @@ func main() {
 	if config.CLIConfig.Subscription.Update {
 		updateSchedulerMu.Lock()
 		updateScheduler = gocron.NewScheduler(time.UTC)
-		updateScheduler.Every(config.CLIConfig.Subscription.UpdateInterval).Seconds().WaitForSchedule().Do(func() {
+		// RuntimeMu read-guard (startup, Wave N-G FIX 3): UpdateInterval is a
+		// runtime-mutated field (config/runtime_lock.go). Held inside
+		// updateSchedulerMu — the same schedulerMu→RuntimeMu order the
+		// reschedule writer uses, so no inversion. No writer exists before
+		// this point, the lock is zero-contention convention.
+		config.RuntimeMu.RLock()
+		startupUpdateInterval := config.CLIConfig.Subscription.UpdateInterval
+		config.RuntimeMu.RUnlock()
+		updateScheduler.Every(startupUpdateInterval).Seconds().WaitForSchedule().Do(func() {
 			logger.Info("Checking subscriptions for updates...")
 			changed, count, err := reloadSubscriptions()
 			if err != nil {

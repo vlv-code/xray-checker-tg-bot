@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mymmrac/telego"
+
 	"xray-checker/checker"
 	"xray-checker/metrics"
 )
@@ -43,6 +45,28 @@ func TestEscapeHTML(t *testing.T) {
 				t.Errorf("escapeHTML(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestEscapeHTML_SinglePassContract pins the SINGLE-PASS semantics the whole
+// HTML view layer relies on: escaping a RAW value once yields the safe form,
+// and feeding that result through escapeHTML AGAIN yields the double-escaped
+// form — escapeHTML is deliberately NOT idempotent.
+//
+// Call-site contract: every caller passes RAW runtime values exactly once.
+// A call site that feeds an already-escaped value through escapeHTML renders
+// "&amp;lt;b&amp;gt;" garbage on screen — that is a CALLER bug. This test
+// documents (does not bless) the double-escape outcome so audits can detect
+// accidental double-escaping in rendered output.
+func TestEscapeHTML_SinglePassContract(t *testing.T) {
+	raw := "<b>"
+	once := escapeHTML(raw)
+	if once != "&lt;b&gt;" {
+		t.Fatalf("single pass must escape raw markup: escapeHTML(%q) = %q, want &lt;b&gt;", raw, once)
+	}
+	twice := escapeHTML(once)
+	if twice != "&amp;lt;b&amp;gt;" {
+		t.Fatalf("second pass must double-escape (proving single-pass semantics): escapeHTML(%q) = %q, want &amp;lt;b&amp;gt;", once, twice)
 	}
 }
 
@@ -243,5 +267,67 @@ func TestFormatReleaseNotification_PlainURLKeepsHref(t *testing.T) {
 
 	if !strings.Contains(text, `<a href="https://github.com/vlv-code/xray-checker-tg-bot/releases/tag/v2.4.0">`) {
 		t.Errorf("benign URL must round-trip unescaped in the href attribute, got:\n%s", text)
+	}
+}
+
+// richPreformattedText digs the joined detailLines text out of a built rich
+// message: section headings are skipped, every details block contributes the
+// text of its preformatted (plain) block.
+func richPreformattedText(t *testing.T, blocks []telego.InputRichBlock) string {
+	t.Helper()
+	var out string
+	for _, blk := range blocks {
+		details, ok := blk.(*telego.InputRichBlockDetails)
+		if !ok {
+			continue
+		}
+		for _, sub := range details.Blocks {
+			pre, ok := sub.(*telego.InputRichBlockPreformatted)
+			if !ok {
+				continue
+			}
+			if plain, ok := pre.Text.(*telego.RichTextPlain); ok {
+				out += string(*plain)
+			}
+		}
+	}
+	return out
+}
+
+// TestBuildDiagnosticsDetailsRich_RawPlainTextContract pins the RAW contract
+// of the rich-text detailLines path (diagnostics.go
+// buildDiagnosticsDetailsRichMessageWithTarget): detailLines are joined into
+// tu.RichBlockPreformatted(tu.RichTextPlain(...)) — a PLAIN text entity that
+// Telegram renders verbatim, NOT html-parsed. The OPPOSITE of the
+// escapeHTML call sites: a hostile runtime string ("<b>x&y") must pass
+// through UNESCAPED, because escaping here is the double-escape bug (the
+// user would literally see "&lt;b&gt;"), while a plain entity cannot break
+// message delivery the way a raw interpolation into an HTML-parse-mode
+// string would. If this pin starts failing, the rich builder started
+// escaping or the entity switched to HTML parsing — re-audit both paths.
+func TestBuildDiagnosticsDetailsRich_RawPlainTextContract(t *testing.T) {
+	hostile := "<b>x&y"
+	b := &Bot{}
+	reports := []checker.ProxyDiagReport{
+		{
+			ProxyName:  "Proxy-1",
+			Protocol:   "vless",
+			Status:     "online",
+			StableID:   "p1",
+			NodeHealth: checker.NodeHealth{DNSErr: hostile},
+		},
+	}
+
+	msg, _ := b.buildDiagnosticsDetailsRichMessageWithTarget(reports, "", 1)
+	if msg == nil {
+		t.Fatalf("expected a rich details message to be built")
+	}
+
+	pre := richPreformattedText(t, msg.Blocks)
+	if !strings.Contains(pre, "DNS: ❌ "+hostile) {
+		t.Errorf("hostile detail line must pass through RAW into the plain rich entity, got: %q", pre)
+	}
+	if strings.Contains(pre, "&lt;") || strings.Contains(pre, "&amp;") {
+		t.Errorf("plain rich entity must NOT be html-escaped (that would double-escape the view), got: %q", pre)
 	}
 }

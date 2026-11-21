@@ -549,3 +549,20 @@ func TestMenuCheburinPromptUnifiedBackRow(t *testing.T) {
 		}
 	}
 }
+
+// TestCheburMenuTextShieldHeader (wave N-A FIX 2b): the submenu header text
+// carries the plain 🛡️ shield before the bold title — the message-text
+// counterpart of the wave M8 «🛡️ Cheburcheck» button (chebur files are
+// plain-by-construction: the fallback is rendered directly, no btnIcon
+// wiring, no custom-emoji layer).
+func TestCheburMenuTextShieldHeader(t *testing.T) {
+	b := &Bot{}
+	txt := b.getCheburMenuText(2)
+	if !strings.Contains(txt, "🛡️ <b>Cheburcheck — активный пробинг блокировок</b>") {
+		t.Errorf("expected the shield-prefixed header «🛡️ <b>Cheburcheck — …», got: %s", txt)
+	}
+	// The wave H3 pins survive: no 🧀/РФ anywhere in the submenu text.
+	if strings.Contains(txt, "🧀") || strings.Contains(txt, "РФ") {
+		t.Errorf("submenu text must stay free of 🧀/РФ, got: %s", txt)
+	}
+}

@@ -11,20 +11,9 @@ import (
 	"xray-checker/xray"
 )
 
-var (
-	subscriptionName string
-	subNameMu        sync.RWMutex
-)
-
-// lastGoodConfigs caches the parsed proxy configs of the last SUCCESSFUL
-// fetch per subscription source, so a single hiccuping source can be merged
-// back into the result instead of silently shrinking the proxy set (which
-// would take every proxy of the failing panel offline and fire false outage
-// alerts until the next cycle). A removed source loses its entry.
-var (
-	lastGoodMu      sync.Mutex
-	lastGoodConfigs = make(map[string][]*models.ProxyConfig)
-)
+// All package-level mutable state of this reader (last-known-good cache,
+// subscription name) lives in the sourceState type — see source_state.go.
+// The package-level funcs below delegate to defaultSourceState.
 
 // cloneProxyConfig returns a deep copy of cfg (slice and map fields
 // duplicated), so cached configs never alias the live set: downstream
@@ -68,38 +57,12 @@ func cloneProxyConfigs(cs []*models.ProxyConfig) []*models.ProxyConfig {
 	return out
 }
 
-// rememberLastGoodLocked stores a deep copy of the configs (cloneProxyConfig)
-// so the cache never aliases structs that downstream code mutates.
-// Caller must hold lastGoodMu.
-func rememberLastGoodLocked(url string, configs []*models.ProxyConfig) {
-	lastGoodConfigs[url] = cloneProxyConfigs(configs)
-}
-
-// evictStaleLastGoodLocked drops cache entries whose source is no longer in
-// the requested set, so a removed subscription cannot resurrect its proxies
-// from the cache forever. Caller must hold lastGoodMu.
-func evictStaleLastGoodLocked(urls []string) {
-	requested := make(map[string]struct{}, len(urls))
-	for _, u := range urls {
-		requested[u] = struct{}{}
-	}
-	for u := range lastGoodConfigs {
-		if _, ok := requested[u]; !ok {
-			delete(lastGoodConfigs, u)
-		}
-	}
-}
-
 func GetSubscriptionName() string {
-	subNameMu.RLock()
-	defer subNameMu.RUnlock()
-	return subscriptionName
+	return defaultSourceState.subscriptionName()
 }
 
 func SetSubscriptionName(name string) {
-	subNameMu.Lock()
-	defer subNameMu.Unlock()
-	subscriptionName = name
+	defaultSourceState.setSubscriptionName(name)
 }
 
 type subscriptionResult struct {
@@ -147,20 +110,29 @@ func BuildValidatedConfiguration(configFile string, configs []*models.ProxyConfi
 }
 
 func ReadFromMultipleSources(urls []string) ([]*models.ProxyConfig, error) {
-	configs, _, err := ReadFromMultipleSourcesDetailed(urls)
+	configs, _, _, err := ReadFromMultipleSourcesDetailed(urls)
 	return configs, err
 }
 
-func ReadFromMultipleSourcesDetailed(urls []string) ([]*models.ProxyConfig, map[string]int, error) {
+// ReadFromMultipleSourcesDetailed fetches every source and merges the results.
+// counts maps each source that contributed proxies to the merged set to its
+// proxy count — successfully refreshed sources and failed sources rescued
+// from the last-known-good cache alike (the merged proxies are real).
+// failed marks the sources whose fetch errored THIS cycle (cached fallbacks
+// included), so callers can keep freshness telemetry honest: a cached
+// fallback is not a fresh update (Wave N-G FIX 2). failed is non-nil and
+// empty when every source refreshed successfully.
+func ReadFromMultipleSourcesDetailed(urls []string) ([]*models.ProxyConfig, map[string]int, map[string]bool, error) {
 	if len(urls) == 0 {
-		return []*models.ProxyConfig{}, make(map[string]int), nil
+		return []*models.ProxyConfig{}, make(map[string]int), make(map[string]bool), nil
 	}
 
 	counts := make(map[string]int)
+	failed := make(map[string]bool)
 	if len(urls) == 1 {
 		configs, name, err := ReadFromSource(urls[0])
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		for _, cfg := range configs {
 			cfg.SubName = name
@@ -169,11 +141,8 @@ func ReadFromMultipleSourcesDetailed(urls []string) ([]*models.ProxyConfig, map[
 			SetSubscriptionName(name)
 		}
 		counts[urls[0]] = len(configs)
-		lastGoodMu.Lock()
-		rememberLastGoodLocked(urls[0], configs)
-		evictStaleLastGoodLocked(urls)
-		lastGoodMu.Unlock()
-		return configs, counts, nil
+		defaultSourceState.storeAndEvictStale(urls[0], configs, urls)
+		return configs, counts, failed, nil
 	}
 
 	logger.Debug("Fetching %d subscriptions in parallel", len(urls))
@@ -210,18 +179,19 @@ func ReadFromMultipleSourcesDetailed(urls []string) ([]*models.ProxyConfig, map[
 
 	// Guard the whole cache read-modify-write (merge + eviction) so
 	// concurrent reloads cannot interleave updates.
-	lastGoodMu.Lock()
-	defer lastGoodMu.Unlock()
+	defaultSourceState.lock()
+	defer defaultSourceState.unlock()
 
 	for _, url := range urls {
 		result := resultMap[url]
 		if result.Error != nil {
 			logger.Warn("Failed to fetch subscription %s: %v", RedactURL(result.URL), result.Error)
 			errors = append(errors, fmt.Errorf("%s: %v", RedactURL(result.URL), result.Error))
+			failed[url] = true
 			// Keep the last successfully fetched set for this source: a
 			// single hiccuping panel must not lose all of its proxies
 			// (false outage alerts) until it recovers.
-			if cached, ok := lastGoodConfigs[url]; ok && len(cached) > 0 {
+			if cached, ok := defaultSourceState.getLocked(url); ok && len(cached) > 0 {
 				logger.Warn("Subscription %s failed, keeping %d last-known-good proxies: %v", RedactURL(url), len(cached), result.Error)
 				counts[url] = len(cached)
 				// Deep-copy on merge too: the merged set flows into the live
@@ -233,7 +203,7 @@ func ReadFromMultipleSourcesDetailed(urls []string) ([]*models.ProxyConfig, map[
 			continue
 		}
 		logger.Debug("Fetched %d proxies from %s (name: %s)", len(result.Configs), RedactURL(result.URL), result.Name)
-		rememberLastGoodLocked(url, result.Configs)
+		defaultSourceState.storeLocked(url, result.Configs)
 		counts[url] = len(result.Configs)
 		allConfigs = append(allConfigs, result.Configs...)
 		if firstName == "" && result.Name != "" {
@@ -243,11 +213,11 @@ func ReadFromMultipleSourcesDetailed(urls []string) ([]*models.ProxyConfig, map[
 	}
 
 	// Sources no longer requested lose their cache entry (done once per run).
-	evictStaleLastGoodLocked(urls)
+	defaultSourceState.evictStaleLocked(urls)
 
 	if successCount == 0 {
 		if len(allConfigs) == 0 {
-			return nil, nil, fmt.Errorf("failed to fetch any subscription: %v", errors)
+			return nil, nil, nil, fmt.Errorf("failed to fetch any subscription: %v", errors)
 		}
 		// Total failure: callers keyed on the error keep the currently
 		// applied set (main.go returns early on err), but the merged
@@ -255,7 +225,7 @@ func ReadFromMultipleSourcesDetailed(urls []string) ([]*models.ProxyConfig, map[
 		for i := range allConfigs {
 			allConfigs[i].Index = i
 		}
-		return allConfigs, counts, fmt.Errorf("failed to fetch any subscription: %v", errors)
+		return allConfigs, counts, failed, fmt.Errorf("failed to fetch any subscription: %v", errors)
 	}
 
 	if firstName != "" {
@@ -267,7 +237,7 @@ func ReadFromMultipleSourcesDetailed(urls []string) ([]*models.ProxyConfig, map[
 	}
 
 	logger.Debug("Total: %d proxies from %d/%d subscriptions", len(allConfigs), successCount, len(urls))
-	return allConfigs, counts, nil
+	return allConfigs, counts, failed, nil
 }
 
 func ReadFromSource(source string) ([]*models.ProxyConfig, string, error) {

@@ -97,16 +97,12 @@ func flipSubscriptionFile(t *testing.T, source, payload string) {
 
 func resetLastGoodCache(t *testing.T) {
 	t.Helper()
-	lastGoodMu.Lock()
-	lastGoodConfigs = make(map[string][]*models.ProxyConfig)
-	lastGoodMu.Unlock()
+	defaultSourceState.resetLastGood()
 }
 
 func lastGoodHas(t *testing.T, source string) bool {
 	t.Helper()
-	lastGoodMu.Lock()
-	defer lastGoodMu.Unlock()
-	_, ok := lastGoodConfigs[source]
+	_, ok := defaultSourceState.get(source)
 	return ok
 }
 
@@ -125,7 +121,7 @@ func TestReadFromMultipleSources_KeepsLastKnownGoodOnSourceFailure(t *testing.T)
 	srcA := writeSubscriptionFile(t, socksSubscriptionPayload("1.2.3.4", 1080))
 	srcB := writeSubscriptionFile(t, socksSubscriptionPayload("5.6.7.8", 1081))
 
-	configs, counts, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB})
+	configs, counts, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB})
 	if err != nil {
 		t.Fatalf("cycle 1 (both sources OK) failed: %v", err)
 	}
@@ -136,7 +132,7 @@ func TestReadFromMultipleSources_KeepsLastKnownGoodOnSourceFailure(t *testing.T)
 	// Source B starts failing; source A is untouched.
 	flipSubscriptionFile(t, srcB, emptySubscriptionPayload)
 
-	configs, counts, err = ReadFromMultipleSourcesDetailed([]string{srcA, srcB})
+	configs, counts, _, err = ReadFromMultipleSourcesDetailed([]string{srcA, srcB})
 	if err != nil {
 		t.Fatalf("cycle 2 (partial failure) must not be a total failure: %v", err)
 	}
@@ -170,7 +166,7 @@ func TestReadFromMultipleSources_EvictsRemovedSources(t *testing.T) {
 	srcA := writeSubscriptionFile(t, socksSubscriptionPayload("1.2.3.4", 1080))
 	srcB := writeSubscriptionFile(t, socksSubscriptionPayload("5.6.7.8", 1081))
 
-	if _, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB}); err != nil {
+	if _, _, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB}); err != nil {
 		t.Fatalf("cycle 1 failed: %v", err)
 	}
 	if !lastGoodHas(t, srcB) {
@@ -178,7 +174,7 @@ func TestReadFromMultipleSources_EvictsRemovedSources(t *testing.T) {
 	}
 
 	// Source B is removed from the requested set.
-	configs, _, err := ReadFromMultipleSourcesDetailed([]string{srcA})
+	configs, _, _, err := ReadFromMultipleSourcesDetailed([]string{srcA})
 	if err != nil {
 		t.Fatalf("cycle 2 failed: %v", err)
 	}
@@ -199,7 +195,7 @@ func TestReadFromMultipleSources_NoCacheFailureStaysAbsent(t *testing.T) {
 	srcA := writeSubscriptionFile(t, socksSubscriptionPayload("1.2.3.4", 1080))
 	srcC := writeSubscriptionFile(t, emptySubscriptionPayload)
 
-	configs, counts, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcC})
+	configs, counts, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcC})
 	if err != nil {
 		t.Fatalf("partial failure must not be a total failure: %v", err)
 	}
@@ -220,14 +216,14 @@ func TestReadFromMultipleSources_TotalFailureReturnsErrorAndCache(t *testing.T) 
 	srcA := writeSubscriptionFile(t, socksSubscriptionPayload("1.2.3.4", 1080))
 	srcB := writeSubscriptionFile(t, socksSubscriptionPayload("5.6.7.8", 1081))
 
-	if _, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB}); err != nil {
+	if _, _, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB}); err != nil {
 		t.Fatalf("cycle 1 failed: %v", err)
 	}
 
 	flipSubscriptionFile(t, srcA, emptySubscriptionPayload)
 	flipSubscriptionFile(t, srcB, emptySubscriptionPayload)
 
-	configs, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB})
+	configs, _, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB})
 	if err == nil {
 		t.Fatal("total failure must still return an error")
 	}
@@ -245,17 +241,17 @@ func TestReadFromMultipleSources_FreshFetchOverwritesCache(t *testing.T) {
 	srcA := writeSubscriptionFile(t, socksSubscriptionPayload("1.2.3.4", 1080))
 	srcB := writeSubscriptionFile(t, socksSubscriptionPayload("5.6.7.8", 1081))
 
-	if _, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB}); err != nil {
+	if _, _, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB}); err != nil {
 		t.Fatalf("cycle 1 failed: %v", err)
 	}
 	flipSubscriptionFile(t, srcB, emptySubscriptionPayload)
-	if _, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB}); err != nil {
+	if _, _, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB}); err != nil {
 		t.Fatalf("cycle 2 (B failing, served from cache) failed: %v", err)
 	}
 	// Source B recovers with a NEW proxy list.
 	flipSubscriptionFile(t, srcB, socksSubscriptionPayload("9.9.9.9", 1082))
 
-	configs, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB})
+	configs, _, _, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB})
 	if err != nil {
 		t.Fatalf("cycle 3 failed: %v", err)
 	}
@@ -270,10 +266,97 @@ func TestReadFromMultipleSources_FreshFetchOverwritesCache(t *testing.T) {
 		t.Errorf("stale cached B proxy must not be merged after a fresh fetch, got %v", got)
 	}
 	// The cache itself must hold the fresh list, not the stale one.
-	lastGoodMu.Lock()
-	cachedB := lastGoodConfigs[srcB]
-	lastGoodMu.Unlock()
+	cachedB, _ := defaultSourceState.get(srcB)
 	if len(cachedB) != 1 || cachedB[0].Server != "9.9.9.9" {
 		t.Errorf("cache must hold the fresh B list, got %+v", cachedB)
+	}
+}
+
+// Wave N-G FIX 2: ReadFromMultipleSourcesDetailed must expose WHICH sources
+// failed this cycle, so callers (main.go) can keep freshness telemetry honest:
+// a source that failed but served last-known-good cached configs must not be
+// stamped with URLStore.LastUpdate=now — that presents stale proxies as
+// freshly fetched in the /subs view. counts still reports the cached count
+// (the merged set is real), failed marks the sources to skip.
+func TestReadFromMultipleSourcesDetailed_ReportsFailedSources(t *testing.T) {
+	resetLastGoodCache(t)
+
+	srcA := writeSubscriptionFile(t, socksSubscriptionPayload("1.2.3.4", 1080))
+	srcB := writeSubscriptionFile(t, socksSubscriptionPayload("5.6.7.8", 1081))
+
+	// Cycle 1: both sources OK — failed must be empty.
+	_, _, failed, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB})
+	if err != nil {
+		t.Fatalf("cycle 1 failed: %v", err)
+	}
+	if len(failed) != 0 {
+		t.Fatalf("cycle 1: no source failed, got failed=%v", failed)
+	}
+
+	// Cycle 2: source B fails and serves its cached proxy — B must be
+	// reported as failed, A must not.
+	flipSubscriptionFile(t, srcB, emptySubscriptionPayload)
+	configs, counts, failed, err := ReadFromMultipleSourcesDetailed([]string{srcA, srcB})
+	if err != nil {
+		t.Fatalf("cycle 2 (partial failure) must not be a total failure: %v", err)
+	}
+	if !failed[srcB] {
+		t.Errorf("cycle 2: failing source B must be reported in the failed map, got %v", failed)
+	}
+	if failed[srcA] {
+		t.Errorf("cycle 2: healthy source A must not be reported failed, got %v", failed)
+	}
+	if counts[srcB] != 1 {
+		t.Errorf("cycle 2: cached count for B must stay visible in counts (merged set is real), got %d", counts[srcB])
+	}
+	if got := proxyServers(configs); len(got) != 2 || got["1.2.3.4"] != 1080 || got["5.6.7.8"] != 1081 {
+		t.Errorf("cycle 2: merged set must still hold both proxies, got %v", got)
+	}
+
+	// Cycle 3: total failure — both sources reported failed, cached configs
+	// still merged, error returned (main.go ignores the maps on err, but
+	// they must stay honest).
+	flipSubscriptionFile(t, srcA, emptySubscriptionPayload)
+	configs, _, failed, err = ReadFromMultipleSourcesDetailed([]string{srcA, srcB})
+	if err == nil {
+		t.Fatal("cycle 3: total failure must return an error")
+	}
+	if !failed[srcA] || !failed[srcB] {
+		t.Errorf("cycle 3: both failing sources must be reported, got %v", failed)
+	}
+	if got := proxyServers(configs); len(got) != 2 {
+		t.Errorf("cycle 3: cached configs must still be merged, got %v", got)
+	}
+}
+
+// Wave N-H: the internal constructor must build ISOLATED instances — state
+// stored in one sourceState (cache entries and subscription name) must be
+// invisible to another. The old bare package-level vars made per-test
+// isolation impossible without a global reset.
+func TestNewSourceStateInstancesAreIsolated(t *testing.T) {
+	a := newSourceState()
+	b := newSourceState()
+
+	cfg := &models.ProxyConfig{
+		Protocol: "socks",
+		Server:   "1.2.3.4",
+		Port:     1080,
+		Name:     "n",
+	}
+	a.store("src-a", []*models.ProxyConfig{cfg})
+
+	if cached, ok := a.get("src-a"); !ok || len(cached) != 1 || cached[0].Server != "1.2.3.4" {
+		t.Fatalf("precondition: instance a must hold its stored entry, got %v (ok=%v)", cached, ok)
+	}
+	if cached, ok := b.get("src-a"); ok || cached != nil {
+		t.Errorf("instance b must not see instance a's cache entries, got %v (ok=%v)", cached, ok)
+	}
+
+	b.setSubscriptionName("beta")
+	if got := a.subscriptionName(); got != "" {
+		t.Errorf("instance a must not see instance b's name, got %q", got)
+	}
+	if got := b.subscriptionName(); got != "beta" {
+		t.Errorf("instance b must hold its own name, got %q", got)
 	}
 }

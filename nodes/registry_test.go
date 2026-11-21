@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -765,5 +767,56 @@ func TestRegistryAudits(t *testing.T) {
 	postReport(t, reg.HandleReport(), "t1", ReportPayload{Version: "1", CheckIntervalSec: 60})
 	if got := reg.NodeAudits("n1"); len(got) != 0 {
 		t.Fatalf("audits must be replaced by newer report: %+v", got)
+	}
+}
+
+// Adversarial (Wave N-G FIX 1): RegisterNode must not leave a live in-memory
+// node behind when the store persist fails. Memory used to be populated
+// BEFORE nodesStore.Save, so on a failed persist the caller saw an error but
+// the node stayed registered (and its token kept authenticating) until
+// restart — a retry then hit the «already exists» memory/disk divergence.
+// RED trick (same as TestNodesStore_MigrationPersistFailureIsNonFatal): a
+// directory at the nodes.json.tmp path makes persistLocked fail
+// deterministically on every platform.
+func TestRegistry_RegisterNode_PersistFailureRollsBackMemory(t *testing.T) {
+	tmpDir := t.TempDir()
+	storePath := filepath.Join(tmpDir, "nodes.json")
+	nodesStore, err := NewNodesStore(storePath)
+	if err != nil {
+		t.Fatalf("NewNodesStore: %v", err)
+	}
+	// Occupy the atomic-write tmp path with a directory so every Save fails.
+	if err := os.Mkdir(storePath+".tmp", 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := NewRegistry(nil, nil, nil)
+	reg.SetNodesStore(nodesStore)
+
+	if err := reg.RegisterNode(NodeConfig{Name: "dyn-fail", Token: "tok-fail"}); err == nil {
+		t.Fatal("RegisterNode must fail when the store cannot persist")
+	}
+	if reg.NodeExists("dyn-fail") {
+		t.Error("failed registration must not leave the node live in memory: retry would hit \"already exists\" divergence")
+	}
+	reg.mu.RLock()
+	_, inByToken := reg.byToken[HashToken("tok-fail")]
+	reg.mu.RUnlock()
+	if inByToken {
+		t.Error("failed registration must not leave a ghost byToken entry (token must stop authenticating)")
+	}
+
+	// Retry against a healthy store must succeed end-to-end: proof the
+	// failed attempt left no residue behind.
+	healthyStore, err := NewNodesStore(filepath.Join(tmpDir, "nodes2.json"))
+	if err != nil {
+		t.Fatalf("NewNodesStore (healthy): %v", err)
+	}
+	reg.SetNodesStore(healthyStore)
+	if err := reg.RegisterNode(NodeConfig{Name: "dyn-fail", Token: "tok-fail"}); err != nil {
+		t.Fatalf("retry with a valid store must succeed: %v", err)
+	}
+	if !reg.NodeExists("dyn-fail") {
+		t.Error("retried node must be live in memory")
 	}
 }

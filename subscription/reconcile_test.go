@@ -132,7 +132,7 @@ func TestReconcileManagedLeavesUnmanagedDynamicAlone(t *testing.T) {
 }
 
 func TestReadFromMultipleSourcesDetailed_Empty(t *testing.T) {
-	cfgs, counts, err := ReadFromMultipleSourcesDetailed(nil)
+	cfgs, counts, _, err := ReadFromMultipleSourcesDetailed(nil)
 	if err != nil {
 		t.Fatalf("unexpected error for nil urls: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestReadFromMultipleSourcesDetailed_Empty(t *testing.T) {
 		t.Fatalf("expected empty configs and counts, got cfgs=%d, counts=%d", len(cfgs), len(counts))
 	}
 
-	cfgs, counts, err = ReadFromMultipleSourcesDetailed([]string{})
+	cfgs, counts, _, err = ReadFromMultipleSourcesDetailed([]string{})
 	if err != nil {
 		t.Fatalf("unexpected error for empty urls: %v", err)
 	}

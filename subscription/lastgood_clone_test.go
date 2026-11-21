@@ -21,7 +21,7 @@ func TestLastGoodCacheStoreDoesNotAliasOriginalConfigs(t *testing.T) {
 		WGAllowedIPs:  []string{"0.0.0.0/0"},
 		WGDNS:         []string{"1.1.1.1"},
 	}
-	rememberLastGoodLocked("src", []*models.ProxyConfig{cfg})
+	defaultSourceState.store("src", []*models.ProxyConfig{cfg})
 
 	// Downstream mutation of the ORIGINAL object must not reach the cache.
 	cfg.Index = 42
@@ -34,7 +34,7 @@ func TestLastGoodCacheStoreDoesNotAliasOriginalConfigs(t *testing.T) {
 	cfg.WGAllowedIPs[0] = "mutated"
 	cfg.WGDNS[0] = "mutated"
 
-	cached, ok := lastGoodConfigs["src"]
+	cached, ok := defaultSourceState.get("src")
 	if !ok || len(cached) != 1 {
 		t.Fatalf("expected 1 cached config, got %d (ok=%v)", len(cached), ok)
 	}
@@ -64,15 +64,16 @@ func TestCloneProxyConfigsReturnsIndependentCopies(t *testing.T) {
 		ALPN:     []string{"h2", "http/1.1"},
 		Settings: map[string]string{"k": "v"},
 	}
-	rememberLastGoodLocked("src", []*models.ProxyConfig{cfg})
+	defaultSourceState.store("src", []*models.ProxyConfig{cfg})
 
-	merged := cloneProxyConfigs(lastGoodConfigs["src"])
+	cachedSrc, _ := defaultSourceState.get("src")
+	merged := cloneProxyConfigs(cachedSrc)
 	merged[0].Index = 7
 	merged[0].StableID = "reassigned"
 	merged[0].ALPN[0] = "mutated"
 	merged[0].Settings["k"] = "mutated"
 
-	cached := lastGoodConfigs["src"]
+	cached, _ := defaultSourceState.get("src")
 	if cached[0].Index == 7 || cached[0].StableID == "reassigned" {
 		t.Fatalf("merge aliased cached structs: %+v", cached[0])
 	}

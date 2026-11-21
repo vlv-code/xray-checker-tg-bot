@@ -248,22 +248,29 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 		}
 	}
 
-	// 1. Process deletions for disabled proxies
+	// 1. Process deletions for disabled proxies. Like the quiet-hours block 0,
+	// the delete goes through callWithRateLimitRetry (sleeps on 429; b.mu is
+	// already released above, so the lock-safety invariant holds).
 	for _, del := range disabledDeletions {
 		if b.api != nil {
-			_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-				ChatID:    tu.ID(del.chatID),
-				MessageID: del.messageID,
+			_ = b.callWithRateLimitRetry(del.chatID, "disabled alert delete", func() error {
+				return b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+					ChatID:    tu.ID(del.chatID),
+					MessageID: del.messageID,
+				})
 			})
 		}
 	}
 
-	// 1b. Process deletions for proxies removed from the snapshot
+	// 1b. Process deletions for proxies removed from the snapshot (same
+	// retry-on-429 contract as block 1).
 	for _, del := range removedDeletions {
 		if b.api != nil {
-			_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-				ChatID:    tu.ID(del.chatID),
-				MessageID: del.messageID,
+			_ = b.callWithRateLimitRetry(del.chatID, "removed alert delete", func() error {
+				return b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+					ChatID:    tu.ID(del.chatID),
+					MessageID: del.messageID,
+				})
 			})
 		}
 	}
@@ -298,9 +305,11 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 				b.mu.Unlock()
 				if !stillDown {
 					if b.api != nil {
-						_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-							ChatID:    tu.ID(t.ChatID),
-							MessageID: sent.MessageID,
+						_ = b.callWithRateLimitRetry(t.ChatID, "outage self-delete", func() error {
+							return b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+								ChatID:    tu.ID(t.ChatID),
+								MessageID: sent.MessageID,
+							})
 						})
 					}
 					continue
@@ -314,9 +323,11 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 	for _, rec := range recoveries {
 		if rec.alertMode == AlertModeClean {
 			if rec.hadAlert && b.api != nil {
-				_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-					ChatID:    tu.ID(rec.target.ChatID),
-					MessageID: rec.alert.MessageID,
+				_ = b.callWithRateLimitRetry(rec.target.ChatID, "alert recovery delete", func() error {
+					return b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+						ChatID:    tu.ID(rec.target.ChatID),
+						MessageID: rec.alert.MessageID,
+					})
 				})
 			}
 			if b.notifyOnRecovery && rec.hadAlert {
@@ -330,9 +341,12 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 					mID := sent.MessageID
 					time.AfterFunc(2*time.Minute, func() {
 						if b.api != nil {
-							_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-								ChatID:    tu.ID(cID),
-								MessageID: mID,
+							// Own goroutine, no b.mu held: safe to sleep on 429.
+							_ = b.callWithRateLimitRetry(cID, "recovery notice cleanup delete", func() error {
+								return b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+									ChatID:    tu.ID(cID),
+									MessageID: mID,
+								})
 							})
 						}
 					})
@@ -351,7 +365,10 @@ func (b *Bot) ProcessSnapshot(snapshot []metrics.ProxyMetric) {
 					Text:      liveText,
 					ParseMode: telego.ModeHTML,
 				}
-				_, _ = b.api.EditMessageText(b.ctx, params)
+				_ = b.callWithRateLimitRetry(rec.target.ChatID, "alert recovery edit", func() error {
+					_, err := b.api.EditMessageText(b.ctx, params)
+					return err
+				})
 			}
 		}
 	}

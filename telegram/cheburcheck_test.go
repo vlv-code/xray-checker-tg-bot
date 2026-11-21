@@ -451,3 +451,174 @@ func waitEdits2(ft *fakeTelegramAPI, want int) []fakeAPICall {
 	}
 	return ft.callsOf("editMessageText")
 }
+
+// TestCheburProbeStatusTextsCarryShield (wave N-A FIX 2c): the probe status
+// texts — the «Запрос отправлен» placeholder and the «Сканеры не настроены»
+// notice — carry the plain 🛡️ shield at line start on EVERY entry path
+// (command, menu host probe, manual input), mirroring the wave M8
+// «🛡️ Cheburcheck» button. RU wording stays identical; the ❌ error lines
+// keep the ❌-only lead (a second icon there reads as noise).
+func TestCheburProbeStatusTextsCarryShield(t *testing.T) {
+	const wantPlaceholder = "🛡️ ⏳ <b>Запрос отправлен в Cheburcheck...</b>"
+	const wantUnconfigured = "🛡️ Сканеры Cheburcheck не настроены (DefaultCheburScanners пуст)"
+
+	creds := []checker.ScannerCred{{Name: "test-scanner", Token: "tok-1"}}
+	// Dead endpoint: connection refused — the placeholder is inspected before
+	// the probe result error edit lands.
+	deadClient := checker.NewCheburcheckClient("http://127.0.0.1:1", 100*time.Millisecond, creds)
+	emptyClient := checker.NewCheburcheckClient("", time.Second, nil)
+
+	t.Run("host probe placeholder", func(t *testing.T) {
+		ft, api := newFakeTelegramBot(t)
+		b := &Bot{
+			api:     api,
+			ctx:     context.Background(),
+			targets: []ChatTarget{{ChatID: 12345}},
+			source: &mockSource{metrics: []metrics.ProxyMetric{
+				{Name: "P", StableID: "p", Address: "1.2.3.4:443", Protocol: "vless"},
+			}},
+			tracker:      NewAlertTracker(),
+			eventBuffer:  NewEventBuffer(),
+			cheburClient: deadClient,
+		}
+		b.handleCheburcheckHost(12345, 10, HostCallbackKey("1.2.3.4"))
+		edits := ft.callsOf("editMessageText")
+		if len(edits) == 0 {
+			t.Fatal("expected the placeholder edit")
+		}
+		text, _ := edits[0].Params["text"].(string)
+		if !strings.Contains(text, wantPlaceholder) {
+			t.Errorf("placeholder must carry the shield, got: %q", text)
+		}
+	})
+
+	t.Run("host probe unconfigured", func(t *testing.T) {
+		ft, api := newFakeTelegramBot(t)
+		b := &Bot{
+			api:     api,
+			ctx:     context.Background(),
+			targets: []ChatTarget{{ChatID: 12345}},
+			// The host must resolve from the snapshot FIRST — the handler
+			// checks credentials only after the reverse lookup succeeds.
+			source: &mockSource{metrics: []metrics.ProxyMetric{
+				{Name: "P", StableID: "p", Address: "9.9.9.9:443", Protocol: "vless"},
+			}},
+			tracker:      NewAlertTracker(),
+			eventBuffer:  NewEventBuffer(),
+			cheburClient: emptyClient,
+		}
+		b.handleCheburcheckHost(12345, 10, HostCallbackKey("9.9.9.9"))
+		edits := ft.callsOf("editMessageText")
+		if len(edits) == 0 {
+			t.Fatal("expected the unconfigured notice edit")
+		}
+		text, _ := edits[0].Params["text"].(string)
+		if !strings.Contains(text, wantUnconfigured) {
+			t.Errorf("unconfigured notice must carry the shield, got: %q", text)
+		}
+	})
+
+	t.Run("command placeholder", func(t *testing.T) {
+		ft, api := newFakeTelegramBot(t)
+		b := &Bot{
+			api:          api,
+			ctx:          context.Background(),
+			targets:      []ChatTarget{{ChatID: 12345}},
+			source:       &mockSource{metrics: []metrics.ProxyMetric{}},
+			tracker:      NewAlertTracker(),
+			eventBuffer:  NewEventBuffer(),
+			cheburClient: deadClient,
+		}
+		b.handleCheburcheckCommand(&telego.Message{
+			MessageID: 7,
+			Chat:      telego.Chat{ID: 12345, Type: "private"},
+			Text:      "/cheburcheck example.com",
+		})
+		sends := ft.callsOf("sendMessage")
+		if len(sends) == 0 {
+			t.Fatal("expected the placeholder reply")
+		}
+		text, _ := sends[0].Params["text"].(string)
+		if !strings.Contains(text, wantPlaceholder) {
+			t.Errorf("placeholder must carry the shield, got: %q", text)
+		}
+	})
+
+	t.Run("command unconfigured", func(t *testing.T) {
+		ft, api := newFakeTelegramBot(t)
+		b := &Bot{
+			api:          api,
+			ctx:          context.Background(),
+			targets:      []ChatTarget{{ChatID: 12345}},
+			source:       &mockSource{metrics: []metrics.ProxyMetric{}},
+			tracker:      NewAlertTracker(),
+			eventBuffer:  NewEventBuffer(),
+			cheburClient: emptyClient,
+		}
+		b.handleCheburcheckCommand(&telego.Message{
+			MessageID: 7,
+			Chat:      telego.Chat{ID: 12345, Type: "private"},
+			Text:      "/cheburcheck example.com",
+		})
+		sends := ft.callsOf("sendMessage")
+		if len(sends) == 0 {
+			t.Fatal("expected the unconfigured notice reply")
+		}
+		text, _ := sends[0].Params["text"].(string)
+		if !strings.Contains(text, wantUnconfigured) {
+			t.Errorf("unconfigured notice must carry the shield, got: %q", text)
+		}
+	})
+
+	t.Run("manual input placeholder", func(t *testing.T) {
+		ft, api := newFakeTelegramBot(t)
+		b := &Bot{
+			api:          api,
+			ctx:          context.Background(),
+			targets:      []ChatTarget{{ChatID: 12345}},
+			source:       &mockSource{metrics: []metrics.ProxyMetric{}},
+			tracker:      NewAlertTracker(),
+			eventBuffer:  NewEventBuffer(),
+			cheburClient: deadClient,
+		}
+		b.handleCheburHostInput(&telego.Message{
+			MessageID: 11,
+			Chat:      telego.Chat{ID: 12345, Type: "private"},
+			Text:      "example.com:8443",
+		}, "example.com:8443")
+		sends := ft.callsOf("sendMessage")
+		if len(sends) == 0 {
+			t.Fatal("expected the placeholder reply")
+		}
+		text, _ := sends[0].Params["text"].(string)
+		if !strings.Contains(text, wantPlaceholder) {
+			t.Errorf("placeholder must carry the shield, got: %q", text)
+		}
+	})
+
+	t.Run("manual input unconfigured", func(t *testing.T) {
+		ft, api := newFakeTelegramBot(t)
+		b := &Bot{
+			api:          api,
+			ctx:          context.Background(),
+			targets:      []ChatTarget{{ChatID: 12345}},
+			source:       &mockSource{metrics: []metrics.ProxyMetric{}},
+			tracker:      NewAlertTracker(),
+			eventBuffer:  NewEventBuffer(),
+			cheburClient: emptyClient,
+		}
+		b.handleCheburHostInput(&telego.Message{
+			MessageID: 11,
+			Chat:      telego.Chat{ID: 12345, Type: "private"},
+			Text:      "example.com",
+		}, "example.com")
+		sends := ft.callsOf("sendMessage")
+		if len(sends) == 0 {
+			t.Fatal("expected the unconfigured notice reply")
+		}
+		text, _ := sends[0].Params["text"].(string)
+		if !strings.Contains(text, wantUnconfigured) {
+			t.Errorf("unconfigured notice must carry the shield, got: %q", text)
+		}
+	})
+}

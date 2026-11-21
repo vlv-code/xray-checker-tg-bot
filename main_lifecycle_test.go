@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"xray-checker/nodes"
+	"xray-checker/subscription"
 )
 
 // TestSafeGoBody_RunsFunctionAndRecoversPanic covers the synchronous core of
@@ -142,8 +143,48 @@ func TestMasterReportSecurityNote(t *testing.T) {
 				return
 			}
 			if !strings.Contains(got, tc.wantContains) {
-				t.Fatalf("expected note containing %q for url %q, got %q", tc.wantContains, tc.masterURL, got)
+				t.Fatalf("expected note containing %q for url %q, got %q", tc.masterURL, tc.wantContains, got)
 			}
 		})
+	}
+}
+
+// Wave N-G FIX 2: freshness telemetry honesty. reloadSubscriptions used to
+// stamp URLStore.RecordUpdate(LastUpdate=now) for EVERY source in the counts
+// map — including sources that FAILED and only served last-known-good cached
+// configs, presenting stale proxies as freshly fetched in the /subs view.
+// Contract: only sources that actually refreshed get a record; a failed
+// source keeps its previous (honest) stamp untouched, or stays unknown when
+// it never succeeded (the view omits the freshness line for zero LastUpdate).
+func TestRecordSubFreshness_SkipsFailedSources(t *testing.T) {
+	const okURL = "https://sub.example/ok"
+	const failedURL = "https://sub.example/failing"
+
+	store, err := subscription.NewURLStore([]string{okURL, failedURL}, "") // no persistence
+	if err != nil {
+		t.Fatalf("NewURLStore: %v", err)
+	}
+	now := time.Now()
+
+	counts := map[string]int{okURL: 3, failedURL: 2} // failed source's cached count IS in counts
+	failed := map[string]bool{failedURL: true}
+	recordSubFreshness(store, counts, failed, now)
+
+	if meta, ok := store.GetMeta(failedURL); ok {
+		t.Errorf("failed-but-cached source must not be recorded (stale data presented as fresh), got meta %+v", meta)
+	}
+	meta, ok := store.GetMeta(okURL)
+	if !ok || meta.Count != 3 || meta.LastUpdate.IsZero() {
+		t.Errorf("healthy source must be recorded, got meta %+v ok=%v", meta, ok)
+	}
+
+	// A previously recorded source that later fails keeps its last honest
+	// stamp: no LastUpdate=now overwrite, no count/delta clobbering.
+	store.RecordUpdate(okURL, 3, now)
+	later := now.Add(time.Minute)
+	recordSubFreshness(store, map[string]int{okURL: 2}, map[string]bool{okURL: true}, later)
+	meta, _ = store.GetMeta(okURL)
+	if !meta.LastUpdate.Equal(now) || meta.Count != 3 {
+		t.Errorf("previous stamp of a later-failed source must survive untouched, got %+v", meta)
 	}
 }

@@ -158,6 +158,12 @@ func (r *Registry) RegisterNode(cfg NodeConfig) error {
 
 	if r.nodesStore != nil {
 		if err := r.nodesStore.Save(name, token); err != nil {
+			// Roll back the in-memory registration (same lock held): a failed
+			// persist must not leave a live node the store does not know
+			// about — the caller sees the error, and a retry would otherwise
+			// hit the «already exists» memory/disk divergence until restart.
+			delete(r.nodes, name)
+			delete(r.byToken, tokenHash)
 			return fmt.Errorf("saving node to store: %w", err)
 		}
 	}
