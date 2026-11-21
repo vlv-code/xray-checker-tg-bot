@@ -694,9 +694,15 @@ func (b *Bot) runAuditNowWithStats() checkHostAuditStats {
 				downtime := now.Sub(alert.DownAt)
 				if cfg.AlertMode == AlertModeClean {
 					if b.api != nil {
-						_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-							ChatID:    tu.ID(ct.ChatID),
-							MessageID: alert.MessageID,
+						// Wave N-K: no lock is held here (checkHostMu guards
+						// only the running-flag, tracker.Resolve released its
+						// own mutex on return), so the retry helper may sleep
+						// on 429 — same lock-safety class as alerts.go N-F.
+						_ = b.callWithRateLimitRetry(ct.ChatID, "checkhost alert delete", func() error {
+							return b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+								ChatID:    tu.ID(ct.ChatID),
+								MessageID: alert.MessageID,
+							})
 						})
 					}
 					if b.notifyOnRecovery {
@@ -706,12 +712,15 @@ func (b *Bot) runAuditNowWithStats() checkHostAuditStats {
 							recText += fmt.Sprintf("\n• Был недоступен: <b>%s</b>", FormatDowntime(downtime))
 						}
 						if sent, err := b.sendAndReturn(ct, recText); err == nil {
+							// Own goroutine: trivially lock-free at this call.
 							go func(cID int64, mID int) {
 								time.Sleep(2 * time.Minute)
 								if b.api != nil {
-									_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-										ChatID:    tu.ID(cID),
-										MessageID: mID,
+									_ = b.callWithRateLimitRetry(cID, "checkhost recovery notice delete", func() error {
+										return b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+											ChatID:    tu.ID(cID),
+											MessageID: mID,
+										})
 									})
 								}
 							}(ct.ChatID, sent.MessageID)
@@ -727,7 +736,10 @@ func (b *Bot) runAuditNowWithStats() checkHostAuditStats {
 							Text:      liveText,
 							ParseMode: telego.ModeHTML,
 						}
-						_, _ = b.api.EditMessageText(b.ctx, params)
+						_ = b.callWithRateLimitRetry(ct.ChatID, "checkhost alert recovery edit", func() error {
+							_, err := b.api.EditMessageText(b.ctx, params)
+							return err
+						})
 					}
 				}
 			}
@@ -819,9 +831,15 @@ func (b *Bot) ProcessNodeCheckHostAudits(nodeName string, audits map[string]chec
 				downtime := now.Sub(alert.DownAt)
 				if cfg.AlertMode == AlertModeClean {
 					if b.api != nil {
-						_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-							ChatID:    tu.ID(ct.ChatID),
-							MessageID: alert.MessageID,
+						// Wave N-K: no Bot-level lock is held here (the caller
+						// fires this from its own goroutine after releasing
+						// the registry lock; tracker.Resolve released its own
+						// mutex on return) — the retry helper may sleep on 429.
+						_ = b.callWithRateLimitRetry(ct.ChatID, "checkhost alert delete", func() error {
+							return b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+								ChatID:    tu.ID(ct.ChatID),
+								MessageID: alert.MessageID,
+							})
 						})
 					}
 					if b.notifyOnRecovery {
@@ -831,12 +849,15 @@ func (b *Bot) ProcessNodeCheckHostAudits(nodeName string, audits map[string]chec
 							recText += fmt.Sprintf("\n• Был недоступен: <b>%s</b>", FormatDowntime(downtime))
 						}
 						if sent, err := b.sendAndReturn(ct, recText); err == nil {
+							// Own goroutine: trivially lock-free at this call.
 							go func(cID int64, mID int) {
 								time.Sleep(2 * time.Minute)
 								if b.api != nil {
-									_ = b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
-										ChatID:    tu.ID(cID),
-										MessageID: mID,
+									_ = b.callWithRateLimitRetry(cID, "checkhost recovery notice delete", func() error {
+										return b.api.DeleteMessage(b.ctx, &telego.DeleteMessageParams{
+											ChatID:    tu.ID(cID),
+											MessageID: mID,
+										})
 									})
 								}
 							}(ct.ChatID, sent.MessageID)
