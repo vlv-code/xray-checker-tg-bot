@@ -1,0 +1,59 @@
+# Nightly fuzzing of the subscription parsers (native Go fuzz targets in
+# subscription/fuzz_test.go): FuzzParseShareLink, FuzzParseVMessLink,
+# FuzzDecodeFlexibleBase64 and FuzzParse. Each target runs in its own step
+# with a -fuzztime cap of 5 minutes (10-minute cap per target; ~20 minutes
+# total), and later targets keep running even if an earlier one finds a crash.
+# On any failure the crash corpus written by go fuzzing
+# (subscription/testdata/fuzz/) is uploaded as a workflow artifact and the
+# job fails.
+name: Nightly Fuzzing
+
+on:
+  schedule:
+    # Nightly at 03:00 UTC.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    name: Fuzz subscription parsers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # -fuzz takes a regex: patterns are anchored so e.g. FuzzParse does not
+      # also match FuzzParseShareLink/FuzzParseVMessLink (go test refuses to
+      # fuzz when the pattern matches more than one target).
+      - name: Fuzz parseShareLink (5m cap)
+        id: fuzz-share-link
+        run: go test -run '^$' -fuzz '^FuzzParseShareLink$' -fuzztime 5m ./subscription/
+
+      - name: Fuzz parseVMessLink (5m cap)
+        id: fuzz-vmess-link
+        if: always() && !cancelled()
+        run: go test -run '^$' -fuzz '^FuzzParseVMessLink$' -fuzztime 5m ./subscription/
+
+      - name: Fuzz decodeFlexibleBase64 (5m cap)
+        id: fuzz-decode-flexible-base64
+        if: always() && !cancelled()
+        run: go test -run '^$' -fuzz '^FuzzDecodeFlexibleBase64$' -fuzztime 5m ./subscription/
+
+      - name: Fuzz Parser.Parse end-to-end (5m cap)
+        id: fuzz-parse
+        if: always() && !cancelled()
+        run: go test -run '^$' -fuzz '^FuzzParse$' -fuzztime 5m ./subscription/
+
+      - name: Upload crash corpus on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-corpus
+          path: subscription/testdata/fuzz/
+          if-no-files-found: ignore

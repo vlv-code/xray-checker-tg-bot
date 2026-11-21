@@ -1,0 +1,32 @@
+# Static analysis via golangci-lint (config: .golangci.yml at the repo root).
+# The job is non-blocking for now: continue-on-error keeps the run green while
+# pre-existing findings are cleaned up. Ratchet: flip to blocking after
+# baseline cleanup.
+name: Lint
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    # Ratchet: flip to blocking (remove continue-on-error) after baseline cleanup.
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0

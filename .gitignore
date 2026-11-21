@@ -49,3 +49,4 @@ __pycache__/
 
 # Meta-project runtime lock files (not shared state)
 .agents/**/*.lock
+coverage.out

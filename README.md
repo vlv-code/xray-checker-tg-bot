@@ -394,6 +394,9 @@ WEB_ENABLED=false
 ```
 `/metrics` remains active while saving RAM and CPU.
 
+## Development
+Before opening a PR, run the local checks described in [CONTRIBUTING.md](CONTRIBUTING.md) — including the race detector, which requires an extra C toolchain on Windows.
+
 ---
 
 ## Support the Project

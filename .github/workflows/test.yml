@@ -26,5 +26,33 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
+      - name: Check gofmt formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          test -z "$unformatted" || { echo "Unformatted .go files:"; echo "$unformatted"; exit 1; }
+
       - name: Run tests with race detector
         run: go test -v -race -timeout 5m ./...
+
+      - name: Run tests with coverage (no race, faster)
+        run: go test -coverprofile=coverage.out -p 2 ./...
+
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -1
+
+      # Informational floor: fails only if total coverage drops below 40%.
+      # Ratchet upward once the baseline is known.
+      - name: Coverage floor (40%)
+        run: |
+          total="$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')"
+          echo "Total coverage: ${total}%"
+          test -n "$total" || { echo "Could not parse total coverage"; exit 1; }
+          awk "BEGIN { exit !(${total} >= 40.0) }" || { echo "Total coverage ${total}% is below the 40% floor"; exit 1; }
+
+      - name: Upload coverage artifact
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+          if-no-files-found: error

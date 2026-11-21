@@ -1,0 +1,22 @@
+# Minimal starter configuration for golangci-lint v2 (.github/workflows/lint.yml).
+# Deliberately conservative: errcheck and gocritic are NOT enabled yet —
+# pre-existing findings would flood the first run. Ratchet: enable them
+# after the baseline is cleaned up.
+version: "2"
+
+linters:
+  # none: start from an empty set; gate on exactly the linters listed below.
+  # errcheck/gocritic are intentionally absent for now (see header comment).
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - ineffassign
+    - misspell
+
+formatters:
+  enable:
+    - gofmt
+
+run:
+  timeout: 5m
