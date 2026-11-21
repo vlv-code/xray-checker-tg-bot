@@ -319,12 +319,11 @@ func settingOverrideValue(ns *nodes.NodeSettings, sk *nodeSettingKey) (string, b
 // baseSettingValues returns the master's effective base values (the
 // inheritance base for every node), mirroring the SetConfigSource logic.
 func (a *nodeManagerAdapter) baseSettingValues() map[string]string {
-	// RuntimeMu read-guard: CheckInterval and UpdateInterval are
-	// runtime-mutated fields (config/runtime_lock.go).
-	config.RuntimeMu.RLock()
-	interval := config.CLIConfig.Proxy.CheckInterval
-	subsUpdateInterval := config.CLIConfig.Subscription.UpdateInterval
-	config.RuntimeMu.RUnlock()
+	// Lock-free snapshot reads (config/snapshot.go): CheckInterval and
+	// UpdateInterval are runtime-mutated fields served from the immutable
+	// atomic snapshot.
+	interval := currentCheckInterval()
+	subsUpdateInterval := currentSubscriptionUpdateInterval()
 	targets := config.CLIConfig.Telegram.TargetURLs
 	if a.botCfg != nil {
 		if cfg := a.botCfg(); cfg.CheckIntervalSec > 0 {

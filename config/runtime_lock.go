@@ -2,16 +2,19 @@ package config
 
 import "sync"
 
-// RuntimeMu guards runtime-mutated CLIConfig fields against concurrent
-// readers. CLIConfig is parsed once at startup, but two fields are later
-// mutated while the instance is running (scheduler rescheduling and
-// master-driven config sync):
+// DEPRECATED (wave N-3a, 2026-11-21): RuntimeMu is a zero-user legacy relic.
+// The runtime-mutated CLIConfig fields (Proxy.CheckInterval,
+// Subscription.UpdateInterval) are now served through the immutable
+// EffectiveRuntime snapshot on atomic.Pointer — see config/snapshot.go:
 //
-//   - Proxy.CheckInterval        (main.go: rescheduleChecks, persisted bot config load)
-//   - Subscription.UpdateInterval (main.go: rescheduleSubscriptionUpdates)
+//   - writers: UpdateCheckInterval / UpdateSubscriptionUpdateInterval
+//     (read-modify-write under a private write mutex, atomic Store);
+//   - readers: LoadEffectiveRuntime (lock-free, always observes a
+//     consistent snapshot);
+//   - startup: InitEffectiveRuntime in main() before any wiring.
 //
-// Writers must hold RuntimeMu.Lock() (in addition to any scheduler-level
-// mutex); readers of these two fields must hold RuntimeMu.RLock(). RuntimeMu
-// is always acquired after (and never before) scheduler-level mutexes, so
-// there is no lock-order inversion.
+// The "RuntimeMu inside schedulerMu" lock-order convention this mutex
+// imposed is gone. Do NOT adopt RuntimeMu for new code; removal of this
+// var (and file) is a separate cleanup wave. Kept as a deprecation marker
+// so any reintroduction is a visible diff instead of a silent regression.
 var RuntimeMu sync.RWMutex

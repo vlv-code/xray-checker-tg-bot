@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"xray-checker/config"
 	"xray-checker/nodes"
 	"xray-checker/subscription"
 )
@@ -97,24 +98,71 @@ func TestFlushReporterOnce_PermanentErrorNotRetried(t *testing.T) {
 	}
 }
 
-// Regression (Guardian P0-2, 2026-11-16): the check-scheduler shutdown defer
-// holds checkSchedulerMu while gocron Stop() waits for the running singleton
-// check job; the job's interval read used to re-acquire checkSchedulerMu —
-// a circular wait that hung the whole LIFO shutdown chain (bot stop, xray
-// stop, everything after it). Contract: the interval read inside the check
-// job must need ONLY RuntimeMu. Compile-RED seam: currentCheckInterval did
-// not exist before the fix (the read was inline under checkSchedulerMu).
-func TestCurrentCheckIntervalNeedsOnlyRuntimeMu(t *testing.T) {
-	checkSchedulerMu.Lock()
-	defer checkSchedulerMu.Unlock()
+// Regression (Guardian P0-2, 2026-11-16, inverted wave N-3a): the
+// check-scheduler shutdown defer holds checkSchedulerMu while gocron Stop()
+// waits for the running singleton check job; the job's interval read used to
+// re-acquire checkSchedulerMu — a circular wait that hung the whole LIFO
+// shutdown chain. The wave-N-G RuntimeMu band-aid kept a lock on this path;
+// wave N-3a replaced it with the immutable EffectiveRuntime snapshot
+// (config/snapshot.go), so the new contract is stronger: currentCheckInterval
+// and the Update* writers need NO caller-held lock at all. Compile-RED seam:
+// UpdateCheckInterval / LoadEffectiveRuntime did not exist before N-3a.
+// CI `go test -race` enforces the atomic-pointer contract.
+func TestCurrentCheckInterval_IsLockFreeSnapshot(t *testing.T) {
+	t.Run("completes while checkSchedulerMu is held (shutdown no-deadlock property)", func(t *testing.T) {
+		config.InitEffectiveRuntime(300, 300)
+		checkSchedulerMu.Lock()
+		defer checkSchedulerMu.Unlock()
 
-	done := make(chan int, 1)
-	go func() { done <- currentCheckInterval() }()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("interval read blocked on checkSchedulerMu — shutdown deadlock regression")
-	}
+		done := make(chan int, 1)
+		go func() { done <- currentCheckInterval() }()
+		select {
+		case interval := <-done:
+			if interval <= 0 {
+				t.Fatalf("interval read returned %d after Init — snapshot not visible", interval)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("interval read blocked on checkSchedulerMu — shutdown deadlock regression")
+		}
+	})
+
+	t.Run("reader never blocks while writer hammers updates", func(t *testing.T) {
+		config.InitEffectiveRuntime(300, 300)
+
+		writerDone := make(chan struct{})
+		go func() {
+			defer close(writerDone)
+			for i := 0; i < 200; i++ {
+				config.UpdateCheckInterval(300 + i%2)
+			}
+		}()
+
+		readerDone := make(chan int, 1)
+		go func() {
+			interval := 0
+			for i := 0; i < 200; i++ {
+				interval = currentCheckInterval()
+				if interval <= 0 {
+					break
+				}
+			}
+			readerDone <- interval
+		}()
+
+		select {
+		case interval := <-readerDone:
+			if interval <= 0 {
+				t.Fatalf("reader observed invalid interval %d after Init", interval)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("reader/writer blocked — currentCheckInterval must be lock-free (snapshot, not RuntimeMu)")
+		}
+		select {
+		case <-writerDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("UpdateCheckInterval writer did not finish")
+		}
+	})
 }
 
 // TestMasterReportSecurityNote pins the operator warning text for the

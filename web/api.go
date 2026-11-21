@@ -334,12 +334,15 @@ func APIStatusHandler(proxyChecker *checker.ProxyChecker) http.HandlerFunc {
 // @Router /api/v1/config [get]
 func APIConfigHandler(proxyChecker *checker.ProxyChecker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// RuntimeMu read-guard: both intervals are runtime-mutated fields
-		// (config/runtime_lock.go).
-		config.RuntimeMu.RLock()
-		checkInterval := config.CLIConfig.Proxy.CheckInterval
-		updateInterval := config.CLIConfig.Subscription.UpdateInterval
-		config.RuntimeMu.RUnlock()
+		// Lock-free snapshot reads (config/snapshot.go): both intervals are
+		// runtime-mutated fields served from the immutable atomic snapshot.
+		// Nil only before InitEffectiveRuntime — unreachable at request time
+		// because main() initializes the snapshot before wiring this server.
+		checkInterval, updateInterval := 0, 0
+		if snap := config.LoadEffectiveRuntime(); snap != nil {
+			checkInterval = snap.CheckInterval
+			updateInterval = snap.UpdateInterval
+		}
 		subNames := CollectSubscriptionNames(proxyChecker.GetProxies())
 		writeJSON(w, ConfigResponse{
 			CheckInterval:              checkInterval,

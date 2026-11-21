@@ -43,17 +43,31 @@ var (
 // deadlock contract: code running INSIDE the check job must never acquire it.
 var checkSchedulerMu sync.Mutex
 
-// currentCheckInterval reads the runtime-mutated CheckInterval under RuntimeMu
-// ONLY. It must never acquire checkSchedulerMu: it runs inside the check job,
-// while the shutdown stop-defer holds checkSchedulerMu and gocron Stop() waits
-// for this very job — taking it here is a circular wait that hangs the whole
-// LIFO shutdown chain (Guardian P0-2, 2026-11-16). rescheduleChecks writers
-// pair on RuntimeMu (held inside checkSchedulerMu), so this read is fully
-// synchronized.
+// currentCheckInterval reads the effective check interval from the immutable
+// runtime snapshot (config/snapshot.go, wave N-3a). It must never acquire
+// checkSchedulerMu: it runs inside the check job, while the shutdown
+// stop-defer holds checkSchedulerMu and gocron Stop() waits for this very
+// job — taking it here is a circular wait that hangs the whole LIFO shutdown
+// chain (Guardian P0-2, 2026-11-16). Wave N-3a removed the last lock from
+// this path: the snapshot is an atomic.Pointer swapped by writers, so no
+// caller-held lock is needed at all. Returns 0 only before
+// InitEffectiveRuntime; startup order in main() guarantees Init runs before
+// any reader is wired, so production never sees 0 here.
 func currentCheckInterval() int {
-	config.RuntimeMu.RLock()
-	defer config.RuntimeMu.RUnlock()
-	return config.CLIConfig.Proxy.CheckInterval
+	if snap := config.LoadEffectiveRuntime(); snap != nil {
+		return snap.CheckInterval
+	}
+	return 0
+}
+
+// currentSubscriptionUpdateInterval is the update-interval twin of
+// currentCheckInterval: lock-free read of the immutable runtime snapshot
+// (config/snapshot.go). Same nil-before-Init caveat, same 0 fallback.
+func currentSubscriptionUpdateInterval() int {
+	if snap := config.LoadEffectiveRuntime(); snap != nil {
+		return snap.UpdateInterval
+	}
+	return 0
 }
 
 // safeGoBody is the synchronous core of safeGo: it runs fn and recovers any
@@ -107,6 +121,22 @@ func recordSubFreshness(store *subscription.URLStore, counts map[string]int, fai
 
 func main() {
 	config.Parse(version)
+
+	// Publish the startup snapshot of the runtime-mutated config fields
+	// (config/snapshot.go, wave N-3a). Parse includes kong parsing plus
+	// CLI.Validate; from here on Proxy.CheckInterval and
+	// Subscription.UpdateInterval are read and written ONLY through the
+	// immutable snapshot (config.LoadEffectiveRuntime / UpdateCheckInterval /
+	// UpdateSubscriptionUpdateInterval) — never by mutating CLIConfig.
+	// InitEffectiveRuntime must precede every scheduler, bot, web and node
+	// wiring step below: all of them read the snapshot lock-free and rely on
+	// the startup happens-before edge (nil snapshot is unreachable after
+	// this point).
+	config.InitEffectiveRuntime(
+		config.CLIConfig.Proxy.CheckInterval,
+		config.CLIConfig.Subscription.UpdateInterval,
+	)
+
 	config.SetupNetworkEnvironment(config.CLIConfig.Report.URL)
 
 	logLevel := logger.ParseLevel(config.CLIConfig.LogLevel)
@@ -353,11 +383,11 @@ func main() {
 		if seconds < 10 {
 			seconds = 10
 		}
-		// RuntimeMu write-guard: CheckInterval is a runtime-mutated field read
-		// concurrently by config-sync/web/report readers (config/runtime_lock.go).
-		config.RuntimeMu.Lock()
-		config.CLIConfig.Proxy.CheckInterval = seconds
-		config.RuntimeMu.Unlock()
+		// Snapshot write (config/snapshot.go): CheckInterval is read
+		// concurrently by config-sync/web/report readers via the lock-free
+		// atomic snapshot — no RuntimeMu needed. checkSchedulerMu stays: it
+		// guards the gocron scheduler objects below, not config.
+		config.UpdateCheckInterval(seconds)
 
 		if checkScheduler != nil {
 			checkScheduler.Clear()
@@ -426,11 +456,9 @@ func main() {
 						NodeStaleTimeoutSec:    cfg.NodeStaleTimeoutSec,
 					}
 				}
-				// RuntimeMu read-guard: CheckInterval is a runtime-mutated
-				// field (config/runtime_lock.go).
-				config.RuntimeMu.RLock()
-				checkInterval := config.CLIConfig.Proxy.CheckInterval
-				config.RuntimeMu.RUnlock()
+				// Lock-free snapshot read (config/snapshot.go): CheckInterval
+				// is a runtime-mutated field served from the atomic snapshot.
+				checkInterval := currentCheckInterval()
 				return &nodes.NodeConfigSync{
 					SyncEnabled:         true,
 					CheckIntervalSec:    checkInterval,
@@ -453,11 +481,8 @@ func main() {
 			base.DownloadTimeoutSec = config.CLIConfig.Proxy.DownloadTimeout
 			base.DownloadMinSize = config.CLIConfig.Proxy.DownloadMinSize
 			base.CheckConcurrency = config.CLIConfig.Proxy.CheckConcurrency
-			// RuntimeMu read-guard: UpdateInterval is a runtime-mutated
-			// field (config/runtime_lock.go).
-			config.RuntimeMu.RLock()
-			base.SubsUpdateIntervalSec = config.CLIConfig.Subscription.UpdateInterval
-			config.RuntimeMu.RUnlock()
+			// Lock-free snapshot read (config/snapshot.go).
+			base.SubsUpdateIntervalSec = currentSubscriptionUpdateInterval()
 
 			// Per-node overrides win over the master's base values.
 			if nodesStore != nil {
@@ -522,13 +547,11 @@ func main() {
 				if err != nil {
 					hostIP = ""
 				}
-				checkSchedulerMu.Lock()
-				// RuntimeMu read-guard: CheckInterval is a runtime-mutated
-				// field (config/runtime_lock.go).
-				config.RuntimeMu.RLock()
-				interval := config.CLIConfig.Proxy.CheckInterval
-				config.RuntimeMu.RUnlock()
-				checkSchedulerMu.Unlock()
+				// Lock-free snapshot read (config/snapshot.go): no
+				// checkSchedulerMu wrap anymore — the read never blocks and
+				// taking schedulerMu here would only delay a fire-and-forget
+				// report behind the shutdown scheduler drain.
+				interval := currentCheckInterval()
 				targets := []string{
 					"https://cp.cloudflare.com/generate_204",
 					"https://www.gstatic.com/generate_204",
@@ -584,14 +607,8 @@ func main() {
 						// meaningful zeros (concurrency 0 = unlimited).
 						proxyChecker.SetRuntimeCheckSettings(nodes.SyncToRuntimeSettings(*cs))
 						if cs.CheckIntervalSec > 0 {
-							checkSchedulerMu.Lock()
-							// RuntimeMu read-guard: runtime-mutated field
-							// (config/runtime_lock.go).
-							config.RuntimeMu.RLock()
-							curInterval := config.CLIConfig.Proxy.CheckInterval
-							config.RuntimeMu.RUnlock()
-							checkSchedulerMu.Unlock()
-							if curInterval != cs.CheckIntervalSec {
+							// Lock-free snapshot read (config/snapshot.go).
+							if curInterval := currentCheckInterval(); curInterval != cs.CheckIntervalSec {
 								logger.Info("Agent check interval updated by master: %ds", cs.CheckIntervalSec)
 								rescheduleChecks(cs.CheckIntervalSec)
 							}
@@ -719,11 +736,11 @@ func main() {
 		if updateScheduler == nil {
 			return
 		}
-		// RuntimeMu write-guard: UpdateInterval is a runtime-mutated field read
-		// concurrently by config-sync/web readers (config/runtime_lock.go).
-		config.RuntimeMu.Lock()
-		config.CLIConfig.Subscription.UpdateInterval = seconds
-		config.RuntimeMu.Unlock()
+		// Snapshot write (config/snapshot.go): UpdateInterval is read
+		// concurrently by config-sync/web readers via the lock-free atomic
+		// snapshot. updateSchedulerMu stays: it guards the gocron scheduler
+		// objects below, not config.
+		config.UpdateSubscriptionUpdateInterval(seconds)
 		logger.Info("Rescheduling subscription updates with interval %ds (set by master)", seconds)
 		updateScheduler.Clear()
 		updateScheduler.Every(seconds).Seconds().WaitForSchedule().Do(func() {
@@ -762,14 +779,13 @@ func main() {
 			// Reuse TargetManager
 			targetMgr := proxyChecker.GetTargetManager()
 
-			// RuntimeMu read-guard (startup, Wave N-G FIX 3): CheckInterval is
-			// a runtime-mutated field (config/runtime_lock.go). No writer can
-			// be running this early (schedulers and the bot itself start
-			// later), so the lock is zero-contention — it restores the
-			// read-under-RuntimeMu convention, not a behavioral fix.
-			config.RuntimeMu.RLock()
-			startupCheckInterval := config.CLIConfig.Proxy.CheckInterval
-			config.RuntimeMu.RUnlock()
+			// Startup read from the immutable runtime snapshot
+			// (config/snapshot.go): InitEffectiveRuntime ran at the top of
+			// main(), before any wiring. No writer can be running this early
+			// (schedulers and the bot itself start later), and the persisted
+			// bot config below applies its override through the same atomic
+			// snapshot.
+			startupCheckInterval := currentCheckInterval()
 
 			defaultBotCfg := telegram.BotConfig{
 				QuietHoursEnabled:         config.CLIConfig.Telegram.QuietHoursEnabled,
@@ -806,11 +822,10 @@ func main() {
 					}
 				}
 				if savedCfg.CheckIntervalSec > 0 {
-					// RuntimeMu write-guard: CheckInterval is a runtime-mutated
-					// field (config/runtime_lock.go).
-					config.RuntimeMu.Lock()
-					config.CLIConfig.Proxy.CheckInterval = savedCfg.CheckIntervalSec
-					config.RuntimeMu.Unlock()
+					// Snapshot write (config/snapshot.go): the persisted bot
+					// config overrides the parsed PROXY_CHECK_INTERVAL before
+					// any scheduler starts.
+					config.UpdateCheckInterval(savedCfg.CheckIntervalSec)
 				}
 			}
 
@@ -924,14 +939,11 @@ func main() {
 
 	checkSchedulerMu.Lock()
 	checkScheduler = gocron.NewScheduler(time.UTC)
-	// RuntimeMu read-guard (startup, Wave N-G FIX 3): CheckInterval is a
-	// runtime-mutated field (config/runtime_lock.go). Held inside
-	// checkSchedulerMu — the same schedulerMu→RuntimeMu order the reschedule
-	// writers use, so no inversion. No writer exists before this point, the
-	// lock is zero-contention convention.
-	config.RuntimeMu.RLock()
-	startupCheckInterval := config.CLIConfig.Proxy.CheckInterval
-	config.RuntimeMu.RUnlock()
+	// Startup read from the immutable runtime snapshot (config/snapshot.go):
+	// InitEffectiveRuntime ran at the top of main() and the persisted
+	// bot-config override was applied through the same atomic snapshot, so
+	// this observes the final effective interval with no lock.
+	startupCheckInterval := currentCheckInterval()
 	// SingletonMode: if a check cycle overruns the interval, the next tick is skipped
 	// instead of starting a second concurrent cycle. Without a concurrency limit a
 	// cycle is bounded by PROXY_TIMEOUT so this rarely triggers, but with
@@ -962,14 +974,9 @@ func main() {
 	if config.CLIConfig.Subscription.Update {
 		updateSchedulerMu.Lock()
 		updateScheduler = gocron.NewScheduler(time.UTC)
-		// RuntimeMu read-guard (startup, Wave N-G FIX 3): UpdateInterval is a
-		// runtime-mutated field (config/runtime_lock.go). Held inside
-		// updateSchedulerMu — the same schedulerMu→RuntimeMu order the
-		// reschedule writer uses, so no inversion. No writer exists before
-		// this point, the lock is zero-contention convention.
-		config.RuntimeMu.RLock()
-		startupUpdateInterval := config.CLIConfig.Subscription.UpdateInterval
-		config.RuntimeMu.RUnlock()
+		// Startup read from the immutable runtime snapshot
+		// (config/snapshot.go) — lock-free, see the check-scheduler site above.
+		startupUpdateInterval := currentSubscriptionUpdateInterval()
 		updateScheduler.Every(startupUpdateInterval).Seconds().WaitForSchedule().Do(func() {
 			logger.Info("Checking subscriptions for updates...")
 			changed, count, err := reloadSubscriptions()

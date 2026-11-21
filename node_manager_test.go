@@ -128,9 +128,11 @@ func TestNodeManagerAdapter_Settings(t *testing.T) {
 	a := &nodeManagerAdapter{reg: reg, subs: subsStore, store: store}
 
 	// Seed master base values (kong provides these defaults in production).
+	// CheckInterval and UpdateInterval are runtime-mutated fields served from
+	// the immutable snapshot (config/snapshot.go), so they are seeded via
+	// InitEffectiveRuntime; CheckMethod is a static CLIConfig field.
 	config.CLIConfig.Proxy.CheckMethod = "ip"
-	config.CLIConfig.Proxy.CheckInterval = 300
-	config.CLIConfig.Subscription.UpdateInterval = 300
+	config.InitEffectiveRuntime(300, 300)
 
 	// View on unknown node errors.
 	if _, err := a.NodeSettingsView("nope"); err == nil {
