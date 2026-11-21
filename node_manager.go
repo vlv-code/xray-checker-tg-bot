@@ -22,21 +22,6 @@ type nodeManagerAdapter struct {
 	botCfg func() telegram.BotConfig // runtime bot config; may be nil
 }
 
-func toNodeInfos(hs []nodes.NodeHealth) []telegram.NodeInfo {
-	out := make([]telegram.NodeInfo, 0, len(hs))
-	for _, h := range hs {
-		out = append(out, telegram.NodeInfo{
-			Name: h.Name, Up: h.Up, EverReported: h.EverReported,
-			Version: h.Version, HostIP: h.HostIP, ASN: h.ASN,
-			Online: h.Online, Total: h.Total, LastReport: h.LastReport,
-			DisabledProxies: h.Disabled,
-			IntervalSec:     h.CheckIntervalSec,
-			Disabled:        !h.Enabled,
-		})
-	}
-	return out
-}
-
 func (a *nodeManagerAdapter) Nodes() []telegram.NodeInfo {
 	return toNodeInfos(a.reg.HealthSnapshot())
 }
