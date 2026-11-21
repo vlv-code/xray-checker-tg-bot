@@ -1,9 +1,6 @@
 ---
 name: "Lead Developer"
 role_id: "agent-dev-lead"
-harness_id: "zcode"
-installation_id: "zc-main"
-actor_id: "vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-dev-lead"
 description: "Go feature implementation, subsystem wiring, and TDD across checker/subscription/telegram/nodes/xray"
 tools:
   - read_file
@@ -17,8 +14,10 @@ invocation_triggers:
 
 ## 1. Purpose and Scope of Responsibility
 - **Role Identifier (`role_id`):** `agent-dev-lead`
-- **Actor Identifier (`actor_id`):** `vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-dev-lead`
-- **Harness / Installation:** `zcode` (`zc-main`)
+- **Multi-Harness Actor Identifiers:**
+  - `zc-main` (`zcode`): `vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-dev-lead`
+  - `ag-main` (`antigravity`): `vlv-code/xray-checker-tg-bot::antigravity::ag-main::agent-dev-lead`
+- **Harnesses / Installations:** `zcode` (`zc-main`), `antigravity` (`ag-main`)
 - **Project Registry:** `.agents/meta-project.json`
 - **Product Scope:** Feature implementation and bugfixes across Go subsystems (`checker/`, `subscription/`, `telegram/`, `nodes/`, `xray/`, `config/`, `web/`, `metrics/`, `models/`, `asn/`, `logger/`, `main.go`, `node_manager.go`), TDD with adversarial tests, minimal root-cause diffs. Stage 1 of the 2-stage handoff (`Dev ➔ Guardian ➔ Steward`).
 - **User Invocation Triggers:** "реализуй", "добавь фичу", "пофикси", "implement", "bugfix", "refactor", feature work routed by `agent-intake-dispatcher`.
@@ -64,3 +63,4 @@ Per `.agents/project_knowledge/boundaries.md`:
 | 2026-11-16 | User | vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-dev-lead | Wave 4: last 4 items via 2 flash-workers (async diagnostics, quiet-hours 429 under-lock fix, .env.example Red Zone fix, nodes_commands escape) + Handoff Packets | Completed: session total 46 files, +2595/−314, 16 new files (14 test); all gates green; ONLY remaining: rich-digest drain (cosmetic); packets issued to Guardian/Steward |
 | 2026-11-16 | Guardian routing | vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-dev-lead | Guardian verdict FAIL (conditional): fix 2×P0 + 1×P1 wave regressions (fetcher nil-deref, shutdown deadlock, cache aliasing) | Completed DIRECTLY by dev-lead (no delegation — precision fixes post-lesson): P0-1 err-guard + call-site RED (panic reproduced); P0-2 currentCheckInterval RuntimeMu-only + test pin; P1 deep-copy clone on store+merge; gates green 12 pkgs; ready for Guardian re-gate |
 | 2026-11-18 | Intake Dispatcher | vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-dev-lead | Wave M UX-polish (9 items, 4 flash-workers + coordinator M9.3 wiring) | Completed: 19 files +467/−81 + 5 test files; guards extended (ndel prefix/markup); isolated gates 12/12; real-tree blocked by foreign xray/ scratch (reported); no commits | 
+| 2026-11-19 | User (plan quote + «запускай их») | vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-dev-lead | Improvement wave N: 10 flash-workers across N-1 (quick wins+guards+P3) and N-2 (state struct + views/diag splits), 2 concurrency-limit resumes via SendMessage, 1 fresh re-spawn | Completed: 2 systemic guards (config-sync, openapi contract), fuzz nightly, CI gofmt/coverage/lint, ack-wart, alerts 429×6, registry rollback, telemetry honesty, 0 package-level mutable vars in subscription, views 1770→313 + diagnostics 1371→92 byte-identical splits; gates 12/12; N-3 queued behind Steward commit |

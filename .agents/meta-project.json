@@ -26,6 +26,11 @@
       "harness_id": "zcode",
       "status": "active",
       "description": "Primary ZCode environment (initialized via init-meta-project, state NONE -> Scenario 1)"
+    },
+    "ag-main": {
+      "harness_id": "antigravity",
+      "status": "active",
+      "description": "Primary Google Deepmind Antigravity environment (adapted via init-meta-project, Scenario 4)"
     }
   },
   "roles": {
@@ -34,6 +39,11 @@
       "bindings": {
         "zc-main": {
           "actor_id": "vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-intake-dispatcher",
+          "status": "active",
+          "profile_path": ".agents/team/agent-intake-dispatcher/profile.md"
+        },
+        "ag-main": {
+          "actor_id": "vlv-code/xray-checker-tg-bot::antigravity::ag-main::agent-intake-dispatcher",
           "status": "active",
           "profile_path": ".agents/team/agent-intake-dispatcher/profile.md"
         }
@@ -46,6 +56,11 @@
           "actor_id": "vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-dev-lead",
           "status": "active",
           "profile_path": ".agents/team/agent-dev-lead/profile.md"
+        },
+        "ag-main": {
+          "actor_id": "vlv-code/xray-checker-tg-bot::antigravity::ag-main::agent-dev-lead",
+          "status": "active",
+          "profile_path": ".agents/team/agent-dev-lead/profile.md"
         }
       }
     },
@@ -56,6 +71,11 @@
           "actor_id": "vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-quality-guardian",
           "status": "active",
           "profile_path": ".agents/team/agent-quality-guardian/profile.md"
+        },
+        "ag-main": {
+          "actor_id": "vlv-code/xray-checker-tg-bot::antigravity::ag-main::agent-quality-guardian",
+          "status": "active",
+          "profile_path": ".agents/team/agent-quality-guardian/profile.md"
         }
       }
     },
@@ -64,6 +84,11 @@
       "bindings": {
         "zc-main": {
           "actor_id": "vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-github-steward",
+          "status": "active",
+          "profile_path": ".agents/team/agent-github-steward/profile.md"
+        },
+        "ag-main": {
+          "actor_id": "vlv-code/xray-checker-tg-bot::antigravity::ag-main::agent-github-steward",
           "status": "active",
           "profile_path": ".agents/team/agent-github-steward/profile.md"
         }

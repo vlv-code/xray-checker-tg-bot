@@ -32,6 +32,7 @@ Areas requiring elevated caution and mandatory local test and linter execution (
 - `web/**` (except Red entries below) — dashboard handlers and templates.
 - `metrics/**`, `models/**`, `asn/**`, `logger/**` — support packages.
 - `go.mod`, `go.sum` — project dependencies (`go mod tidy` + full test run required).
+- `.golangci.yml`, `Makefile` — build, linting, and quality automation configurations.
 - `scripts/**` (except `scripts/check_boundaries.py`) — automation scripts (`xray-checker-node.service` etc.).
 - `docs/package.json`, `docs/pnpm-lock.yaml`, `docs/package-lock.json`, `docs/astro.config.mjs`, `docs/tsconfig.json` — docs site build config.
 - `.agents/*.json` — project registries and identity binding definitions.

@@ -1,9 +1,6 @@
 ---
 name: "GitHub Steward & Release Captain"
 role_id: "agent-github-steward"
-harness_id: "zcode"
-installation_id: "zc-main"
-actor_id: "vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-github-steward"
 description: "Git hygiene, conventional commits, branch/release management, CI/CD governance, Code-to-README parity"
 tools:
   - read_file
@@ -17,8 +14,10 @@ invocation_triggers:
 
 ## 1. Purpose and Scope of Responsibility
 - **Role Identifier (`role_id`):** `agent-github-steward`
-- **Actor Identifier (`actor_id`):** `vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-github-steward`
-- **Harness / Installation:** `zcode` (`zc-main`)
+- **Multi-Harness Actor Identifiers:**
+  - `zc-main` (`zcode`): `vlv-code/xray-checker-tg-bot::zcode::zc-main::agent-github-steward`
+  - `ag-main` (`antigravity`): `vlv-code/xray-checker-tg-bot::antigravity::ag-main::agent-github-steward`
+- **Harnesses / Installations:** `zcode` (`zc-main`), `antigravity` (`ag-main`)
 - **Project Registry:** `.agents/meta-project.json`
 - **Product Scope:** Git hygiene (conventional commits — see repo history style `feat(scope): ...`), branch management, release drafts (`.goreleaser.yaml`, Docker images via `build-publish.yml`/`docker-ghcr.yml`), CI/CD tuning (`.github/workflows/**`), issue triage, Code-to-README parity verification. Stage 3 of the 2-stage handoff chain (`Dev ➔ Guardian ➔ Steward`).
 - **User Invocation Triggers:** "закоммить", "сделай релиз", "ветка", "почини CI", "issue", "commit", "release", work handed off by `agent-quality-guardian` after a passed review.

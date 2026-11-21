@@ -1,0 +1,148 @@
+{
+  "schema_version": "1.0.0",
+  "report_type": "init",
+  "project_id": "vlv-code/xray-checker-tg-bot",
+  "installation_id": "ag-main",
+  "harness_id": "antigravity",
+  "actor_id": "vlv-code/xray-checker-tg-bot::antigravity::ag-main::human-operator",
+  "run_id": "init-20261119T060107Z-c0127098",
+  "created_at": "2026-11-19T06:01:07Z",
+  "status": "completed",
+  "git_state": {
+    "commit_sha": "75c5b1bd331111c98070d24cc2d31df5740175e6",
+    "branch": "main",
+    "is_clean": false,
+    "modified_files": [
+      ".agents/meta-project.json",
+      ".agents/project_knowledge/tasks.md",
+      ".agents/project_knowledge/weak_spots.md",
+      ".agents/team/agent-dev-lead/profile.md",
+      ".agents/team/agent-quality-guardian/profile.md",
+      ".github/workflows/test.yml",
+      ".gitignore",
+      "CONTRIBUTING.md",
+      "README.md",
+      "README_RU.md",
+      "main.go",
+      "main_lifecycle_test.go",
+      "nodes/registry.go",
+      "nodes/registry_test.go",
+      "subscription/lastgood_clone_test.go",
+      "subscription/reconcile_test.go",
+      "subscription/subscription.go",
+      "subscription/subscription_test.go",
+      "telegram/alerts.go",
+      "telegram/callbacks.go",
+      "telegram/chebur_menu.go",
+      "telegram/chebur_menu_test.go",
+      "telegram/cheburcheck.go",
+      "telegram/cheburcheck_test.go",
+      "telegram/diag_cache_age_test.go",
+      "telegram/diagnostics.go",
+      "telegram/formatters_escape_test.go",
+      "telegram/views.go",
+      ".github/workflows/fuzz.yml",
+      ".github/workflows/lint.yml",
+      ".golangci.yml",
+      "Makefile",
+      "config/config_sync_test.go",
+      "subscription/fuzz_test.go",
+      "subscription/source_state.go",
+      "telegram/alerts_rate_recovery_test.go",
+      "telegram/callbacks_confirm_ack_test.go",
+      "telegram/diag_cache.go",
+      "telegram/diag_chebur.go",
+      "telegram/diag_render.go",
+      "telegram/diag_rich.go",
+      "telegram/diag_rich_note_test.go",
+      "telegram/diag_run.go",
+      "telegram/views_nodes.go",
+      "telegram/views_pagination.go",
+      "telegram/views_stats.go",
+      "telegram/views_status.go",
+      "telegram/views_subs.go",
+      "web/openapi_contract_test.go"
+    ],
+    "git_state_error": null
+  },
+  "input_fingerprints": {
+    ".agents/meta-project.json": "ba248d8175fe3cb1cabe6ffb5964ea473ec5c21a7ad3e20387b5ae045158e7ff",
+    ".agents/project_knowledge/boundaries.md": "2fff24562a87366688f680c242bfe6d6c518ebc236b2f941b782046bbc97d09e",
+    "AGENTS.md": "14181fb542b4941925ff0f128f7a6aae3e382ce4fd7e02b1160552fae5bc6c16"
+  },
+  "references": {
+    "registry": ".agents/meta-project.json",
+    "passport": "AGENTS.md",
+    "boundaries": ".agents/project_knowledge/boundaries.md"
+  },
+  "scenario": {
+    "profile": "active_development",
+    "deployment_mode": "shared_repo",
+    "collaboration_model": "triad",
+    "collaboration_extension": {
+      "roles_to_add": [
+        "agent-intake-dispatcher"
+      ],
+      "note": "User-approved 4th role 'dispatcher' materialized under the canonical catalog id agent-intake-dispatcher on top of the canonical triad."
+    },
+    "verification_policy": "duo_peer_review",
+    "delegation_level": "controlled",
+    "constraints": [
+      "security_invariants_no_opt_out_ssrf",
+      "token_hashing_at_rest",
+      "telegram_chat_allowlist",
+      "graceful_degradation_no_crash_loops",
+      "persisted_state_atomic_writes",
+      "bilingual_readme_sync_ru_en"
+    ],
+    "unresolved_questions": []
+  },
+  "environment": {
+    "capabilities": {
+      "read_instructions": "available",
+      "local_checks": "available (go build/vet/test -race; python stdlib scripts)",
+      "skills": "available (go-*, telegram-bot-builder, docker-expert, github-actions-creator, security-review, remnawave-xray)",
+      "roles": "pending (awaiting manage-meta-project bindings for ag-main)",
+      "hooks": "untested"
+    },
+    "constraints": [
+      "windows_dev_host",
+      "go_1_26",
+      "cgo_disabled_build"
+    ]
+  },
+  "components": {
+    "created": [],
+    "modified": [
+      ".agents/meta-project.json (ag-main registered)"
+    ],
+    "preserved": [
+      "all knowledge slices",
+      "all runtime scripts",
+      "all project sources",
+      "zc-main installation"
+    ]
+  },
+  "checks": [
+    {
+      "name": "harness_adaptation",
+      "status": "passed",
+      "detail": "Antigravity harness (ag-main) registered; existing zc-main preserved"
+    }
+  ],
+  "recommendations_for_manage": {
+    "suggested_roles": [
+      "agent-intake-dispatcher",
+      "agent-dev-lead",
+      "agent-quality-guardian",
+      "agent-github-steward"
+    ],
+    "target_topology": "triad + dispatcher (user-approved extension)",
+    "rationale": "bind existing 4 roles to ag-main installation"
+  },
+  "blockers_and_unresolved": [],
+  "next_step_readiness": {
+    "ready_for_manage": true,
+    "details": "Harness ag-main registered and init report created; ready for manage-meta-project."
+  }
+}
